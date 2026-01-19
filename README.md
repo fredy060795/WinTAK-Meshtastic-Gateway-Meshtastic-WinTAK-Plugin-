@@ -182,3 +182,6 @@ Open PowerShell as Admin.
 Run: .\venv\Scripts\pyinstaller --onefile --name "Meshtastic_Gateway" main_app.py
 
 Find your .exe in the dist/ folder.
+
+
+19.01.2026 - Troubleshooting: Connection error to the server under Windows 16000. Solution: Delete the WinTAK server connection and reconnect to the server; apparently, certificates are lost.
