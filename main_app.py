@@ -241,6 +241,7 @@ class TAKMeshtasticGateway:
             # NOTE: Coordinates at exactly (0,0) are treated as no GPS fix and use fallback
             # per README: "Nodes without a valid GPS fix are placed at 0.0, 0.0 by default"
             # This prevents displaying nodes at "Null Island" in the Atlantic Ocean
+            # OR logic is intentional: accepts lat=0 OR lon=0 (equator/prime meridian) but rejects (0,0)
             if lat_i is not None and lon_i is not None and (lat_i != 0 or lon_i != 0):
                 final_lat, final_lon, is_real = lat_i * 1e-7, lon_i * 1e-7, True
             elif lat_f is not None and lon_f is not None and (lat_f != 0 or lon_f != 0):
