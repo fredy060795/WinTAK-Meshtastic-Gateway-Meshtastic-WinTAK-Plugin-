@@ -70,6 +70,9 @@ def load_config():
 
 
 class TAKMeshtasticGateway:
+    # Class constants
+    SOCKET_TIMEOUT = 5.0  # Socket timeout in seconds
+    
     def __init__(self, port, cfg=None):
         self.port = port
         self.cfg = cfg or {}
@@ -96,7 +99,7 @@ class TAKMeshtasticGateway:
             raise ValueError(f"Invalid local_tak_port in config: {e}")
         
         self.sock_udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock_udp.settimeout(5.0)  # Add timeout to prevent hanging
+        self.sock_udp.settimeout(self.SOCKET_TIMEOUT)  # Add timeout to prevent hanging
 
         # Remote server socket(s)
         self.sock_remote = None  # für TCP: persistent socket; für UDP: socket used for sendto
@@ -154,7 +157,7 @@ class TAKMeshtasticGateway:
         if self.server_protocol == "UDP":
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                sock.settimeout(5.0)
+                sock.settimeout(self.SOCKET_TIMEOUT)
                 with self.server_lock:
                     self.sock_remote = sock
                 self.logger.info("Remote-UDP-Socket bereit.")
@@ -232,9 +235,9 @@ class TAKMeshtasticGateway:
             final_lat, final_lon, is_real = 0.0, 0.0, False
 
             # Priorität: integer-Telemetrie (1e-7) -> float -> fallback park
-            if lat_i is not None and lon_i is not None and lat_i != 0:
+            if lat_i is not None and lon_i is not None and (lat_i != 0 or lon_i != 0):
                 final_lat, final_lon, is_real = lat_i * 1e-7, lon_i * 1e-7, True
-            elif lat_f is not None and lon_f is not None and lat_f != 0:
+            elif lat_f is not None and lon_f is not None and (lat_f != 0 or lon_f != 0):
                 final_lat, final_lon, is_real = lat_f, lon_f, True
 
             if not is_real:
