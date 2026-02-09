@@ -113,6 +113,9 @@ class TAKMeshtasticGateway:
         # Park coordinates wenn kein GPS-Fix (optional)
         self.park_lat = float(self.cfg.get("park_lat", 0.0))
         self.park_lon = float(self.cfg.get("park_lon", 0.0))
+        
+        # Sync interval
+        self.sync_interval_seconds = int(self.cfg.get("sync_interval_seconds", 300))
 
         # Start
         try:
@@ -235,6 +238,9 @@ class TAKMeshtasticGateway:
             final_lat, final_lon, is_real = 0.0, 0.0, False
 
             # Priorität: integer-Telemetrie (1e-7) -> float -> fallback park
+            # NOTE: Coordinates at exactly (0,0) are treated as no GPS fix and use fallback
+            # per README: "Nodes without a valid GPS fix are placed at 0.0, 0.0 by default"
+            # This prevents displaying nodes at "Null Island" in the Atlantic Ocean
             if lat_i is not None and lon_i is not None and (lat_i != 0 or lon_i != 0):
                 final_lat, final_lon, is_real = lat_i * 1e-7, lon_i * 1e-7, True
             elif lat_f is not None and lon_f is not None and (lat_f != 0 or lon_f != 0):
@@ -301,8 +307,8 @@ class TAKMeshtasticGateway:
                         try:
                             sock.sendto(packet_xml, (self.server_ip, self.server_port))
                             self.logger.info(f"Remote-UDP gesendet an {self.server_ip}:{self.server_port} ({callsign})")
-                        except Exception as e:
-                            self.logger.warning(f"Fehler beim Senden an Remote-UDP-Server: {e}")
+                        except (socket.timeout, socket.error, OSError) as e:
+                            self.logger.warning(f"Fehler beim Senden an Remote-UDP-Server ({type(e).__name__}): {e}")
             else:  # TCP
                 with self.server_lock:
                     s = self.sock_remote
@@ -311,8 +317,8 @@ class TAKMeshtasticGateway:
                             # TCP erwartet evtl. newline-terminierte Pakete
                             s.sendall(packet_xml + b"\n")
                             self.logger.info(f"Remote-TCP gesendet an {self.server_ip}:{self.server_port} ({callsign})")
-                        except Exception as e:
-                            self.logger.warning(f"Fehler beim Senden an Remote-TCP-Server, Socket wird zurückgesetzt: {e}")
+                        except (socket.timeout, socket.error, OSError) as e:
+                            self.logger.warning(f"Fehler beim Senden an Remote-TCP-Server ({type(e).__name__}), Socket wird zurückgesetzt: {e}")
                             try:
                                 s.close()
                             except Exception:
@@ -364,7 +370,7 @@ class TAKMeshtasticGateway:
             while not self.shutdown_flag.is_set():
                 self.full_sync()
                 # Use wait instead of sleep to allow interruption
-                self.shutdown_flag.wait(int(self.cfg.get("sync_interval_seconds", 300)))
+                self.shutdown_flag.wait(self.sync_interval_seconds)
         except KeyboardInterrupt:
             self.logger.info("Beende auf Benutzereingabe.")
         except Exception:
