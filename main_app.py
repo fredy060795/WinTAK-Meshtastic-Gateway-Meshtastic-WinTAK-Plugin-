@@ -70,17 +70,36 @@ def load_config():
 
 
 class TAKMeshtasticGateway:
+    # Class constants
+    SOCKET_TIMEOUT = 5.0  # Socket timeout in seconds
+    
     def __init__(self, port, cfg=None):
         self.port = port
         self.cfg = cfg or {}
         self.server_ip = self.cfg.get("tak_server_host", "82.165.11.84")
-        self.server_port = int(self.cfg.get("tak_server_port", 8087))
+        # Validate port numbers
+        try:
+            server_port = int(self.cfg.get("tak_server_port", 8087))
+            if not (1 <= server_port <= 65535):
+                raise ValueError(f"Invalid server port: {server_port}")
+            self.server_port = server_port
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Invalid tak_server_port in config: {e}")
+        
         self.server_protocol = str(self.cfg.get("tak_server_protocol", "TCP")).upper()
 
         # lokaler WinTAK / TAK-Client (Standard)
         self.tak_ip = self.cfg.get("local_tak_ip", "127.0.0.1")
-        self.tak_port = int(self.cfg.get("local_tak_port", 4242))
+        try:
+            tak_port = int(self.cfg.get("local_tak_port", 4242))
+            if not (1 <= tak_port <= 65535):
+                raise ValueError(f"Invalid local TAK port: {tak_port}")
+            self.tak_port = tak_port
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Invalid local_tak_port in config: {e}")
+        
         self.sock_udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock_udp.settimeout(self.SOCKET_TIMEOUT)  # Add timeout to prevent hanging
 
         # Remote server socket(s)
         self.sock_remote = None  # für TCP: persistent socket; für UDP: socket used for sendto
@@ -89,10 +108,14 @@ class TAKMeshtasticGateway:
         self.logger = self.setup_logging()
         self.interface = None
         self.server_lock = threading.Lock()
+        self.shutdown_flag = threading.Event()  # For graceful shutdown
 
         # Park coordinates wenn kein GPS-Fix (optional)
         self.park_lat = float(self.cfg.get("park_lat", 0.0))
         self.park_lon = float(self.cfg.get("park_lon", 0.0))
+        
+        # Sync interval
+        self.sync_interval_seconds = int(self.cfg.get("sync_interval_seconds", 300))
 
         # Start
         try:
@@ -137,16 +160,19 @@ class TAKMeshtasticGateway:
         if self.server_protocol == "UDP":
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                sock.setblocking(False)
+                sock.settimeout(self.SOCKET_TIMEOUT)
                 with self.server_lock:
                     self.sock_remote = sock
                 self.logger.info("Remote-UDP-Socket bereit.")
             except Exception as e:
                 self.logger.error(f"Fehler beim Erstellen des Remote-UDP-Sockets: {e}")
+            # Keep monitoring for shutdown
+            while not self.shutdown_flag.is_set():
+                time.sleep(10)
             return
 
         # TCP: persistent Verbindung aufbauen und bei Fehlern zurücksetzen
-        while True:
+        while not self.shutdown_flag.is_set():
             if self.sock_remote is None:
                 try:
                     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -161,6 +187,9 @@ class TAKMeshtasticGateway:
                         self.sock_remote = None
                     self.logger.warning(f"Verbindung zum Remote-Take-Server fehlgeschlagen: {e}")
             time.sleep(10)
+        
+        # Cleanup on shutdown
+        self._cleanup_server_socket()
 
     def on_any_packet(self, packet, interface):
         """
@@ -209,9 +238,13 @@ class TAKMeshtasticGateway:
             final_lat, final_lon, is_real = 0.0, 0.0, False
 
             # Priorität: integer-Telemetrie (1e-7) -> float -> fallback park
-            if lat_i and lon_i and lat_i != 0:
+            # NOTE: Coordinates at exactly (0,0) are treated as no GPS fix and use fallback
+            # per README: "Nodes without a valid GPS fix are placed at 0.0, 0.0 by default"
+            # This prevents displaying nodes at "Null Island" in the Atlantic Ocean
+            # OR logic is intentional: accepts lat=0 OR lon=0 (equator/prime meridian) but rejects (0,0)
+            if lat_i is not None and lon_i is not None and (lat_i != 0 or lon_i != 0):
                 final_lat, final_lon, is_real = lat_i * 1e-7, lon_i * 1e-7, True
-            elif lat_f and lon_f and lat_f != 0:
+            elif lat_f is not None and lon_f is not None and (lat_f != 0 or lon_f != 0):
                 final_lat, final_lon, is_real = lat_f, lon_f, True
 
             if not is_real:
@@ -269,50 +302,82 @@ class TAKMeshtasticGateway:
 
             # Sende an entfernten TAK-Server (abhängig von server_protocol)
             if self.server_protocol == "UDP":
-                try:
-                    with self.server_lock:
-                        sock = self.sock_remote
-                    if sock is None:
-                        # Erstelle temporären UDP-Socket falls nicht initialisiert
-                        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                    sock.sendto(packet_xml, (self.server_ip, self.server_port))
-                    self.logger.info(f"Remote-UDP gesendet an {self.server_ip}:{self.server_port} ({callsign})")
-                except Exception as e:
-                    self.logger.warning(f"Fehler beim Senden an Remote-UDP-Server: {e}")
-            else:  # TCP
-                try:
-                    with self.server_lock:
-                        s = self.sock_remote
-                    if s:
-                        # TCP erwartet evtl. newline-terminierte Pakete
-                        s.sendall(packet_xml + b"\n")
-                        self.logger.info(f"Remote-TCP gesendet an {self.server_ip}:{self.server_port} ({callsign})")
-                    else:
-                        self.logger.debug("Kein Remote-TCP Socket vorhanden - Paket nicht gesendet")
-                except Exception as e:
-                    self.logger.warning(f"Fehler beim Senden an Remote-TCP-Server, Socket wird zurückgesetzt: {e}")
-                    with self.server_lock:
+                with self.server_lock:
+                    sock = self.sock_remote
+                    if sock:
                         try:
-                            if self.sock_remote:
-                                self.sock_remote.close()
-                        except Exception:
-                            pass
-                        self.sock_remote = None
+                            sock.sendto(packet_xml, (self.server_ip, self.server_port))
+                            self.logger.info(f"Remote-UDP gesendet an {self.server_ip}:{self.server_port} ({callsign})")
+                        except (socket.timeout, socket.error, OSError) as e:
+                            self.logger.warning(f"Fehler beim Senden an Remote-UDP-Server ({type(e).__name__}): {e}")
+            else:  # TCP
+                with self.server_lock:
+                    s = self.sock_remote
+                    if s:
+                        try:
+                            # TCP erwartet evtl. newline-terminierte Pakete
+                            s.sendall(packet_xml + b"\n")
+                            self.logger.info(f"Remote-TCP gesendet an {self.server_ip}:{self.server_port} ({callsign})")
+                        except (socket.timeout, socket.error, OSError) as e:
+                            self.logger.warning(f"Fehler beim Senden an Remote-TCP-Server ({type(e).__name__}), Socket wird zurückgesetzt: {e}")
+                            try:
+                                s.close()
+                            except Exception:
+                                pass
+                            self.sock_remote = None
         except Exception:
             self.logger.error("Fehler in send_broadcast:\n" + traceback.format_exc())
+
+    def _cleanup_server_socket(self):
+        """
+        Cleanup remote server socket
+        """
+        with self.server_lock:
+            if self.sock_remote:
+                try:
+                    self.sock_remote.close()
+                except Exception:
+                    pass
+                self.sock_remote = None
+
+    def cleanup(self):
+        """
+        Cleanup all resources
+        """
+        self.logger.info("Cleaning up resources...")
+        self.shutdown_flag.set()
+        
+        # Close UDP socket
+        try:
+            self.sock_udp.close()
+        except Exception:
+            pass
+        
+        # Close remote socket
+        self._cleanup_server_socket()
+        
+        # Close meshtastic interface
+        if self.interface:
+            try:
+                self.interface.close()
+            except Exception:
+                pass
 
     def run(self):
         """
         Hauptschleife: periodische Vollsyncs
         """
         try:
-            while True:
+            while not self.shutdown_flag.is_set():
                 self.full_sync()
-                time.sleep(int(self.cfg.get("sync_interval_seconds", 300)))
+                # Use wait instead of sleep to allow interruption
+                self.shutdown_flag.wait(self.sync_interval_seconds)
         except KeyboardInterrupt:
             self.logger.info("Beende auf Benutzereingabe.")
         except Exception:
             self.logger.error("Fehler in run:\n" + traceback.format_exc())
+        finally:
+            self.cleanup()
 
 
 def choose_serial_port(cfg):
