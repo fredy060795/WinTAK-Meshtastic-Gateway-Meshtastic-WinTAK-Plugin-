@@ -2,7 +2,8 @@ gateway_callsign: MSHT-GW
 gateway_uid: GW-01
 meshtastic_port: COM7
 # Hier die IP deines Ubuntu-Servers eintragen "82.165.11.84"
-tak_server_host: 82.165.11.84
+tak_server_host: 123.12.12.12
 # WICHTIG: Port 8088 nutzen (das ist der Eingang unserer Bridge)
 tak_server_port: 8088
+
 tak_server_protocol: TCP                               
