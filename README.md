@@ -1,187 +1,150 @@
-# WinTAK-Meshtastic-Gateway-Meshtastic-WinTAK-Plugin-
-1. Overview
+# WinTAK Meshtastic Gateway
 
-This gateway acts as a high-stability bridge between Meshtastic hardware and the TAK ecosystem (WinTAK, ATAK, iTAK). Specifically optimized for Windows environments, it addresses common Cursor on Target (CoT) ingestion issues and ensures long-term connectivity.
+A stable bridge between **Meshtastic** mesh radios and the **TAK ecosystem** (WinTAK, ATAK, iTAK).  
+The gateway reads position data from Meshtastic nodes over a serial connection and forwards it as Cursor on Target (CoT) XML — both to a local WinTAK instance (UDP) and optionally to a remote TAK Server (TCP or UDP).
 
-Key Features:
+---
 
-Dual-Streaming: Simultaneous broadcast to local WinTAK (UDP) and a remote TAK Server (TCP/UDP).
+## Features
 
-Data Sanitization: Automatically fixes non-standard team colors (e.g., "Black" to "Cyan") and sanitizes GPS values to prevent protocol crashes.
+| Feature | Description |
+|---|---|
+| **Dual-Streaming** | Sends CoT data simultaneously to local WinTAK (UDP 4242) and a remote TAK Server (TCP/UDP). |
+| **Automatic Reconnect** | Maintains the remote TAK Server connection with automatic retry on disconnect. |
+| **GPS Fallback** | Nodes without a GPS fix are placed at configurable fallback coordinates so they still appear in the TAK contact list. |
+| **Config-Driven** | All settings (IPs, ports, callsign, COM port) are managed in a single `config.yaml`. |
+| **Admin Startup Script** | Included `.bat` file auto-elevates to Administrator privileges on Windows. |
 
-Config-Driven: Manage all settings (IPs, Ports, Callsigns) via a simple config.yaml.
+---
 
-Admin-Ready: Includes a batch starter that automatically handles Windows Administrator privileges.
+## Data Flow
 
-2. Technical Bug Report: The "Channel Routing" Issue
-A critical observation has been made regarding data distribution to mobile clients (ATAK/iTAK):
+```
+Meshtastic Radio  ──serial──▶  Gateway (main_app.py)
+                                  │
+                                  ├──UDP──▶  Local WinTAK (127.0.0.1:4242)
+                                  │
+                                  └──TCP/UDP──▶  Remote TAK Server
+```
 
-The Symptom: Meshtastic nodes appear perfectly in the local WinTAK instance but are missing on ATAK/iTAK devices connected to the same server.
+---
 
-The Cause: This occurs when the TAK Server has no active data channels configured or subscribed to. In the TAK architecture, the server requires a "Channel" to replicate incoming packets to other subscribers.
+## Prerequisites
 
-The Solution: WinTAK must be connected to a server with active channels (e.g., a "Default" channel). WinTAK then acts as a relay; once it receives the local Meshtastic data via UDP, it pushes it to the server's channel, making it visible to all other connected devices.
+- **Python 3.8+** (or the pre-built `.exe`, see below)
+- A **Meshtastic** radio connected via USB (serial / COM port)
+- **WinTAK** installed on the same machine (for local UDP reception)
 
-Note on GPS Fixes:
+### Python Dependencies
 
-Nodes without a valid GPS fix (e.g., indoors) are placed at 0.0, 0.0 (the Atlantic Ocean) by default. This ensures the node appears in the TAK contact list immediately, rather than being ignored until a fix is acquired.
+```
+meshtastic
+pypubsub
+pyserial
+pyyaml
+colorlog   # optional – enables colored console output
+```
 
-3. Full Source Code & Configuration
-Directory: C:\Program Files\WinTAK\Meshttastic Gateway\
+Install all at once:
 
-File 1: config.yaml
+```bash
+pip install meshtastic pypubsub pyserial pyyaml colorlog
+```
 
-YAML
+---
 
-gateway_callsign: MSHT-GW
-gateway_uid: GW-01
-meshtastic_port: COM7
-# Enter your remote TAK Server IP here
-tak_server_host: 123.123.123 
-# IMPORTANT: Port 8088 is used for this specific bridge
-tak_server_port: 8088
-tak_server_protocol: TCP
-sync_interval_seconds: 300
-File 2: main_app.py
+## Configuration
 
-Python
+Edit **`config.yaml`** in the same directory as `main_app.py`:
 
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-import os
-import sys
-import datetime
-import socket
-import time
-import logging
-import threading
-import traceback
-from xml.etree.ElementTree import Element, SubElement, tostring
+```yaml
+gateway_callsign: MSHT-GW          # Callsign shown in logs
+gateway_uid: GW-01                  # Unique gateway ID
+meshtastic_port: COM7               # Serial port of the Meshtastic radio
 
-try:
-    import yaml
-    import colorlog
-    import serial.tools.list_ports
-    import meshtastic.serial_interface
-    from pubsub import pub
-except ImportError as e:
-    print(f"Missing dependency: {e}. Run: pip install meshtastic pypubsub pyserial colorlog pyyaml")
+tak_server_host: 123.123.123.123    # Remote TAK Server IP
+tak_server_port: 8088               # Remote TAK Server port (8088 is the default bridge input port)
+tak_server_protocol: TCP            # TCP or UDP
 
-def get_tak_timestamp():
-    return datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+sync_interval_seconds: 300          # Full node re-sync interval (seconds)
 
-class TAKMeshtasticGateway:
-    def __init__(self, port, cfg):
-        self.port = port
-        self.cfg = cfg
-        self.logger = self.setup_logging()
-        
-        # Connection Settings
-        self.server_ip = cfg.get("tak_server_host", "127.0.0.1")
-        self.server_port = int(cfg.get("tak_server_port", 8088))
-        self.server_protocol = str(cfg.get("tak_server_protocol", "TCP")).upper()
-        
-        self.tak_ip = "127.0.0.1" 
-        self.tak_port = 4242
-        self.sock_udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock_remote = None
-        self.server_lock = threading.Lock()
-        
-        try:
-            self.interface = meshtastic.serial_interface.SerialInterface(self.port)
-            pub.subscribe(self.on_any_packet, "meshtastic.receive")
-            threading.Thread(target=self.maintain_server_connection, daemon=True).start()
-            self.full_sync()
-        except Exception as e:
-            self.logger.error(f"Hardware error: {e}")
+# Optional – fallback coordinates for nodes without GPS fix (default: 0.0)
+# park_lat: 0.0
+# park_lon: 0.0
+```
 
-    def setup_logging(self):
-        logger = logging.getLogger('TAK_Gateway')
-        handler = colorlog.StreamHandler()
-        handler.setFormatter(colorlog.ColoredFormatter('[%(asctime)s] %(log_color)s%(message)s'))
-        logger.addHandler(handler)
-        logger.setLevel(logging.INFO)
-        return logger
+> **Tip:** If `meshtastic_port` is not set or the configured port is not found, the gateway will prompt you to choose a port interactively.
 
-    def maintain_server_connection(self):
-        while True:
-            if self.server_protocol == "TCP" and self.sock_remote is None:
-                try:
-                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    s.settimeout(10)
-                    s.connect((self.server_ip, self.server_port))
-                    with self.server_lock: self.sock_remote = s
-                    self.logger.info("✅ REMOTE SERVER CONNECTED")
-                except: self.sock_remote = None
-            time.sleep(15)
+---
 
-    def on_any_packet(self, packet, interface):
-        from_id = packet.get('fromId') or packet.get('from')
-        if from_id:
-            node = self.interface.nodes.get(from_id)
-            if node: self.process_node(node, 0, force_update=True)
+## Usage
 
-    def process_node(self, node, index, force_update=False):
-        user = node.get('user', {})
-        pos = node.get('position', {})
-        uid = (user.get('id') or f"ID-{node.get('num'):08x}").replace('!', 'ID-')
-        callsign = user.get('longName', user.get('shortName', uid))
-        
-        lat = pos.get('latitude_i', 0) * 1e-7 or pos.get('latitude', 0)
-        lon = pos.get('longitude_i', 0) * 1e-7 or pos.get('longitude', 0)
-        is_real = (lat != 0)
+### Option 1 — Batch Starter (recommended on Windows)
 
-        self.send_broadcast(uid, callsign, lat, lon, pos.get('altitude', 0), is_real)
+Double-click **`Meshtastic_Gateway_Start.bat`**.  
+The script automatically requests Administrator privileges and launches the gateway.
 
-    def send_broadcast(self, uid, callsign, lat, lon, alt, is_real):
-        t = get_tak_timestamp()
-        event = Element('event', {'how': 'm-g', 'type': 'a-f-G-U-C', 'uid': uid, 'start': t, 'time': t, 'stale': t, 'version': '2.0'})
-        SubElement(event, 'point', {'hae': str(alt or 0), 'lat': f"{lat:.6f}", 'lon': f"{lon:.6f}", 'ce': '10', 'le': '10'})
-        detail = SubElement(event, 'detail')
-        SubElement(detail, 'contact', {'callsign': callsign})
-        SubElement(detail, '__group', {'name': 'Cyan', 'role': 'Team Member'})
-        
-        packet_xml = tostring(event)
-        self.sock_udp.sendto(packet_xml, (self.tak_ip, self.tak_port))
-        
-        if self.sock_remote:
-            try: self.sock_remote.sendall(packet_xml + b"\n")
-            except: self.sock_remote = None
+### Option 2 — Run directly with Python
 
-    def run(self):
-        while True:
-            time.sleep(300)
-            self.full_sync()
+```bash
+python main_app.py
+```
 
-    def full_sync(self):
-        if self.interface and self.interface.nodes:
-            for i, node in enumerate(self.interface.nodes.values()):
-                self.process_node(node, i)
-4. Execution & Setup
-Step 1: Administrator Startup Script (Meshtastic_Gateway_Start.bat)
+### Option 3 — Build a standalone EXE with PyInstaller
 
-Save this as a .bat file to ensure the gateway starts with correct permissions and environment.
+```bash
+pip install pyinstaller
+pyinstaller --onefile --name "Meshtastic_Gateway" main_app.py
+```
 
-Code-Snippet
+The resulting executable is located in the `dist/` folder.
 
-u/echo off
-net session >nul 2>&1
-if %errorLevel% neq 0 (
-    powershell -Command "Start-Process -FilePath '%~0' -Verb RunAs"
-    exit /b
-)
-cd /d "C:\Program Files\WinTAK\Meshttastic Gateway"
-.\venv\Scripts\python.exe main_app.py
-pause
-Step 2: Create Standalone EXE
+---
 
-If you want to distribute this as a single file, use PyInstaller:
+## Important: Channel Routing for ATAK / iTAK
 
-Open PowerShell as Admin.
+If Meshtastic nodes appear in your local WinTAK but **not** on ATAK/iTAK devices connected to the same TAK Server, the cause is usually missing **server-side channels**.
 
-Run: .\venv\Scripts\pyinstaller --onefile --name "Meshtastic_Gateway" main_app.py
+**How to fix it:**
 
-Find your .exe in the dist/ folder.
+1. Connect WinTAK to a TAK Server that has at least one active channel (e.g. the *Default* channel).
+2. WinTAK will relay the locally received Meshtastic CoT data into that channel.
+3. All other TAK clients subscribed to the same channel will then see the Meshtastic nodes.
 
+---
 
-19.01.2026 - Troubleshooting: Connection error to the server under Windows 16000. Solution: Delete the WinTAK server connection and reconnect to the server; apparently, certificates are lost.
+## Notes on GPS Fixes
+
+- Nodes **without** a valid GPS fix (e.g. indoors) are placed at fallback coordinates (`park_lat` / `park_lon` in `config.yaml`, default `0.0 / 0.0`).
+- This ensures the node appears in the TAK contact list immediately instead of being invisible until a fix is acquired.
+- Nodes at fallback coordinates are marked with the remark *"Listed (No GPS Fix)"* and the precision source is set to `USER` instead of `GPS`.
+
+---
+
+## Troubleshooting
+
+| Problem | Solution |
+|---|---|
+| **Gateway cannot find the COM port** | Make sure the Meshtastic radio is connected via USB. Check Device Manager for the correct COM port number and update `meshtastic_port` in `config.yaml`. |
+| **No connection to the remote TAK Server** | Verify `tak_server_host` and `tak_server_port` in `config.yaml`. Make sure the server is reachable and the port is open (firewall). |
+| **Nodes visible in WinTAK but missing in ATAK/iTAK** | See [Channel Routing](#important-channel-routing-for-atak--itak) above. |
+| **Certificate / connection errors after a Windows update** | Delete the TAK Server connection in WinTAK and re-add it. Certificates may need to be re-imported. |
+| **Missing Python dependencies** | Run `pip install meshtastic pypubsub pyserial pyyaml colorlog`. |
+
+---
+
+## Project Structure
+
+```
+├── main_app.py                    # Gateway application
+├── config.yaml                    # Configuration file
+├── Meshtastic_Gateway_Start.bat   # Windows launcher (auto-admin)
+├── Meshtastic_Gateway.spec        # PyInstaller build spec
+└── README.md
+```
+
+---
+
+## License
+
+This project is provided as-is for use within the TAK community. See the repository for any license details.
