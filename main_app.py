@@ -6,6 +6,7 @@ TAK Meshtastic Gateway - vollständige, robuste Version
 - Unterstützt TCP und UDP zu entferntem TAK-Server
 - Sendet CoT-XML an lokales WinTAK (UDP) und optional an entfernten TAK-Server
 - Verbessertes Logging, stabile Wiederverbindung, sichere COM-Port-Auswahl
+- Unterstützt mehrere gleichzeitige Eingabe-Streams (COM-Ports 1-6)
 """
 
 import os
@@ -72,9 +73,9 @@ def load_config():
 class TAKMeshtasticGateway:
     # Class constants
     SOCKET_TIMEOUT = 5.0  # Socket timeout in seconds
-    
-    def __init__(self, port, cfg=None):
-        self.port = port
+
+    def __init__(self, ports, cfg=None):
+        self.ports = ports if isinstance(ports, list) else [ports]
         self.cfg = cfg or {}
         self.server_ip = self.cfg.get("tak_server_host", "82.165.11.84")
         # Validate port numbers
@@ -106,7 +107,7 @@ class TAKMeshtasticGateway:
 
         # interne State
         self.logger = self.setup_logging()
-        self.interface = None
+        self.interfaces = []
         self.server_lock = threading.Lock()
         self.shutdown_flag = threading.Event()  # For graceful shutdown
 
@@ -121,9 +122,12 @@ class TAKMeshtasticGateway:
         try:
             if meshtastic is None:
                 raise RuntimeError("meshtastic-Paket nicht installiert / importierbar.")
-            self.logger.info(f"Versuche Verbindung zum Meshtastic-Hardware-Interface an {self.port} ...")
-            self.interface = meshtastic.serial_interface.SerialInterface(self.port)
-            # subscribe to receive events if pubsub available
+            for port in self.ports:
+                self.logger.info(f"Versuche Verbindung zum Meshtastic-Hardware-Interface an {port} ...")
+                iface = meshtastic.serial_interface.SerialInterface(port)
+                self.interfaces.append(iface)
+                self.logger.info(f"Interface an {port} erfolgreich verbunden.")
+            # subscribe to receive events (one subscription handles all interfaces via pubsub)
             if pub is not None:
                 pub.subscribe(self.on_any_packet, "meshtastic.receive")
             else:
@@ -193,14 +197,15 @@ class TAKMeshtasticGateway:
 
     def on_any_packet(self, packet, interface):
         """
-        Callback für empfangene Packets von meshtastic
+        Callback für empfangene Packets von meshtastic.
+        Der 'interface'-Parameter identifiziert, von welchem COM-Port das Paket stammt.
         """
         try:
             from_id = packet.get('fromId') or packet.get('from')
             if from_id:
                 node = None
-                if hasattr(self.interface, 'nodes') and self.interface.nodes:
-                    node = self.interface.nodes.get(from_id)
+                if hasattr(interface, 'nodes') and interface.nodes:
+                    node = interface.nodes.get(from_id)
                 if node:
                     # Force update für Live-Events
                     self.process_node(node, 0, force_update=True)
@@ -209,16 +214,17 @@ class TAKMeshtasticGateway:
 
     def full_sync(self):
         """
-        Schickt eine Sync über alle bekannten Nodes.
+        Schickt eine Sync über alle bekannten Nodes aller verbundenen Interfaces.
         """
-        try:
-            nodes = []
-            if hasattr(self.interface, 'nodes') and self.interface.nodes:
-                nodes = sorted(self.interface.nodes.values(), key=lambda x: x.get('user', {}).get('longName', ''))
-            for i, node in enumerate(nodes):
-                self.process_node(node, i)
-        except Exception:
-            self.logger.error("Fehler während full_sync:\n" + traceback.format_exc())
+        for iface in self.interfaces:
+            try:
+                nodes = []
+                if hasattr(iface, 'nodes') and iface.nodes:
+                    nodes = sorted(iface.nodes.values(), key=lambda x: x.get('user', {}).get('longName', ''))
+                for i, node in enumerate(nodes):
+                    self.process_node(node, i)
+            except Exception:
+                self.logger.error("Fehler während full_sync:\n" + traceback.format_exc())
 
     def process_node(self, node, index, force_update=False):
         """
@@ -356,10 +362,10 @@ class TAKMeshtasticGateway:
         # Close remote socket
         self._cleanup_server_socket()
         
-        # Close meshtastic interface
-        if self.interface:
+        # Close all meshtastic interfaces
+        for iface in self.interfaces:
             try:
-                self.interface.close()
+                iface.close()
             except Exception:
                 pass
 
@@ -380,61 +386,107 @@ class TAKMeshtasticGateway:
             self.cleanup()
 
 
-def choose_serial_port(cfg):
+def _select_port_interactively(ports, already_selected):
     """
-    Sicherheits-Auswahl der COM-Ports. Unterstützt:
-    - automatische Auswahl über cfg["meshtastic_port"] wenn vorhanden
-    - ansonsten interaktive Auswahl
-    Returns: devicename (z.B. 'COM3')
+    Interaktive Portauswahl aus einer Liste, bereits gewählte Ports werden ausgeschlossen.
     """
-    # config override
-    cfg_port = cfg.get("meshtastic_port")
-    if cfg_port:
-        # wenn Port numerisch in Liste vorkommt -> validieren
-        ports = []
-        if serial is not None:
-            try:
-                ports = list(serial.tools.list_ports.comports())
-            except Exception:
-                ports = []
-        # einfache Existenzprüfung (falls möglich)
-        if not ports:
-            print(f"Konfigurierter Port {cfg_port} wird verwendet (keine Portprüfung möglich).")
-            return cfg_port
-        for p in ports:
-            if p.device == cfg_port:
-                print(f"Konfigurierter Port {cfg_port} gefunden und wird verwendet.")
-                return cfg_port
-        print(f"Konfigurierter Port {cfg_port} wurde nicht unter den gefundenen Ports entdeckt. Weiter zur manuellen Auswahl...")
-
-    # Liste aller Ports anzeigen
     if serial is None:
         print("pyserial nicht verfügbar; benutze Standard COM7.")
         return "COM7"
 
-    ports = list(serial.tools.list_ports.comports())
-    if not ports:
-        print("Keine seriellen Ports gefunden. Drücke Enter um mit Standard COM7 fortzufahren.")
-        input()
+    # Filter out already selected ports
+    available = [p for p in ports if p.device not in already_selected]
+    if not available:
+        print("Keine weiteren freien Ports verfügbar. Verwende COM7 als Standard.")
         return "COM7"
 
-    print("Gefundene serielle Ports:")
-    for i, p in enumerate(ports):
-        print(f"[{i}] {p.device} - {getattr(p, 'description', '')}")
+    print("Verfügbare serielle Ports:")
+    for i, p in enumerate(available):
+        print(f"  [{i}] {p.device} - {getattr(p, 'description', '')}")
 
     while True:
-        val = input("\nSelect Port (Index, Enter = 0): ").strip()
+        val = input("\nPort auswählen (Index, Enter = 0): ").strip()
         if val == "":
             idx = 0
             break
         try:
             idx = int(val)
-            if 0 <= idx < len(ports):
+            if 0 <= idx < len(available):
                 break
         except Exception:
             pass
         print("Ungültige Auswahl. Bitte Index-Zahl eingeben.")
-    return ports[idx].device
+    return available[idx].device
+
+
+def choose_serial_ports(cfg):
+    """
+    Auswahl von einem oder mehreren COM-Ports (Eingabe-Streams 1-6). Unterstützt:
+    - Automatische Auswahl über cfg["meshtastic_port"] (String oder Liste) falls vorhanden
+    - Interaktive Abfrage der Stream-Anzahl (1-6) und Port-Auswahl je Stream
+    Returns: Liste von Gerätenamen (z.B. ['COM3', 'COM7'])
+    """
+    # Alle verfügbaren Ports ermitteln
+    all_ports = []
+    if serial is not None:
+        try:
+            all_ports = list(serial.tools.list_ports.comports())
+        except Exception:
+            pass
+
+    # Konfigurierte Ports aus config.yaml lesen (String oder Liste)
+    cfg_port = cfg.get("meshtastic_port")
+    cfg_ports = []
+    if isinstance(cfg_port, list):
+        cfg_ports = [str(p) for p in cfg_port]
+    elif cfg_port:
+        cfg_ports = [str(cfg_port)]
+
+    # Anzahl der gewünschten Eingabe-Streams abfragen
+    default_count = len(cfg_ports) if cfg_ports else 1
+    print(f"\nWie viele Eingabe-Streams (COM-Ports) sollen verwendet werden? (1-6, Enter = {default_count}):")
+    while True:
+        val = input("Anzahl Streams: ").strip()
+        if val == "":
+            num_streams = default_count
+            break
+        try:
+            num_streams = int(val)
+            if 1 <= num_streams <= 6:
+                break
+        except Exception:
+            pass
+        print("Bitte eine Zahl zwischen 1 und 6 eingeben.")
+
+    selected_ports = []
+    for stream_idx in range(num_streams):
+        print(f"\n--- Eingabe-Stream {stream_idx + 1} ---")
+        # Vorkonfigurierten Port verwenden, falls vorhanden
+        if stream_idx < len(cfg_ports):
+            cfg_p = cfg_ports[stream_idx]
+            if not all_ports:
+                print(f"Konfigurierter Port {cfg_p} wird verwendet (keine Portprüfung möglich).")
+                selected_ports.append(cfg_p)
+                continue
+            for p in all_ports:
+                if p.device == cfg_p:
+                    print(f"Konfigurierter Port {cfg_p} gefunden und wird verwendet.")
+                    selected_ports.append(cfg_p)
+                    break
+            else:
+                print(f"Konfigurierter Port {cfg_p} nicht gefunden. Weiter zur manuellen Auswahl...")
+                port = _select_port_interactively(all_ports, selected_ports)
+                selected_ports.append(port)
+        else:
+            if not all_ports:
+                print("Keine seriellen Ports gefunden. Drücke Enter um mit Standard COM7 fortzufahren.")
+                input()
+                selected_ports.append("COM7")
+            else:
+                port = _select_port_interactively(all_ports, selected_ports)
+                selected_ports.append(port)
+
+    return selected_ports
 
 
 if __name__ == "__main__":
@@ -460,11 +512,11 @@ if __name__ == "__main__":
             print("Fortfahren? (Enter=ja, Ctrl-C zum Abbrechen)")
             input()
 
-        # Port-Auswahl (mit config override)
-        p_dev = choose_serial_port(cfg)
-        print(f"Verwende Port: {p_dev}")
+        # Port-Auswahl (mit config override, unterstützt mehrere Streams)
+        p_devs = choose_serial_ports(cfg)
+        print(f"Verwende Port(s): {', '.join(p_devs)}")
 
-        gw = TAKMeshtasticGateway(p_dev, cfg)
+        gw = TAKMeshtasticGateway(p_devs, cfg)
         gw.run()
 
     except Exception as exc:
