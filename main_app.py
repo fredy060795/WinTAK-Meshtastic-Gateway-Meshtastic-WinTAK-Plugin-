@@ -199,13 +199,18 @@ class TAKMeshtasticGateway:
         """
         Callback für empfangene Packets von meshtastic.
         Der 'interface'-Parameter identifiziert, von welchem COM-Port das Paket stammt.
+        Fallback: sucht in allen verbundenen Interfaces nach dem Node.
         """
         try:
             from_id = packet.get('fromId') or packet.get('from')
             if from_id:
                 node = None
-                if hasattr(interface, 'nodes') and interface.nodes:
-                    node = interface.nodes.get(from_id)
+                # Suche zuerst im sendenden Interface, dann in allen anderen
+                for iface in ([interface] + [i for i in self.interfaces if i is not interface]):
+                    if hasattr(iface, 'nodes') and iface.nodes:
+                        node = iface.nodes.get(from_id)
+                        if node:
+                            break
                 if node:
                     # Force update für Live-Events
                     self.process_node(node, 0, force_update=True)
@@ -443,7 +448,7 @@ def choose_serial_ports(cfg):
         cfg_ports = [str(cfg_port)]
 
     # Anzahl der gewünschten Eingabe-Streams abfragen
-    default_count = len(cfg_ports) if cfg_ports else 1
+    default_count = min(len(cfg_ports), 6) if cfg_ports else 1
     print(f"\nWie viele Eingabe-Streams (COM-Ports) sollen verwendet werden? (1-6, Enter = {default_count}):")
     while True:
         val = input("Anzahl Streams: ").strip()
@@ -464,6 +469,11 @@ def choose_serial_ports(cfg):
         # Vorkonfigurierten Port verwenden, falls vorhanden
         if stream_idx < len(cfg_ports):
             cfg_p = cfg_ports[stream_idx]
+            if cfg_p in selected_ports:
+                print(f"Port {cfg_p} bereits ausgewählt. Weiter zur manuellen Auswahl...")
+                port = _select_port_interactively(all_ports, selected_ports)
+                selected_ports.append(port)
+                continue
             if not all_ports:
                 print(f"Konfigurierter Port {cfg_p} wird verwendet (keine Portprüfung möglich).")
                 selected_ports.append(cfg_p)
