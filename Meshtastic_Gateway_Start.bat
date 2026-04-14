@@ -42,7 +42,7 @@ if "%PYTHON_EXEC%"=="" (
 )
 
 echo Verwende: %PYTHON_EXEC%
-%PYTHON_EXEC% main_app.py
+%PYTHON_EXEC% main_app.py --all-ports
 
 echo.
 echo Anwendung beendet.

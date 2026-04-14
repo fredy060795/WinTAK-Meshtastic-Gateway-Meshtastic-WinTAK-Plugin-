@@ -11,6 +11,7 @@ TAK Meshtastic Gateway - vollständige, robuste Version
 
 import os
 import sys
+import argparse
 import datetime
 import socket
 import time
@@ -424,10 +425,11 @@ def _select_port_interactively(ports, already_selected):
     return available[idx].device
 
 
-def choose_serial_ports(cfg):
+def choose_serial_ports(cfg, all_ports_mode=False):
     """
     Auswahl von einem oder mehreren COM-Ports (Eingabe-Streams 1-6). Unterstützt:
     - Automatische Auswahl über cfg["meshtastic_port"] (String oder Liste) falls vorhanden
+    - all_ports_mode=True: alle verfügbaren seriellen Ports automatisch verwenden (kein interaktiver Dialog)
     - Interaktive Abfrage der Stream-Anzahl (1-6) und Port-Auswahl je Stream
     Returns: Liste von Gerätenamen (z.B. ['COM3', 'COM7'])
     """
@@ -438,6 +440,16 @@ def choose_serial_ports(cfg):
             all_ports = list(serial.tools.list_ports.comports())
         except Exception:
             pass
+
+    # --all-ports Modus: alle erkannten seriellen Ports automatisch verwenden
+    if all_ports_mode:
+        if all_ports:
+            detected = [p.device for p in all_ports]
+            print(f"Alle verfügbaren seriellen Ports werden automatisch verwendet: {', '.join(detected)}")
+            return detected
+        else:
+            print("Keine seriellen Ports gefunden. Verwende Standard COM7.")
+            return ["COM7"]
 
     # Konfigurierte Ports aus config.yaml lesen (String oder Liste)
     cfg_port = cfg.get("meshtastic_port")
@@ -501,6 +513,13 @@ def choose_serial_ports(cfg):
 
 if __name__ == "__main__":
     try:
+        parser = argparse.ArgumentParser(description="TAK Meshtastic Gateway")
+        parser.add_argument(
+            "--all-ports", action="store_true",
+            help="Alle verfügbaren seriellen USB-Ports automatisch verwenden (kein interaktiver Dialog)"
+        )
+        args = parser.parse_args()
+
         cfg = load_config()
 
         # Falls fehlende Abhängigkeiten -> klare Fehlermeldung
@@ -523,7 +542,7 @@ if __name__ == "__main__":
             input()
 
         # Port-Auswahl (mit config override, unterstützt mehrere Streams)
-        p_devs = choose_serial_ports(cfg)
+        p_devs = choose_serial_ports(cfg, all_ports_mode=args.all_ports)
         print(f"Verwende Port(s): {', '.join(p_devs)}")
 
         gw = TAKMeshtasticGateway(p_devs, cfg)
