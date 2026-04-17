@@ -411,10 +411,10 @@ def _select_port_interactively(ports, already_selected):
         print(f"  [{i}] {p.device} - {getattr(p, 'description', '')}")
 
     while True:
-        val = input("\nPort auswählen (Index, Enter = 0): ").strip()
+        val = input("\nPort auswählen (Index): ").strip()
         if val == "":
-            idx = 0
-            break
+            print("Bitte einen Index eingeben (keine automatische Auswahl).")
+            continue
         try:
             idx = int(val)
             if 0 <= idx < len(available):
@@ -428,7 +428,7 @@ def _select_port_interactively(ports, already_selected):
 def choose_serial_ports(cfg, all_ports_mode=False):
     """
     Auswahl von einem oder mehreren COM-Ports (Eingabe-Streams 1-6). Unterstützt:
-    - Automatische Auswahl über cfg["meshtastic_port"] (String oder Liste) falls vorhanden
+    - Interaktive, manuelle Auswahl der Ports je Stream
     - all_ports_mode=True: alle verfügbaren seriellen Ports automatisch verwenden (kein interaktiver Dialog)
     - Interaktive Abfrage der Stream-Anzahl (1-6) und Port-Auswahl je Stream
     Returns: Liste von Gerätenamen (z.B. ['COM3', 'COM7'])
@@ -478,35 +478,19 @@ def choose_serial_ports(cfg, all_ports_mode=False):
     selected_ports = []
     for stream_idx in range(num_streams):
         print(f"\n--- Eingabe-Stream {stream_idx + 1} ---")
-        # Vorkonfigurierten Port verwenden, falls vorhanden
-        if stream_idx < len(cfg_ports):
-            cfg_p = cfg_ports[stream_idx]
-            if cfg_p in selected_ports:
-                print(f"Port {cfg_p} bereits ausgewählt. Weiter zur manuellen Auswahl...")
-                port = _select_port_interactively(all_ports, selected_ports)
-                selected_ports.append(port)
-                continue
-            if not all_ports:
-                print(f"Konfigurierter Port {cfg_p} wird verwendet (keine Portprüfung möglich).")
+        if not all_ports:
+            if stream_idx < len(cfg_ports):
+                cfg_p = cfg_ports[stream_idx]
+                print(f"Keine Portliste verfügbar. Verwende konfigurierten Port {cfg_p}.")
                 selected_ports.append(cfg_p)
-                continue
-            for p in all_ports:
-                if p.device == cfg_p:
-                    print(f"Konfigurierter Port {cfg_p} gefunden und wird verwendet.")
-                    selected_ports.append(cfg_p)
-                    break
             else:
-                print(f"Konfigurierter Port {cfg_p} nicht gefunden. Weiter zur manuellen Auswahl...")
-                port = _select_port_interactively(all_ports, selected_ports)
-                selected_ports.append(port)
-        else:
-            if not all_ports:
                 print("Keine seriellen Ports gefunden. Drücke Enter um mit Standard COM7 fortzufahren.")
                 input()
                 selected_ports.append("COM7")
-            else:
-                port = _select_port_interactively(all_ports, selected_ports)
-                selected_ports.append(port)
+            continue
+
+        port = _select_port_interactively(all_ports, selected_ports)
+        selected_ports.append(port)
 
     return selected_ports
 

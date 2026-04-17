@@ -73,7 +73,7 @@ sync_interval_seconds: 300          # Full node re-sync interval (seconds)
 # park_lon: 0.0
 ```
 
-> **Tip:** If `meshtastic_port` is not set or the configured port is not found, the gateway will prompt you to choose a port interactively.
+> **Tip:** In interactive mode, the gateway always asks you to select COM ports manually for each stream. The `meshtastic_port` value is only used as fallback when no port list can be detected.
 
 ---
 
