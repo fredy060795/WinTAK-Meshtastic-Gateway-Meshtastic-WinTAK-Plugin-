@@ -316,27 +316,26 @@ class TAKMeshtasticGateway:
             if self.server_protocol == "UDP":
                 with self.server_lock:
                     sock = self.sock_remote
-                if sock:
-                    try:
-                        sock.sendto(packet_xml, (self.server_ip, self.server_port))
-                        self.logger.info(f"Remote-UDP gesendet an {self.server_ip}:{self.server_port} ({callsign})")
-                    except (socket.timeout, socket.error, OSError) as e:
-                        self.logger.warning(f"Fehler beim Senden an Remote-UDP-Server ({type(e).__name__}): {e}")
+                    if sock:
+                        try:
+                            sock.sendto(packet_xml, (self.server_ip, self.server_port))
+                            self.logger.info(f"Remote-UDP gesendet an {self.server_ip}:{self.server_port} ({callsign})")
+                        except (socket.timeout, socket.error, OSError) as e:
+                            self.logger.warning(f"Fehler beim Senden an Remote-UDP-Server ({type(e).__name__}): {e}")
             else:  # TCP
                 with self.server_lock:
                     s = self.sock_remote
-                if s:
-                    try:
-                        # TCP erwartet evtl. newline-terminierte Pakete
-                        s.sendall(packet_xml + b"\n")
-                        self.logger.info(f"Remote-TCP gesendet an {self.server_ip}:{self.server_port} ({callsign})")
-                    except (socket.timeout, socket.error, OSError) as e:
-                        self.logger.warning(f"Fehler beim Senden an Remote-TCP-Server ({type(e).__name__}), Socket wird zurückgesetzt: {e}")
+                    if s:
                         try:
-                            s.close()
-                        except Exception:
-                            pass
-                        with self.server_lock:
+                            # TCP erwartet evtl. newline-terminierte Pakete
+                            s.sendall(packet_xml + b"\n")
+                            self.logger.info(f"Remote-TCP gesendet an {self.server_ip}:{self.server_port} ({callsign})")
+                        except (socket.timeout, socket.error, OSError) as e:
+                            self.logger.warning(f"Fehler beim Senden an Remote-TCP-Server ({type(e).__name__}), Socket wird zurückgesetzt: {e}")
+                            try:
+                                s.close()
+                            except Exception:
+                                pass
                             if self.sock_remote is s:
                                 self.sock_remote = None
         except Exception:
