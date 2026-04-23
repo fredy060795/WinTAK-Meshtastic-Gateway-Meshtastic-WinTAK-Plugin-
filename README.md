@@ -11,7 +11,7 @@ The gateway reads position data from Meshtastic nodes over a serial connection a
 |---|---|
 | **Dual-Streaming** | Sends CoT data simultaneously to local WinTAK (UDP 4242) and a remote TAK Server (TCP/UDP). |
 | **Automatic Reconnect** | Maintains the remote TAK Server connection with automatic retry on disconnect. |
-| **All-Nodes Visibility** | All nodes are forwarded to TAK by default. Nodes with valid GPS (including phone GPS shared over mesh) appear at their real position; no-fix nodes are placed at configurable fallback coordinates and clearly marked. |
+| **All-Nodes Visibility** | All nodes are forwarded to TAK by default. Nodes with valid GPS (including phone GPS shared over mesh) appear at their real position; nodes without current GPS use their last known position when available, otherwise configurable fallback coordinates. |
 | **Config-Driven** | All settings (IPs, ports, callsign, COM port) are managed in a single `config.yaml`. |
 | **Admin Startup Script** | Included `.bat` file auto-elevates to Administrator privileges on Windows. |
 
@@ -152,7 +152,8 @@ If Meshtastic nodes appear in your local WinTAK but **not** on ATAK/iTAK devices
 
 - All nodes are sent to TAK by default (`send_nodes_without_gps: true`).
 - Nodes with valid GPS (including smartphones sharing their GPS position over the Meshtastic mesh) are placed at their real coordinates on the map.
-- Nodes without any GPS fix are placed at configurable fallback coordinates (`park_lat` / `park_lon`) and marked as *"Listed (No GPS Fix)"* with precision source `USER`. **Set `park_lat` / `park_lon` in `config.yaml` to your own location**, otherwise no-fix nodes are skipped.
+- Nodes without a current GPS fix first use their last known GPS position (if previously received) and are marked as *"Listed (Last Known Position)"*.
+- If no last known position exists, nodes are placed at configurable fallback coordinates (`park_lat` / `park_lon`) and marked as *"Listed (No GPS Fix)"* with precision source `USER`. **Set `park_lat` / `park_lon` in `config.yaml` to your own location**, otherwise no-fix nodes are skipped.
 - Set `send_nodes_without_gps: false` if you only want nodes with confirmed GPS coordinates to appear.
 - If you want your gateway node to announce a fixed location at startup, enable `set_gateway_position_on_start: true`.
 
