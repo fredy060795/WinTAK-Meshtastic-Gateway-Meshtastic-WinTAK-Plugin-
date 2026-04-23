@@ -54,6 +54,8 @@ except Exception:
 
 CFG_FILENAME = "config.yaml"
 MAX_DETECTED_PORTS_DISPLAY = 6
+MIN_PORT_NUMBER = 1
+MAX_PORT_NUMBER = 65535
 
 
 def get_tak_timestamp():
@@ -166,7 +168,7 @@ def detect_serial_port_devices():
 def _parse_ports_text(ports_text):
     if not ports_text:
         return []
-    raw_ports = [p.strip() for p in re.split(r"[,\s;]+", ports_text) if p.strip()]
+    raw_ports = [p for p in (part.strip() for part in re.split(r"[,\s;]+", ports_text)) if p]
     seen = set()
     unique_ports = []
     for p in raw_ports:
@@ -423,9 +425,9 @@ class GatewayApp:
         else:
             self._no_gps_hint_var.set("")
 
-    def _parse_int_field(self, value_text, field_name, min_value=1, max_value=65535):
+    def _parse_int_field(self, raw_value, field_name, min_value=MIN_PORT_NUMBER, max_value=MAX_PORT_NUMBER):
         try:
-            value = int(str(value_text).strip())
+            value = int(str(raw_value).strip())
         except (TypeError, ValueError):
             raise ValueError(f"{field_name} muss eine ganze Zahl sein.")
         if not (min_value <= value <= max_value):
@@ -463,7 +465,11 @@ class GatewayApp:
             self.cfg.pop("park_lat", None)
             self.cfg.pop("park_lon", None)
         else:
-            raise ValueError("Bitte park_lat und park_lon beide setzen oder beide leer lassen.")
+            missing = "park_lon" if park_lat_text else "park_lat"
+            raise ValueError(
+                "Beide Koordinaten (park_lat und park_lon) müssen gesetzt sein oder beide leer bleiben. "
+                f"Aktuell fehlt: {missing}."
+            )
 
     # ─────────────────────────── Gateway-Steuerung ────────────────────────────
 
