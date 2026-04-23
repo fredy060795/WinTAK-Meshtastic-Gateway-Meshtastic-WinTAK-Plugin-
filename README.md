@@ -96,6 +96,13 @@ The script automatically requests Administrator privileges and launches the gate
 python main_app.py
 ```
 
+Beim Start öffnet sich eine kleine UI zur direkten Eingabe von:
+- **Log-Level** (z. B. `DEBUG`, `INFO`)
+- **Meshtastic Port(s)** (z. B. `COM7` oder `COM7,COM3`)
+- optional **alle Ports automatisch verwenden** (`--all-ports`)
+
+Falls keine GUI verfügbar ist (z. B. ohne Desktop/Display), wird automatisch der bisherige Terminal-Dialog verwendet.
+
 ### Option 3 — Build a standalone EXE with PyInstaller
 
 ```bash

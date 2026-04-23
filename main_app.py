@@ -20,6 +20,12 @@ import logging
 import threading
 import traceback
 from xml.etree.ElementTree import Element, SubElement, tostring
+try:
+    import tkinter as tk
+    from tkinter import ttk
+except Exception:
+    tk = None
+    ttk = None
 
 # optionale Abhängigkeiten
 try:
@@ -125,6 +131,116 @@ def load_config():
         except Exception as e:
             print(f"Fehler beim Lesen von {CFG_FILENAME}: {e}")
     return cfg
+
+
+def detect_serial_port_devices():
+    """Return a list of detected serial port device names."""
+    if serial is None:
+        return []
+    try:
+        return [p.device for p in serial.tools.list_ports.comports()]
+    except Exception:
+        return []
+
+
+def _parse_ports_text(ports_text):
+    return [p.strip() for p in ports_text.replace(";", ",").split(",") if p.strip()]
+
+
+def launch_startup_ui(cfg, cli_all_ports=False):
+    """
+    Show a small startup UI for selecting log level and COM ports.
+    Returns dict with startup options or None if UI is unavailable/cancelled.
+    """
+    if tk is None:
+        return None
+    if os.name != "nt" and not os.environ.get("DISPLAY"):
+        return None
+
+    detected_ports = detect_serial_port_devices()
+
+    cfg_port = cfg.get("meshtastic_port")
+    if isinstance(cfg_port, list):
+        default_ports = ", ".join(str(p) for p in cfg_port if str(p).strip())
+    elif cfg_port:
+        default_ports = str(cfg_port).strip()
+    else:
+        default_ports = ", ".join(detected_ports[:1]) if detected_ports else "COM7"
+
+    log_level_default = str(cfg.get("log_level", "INFO")).upper()
+    if log_level_default not in {"DEBUG", "INFO", "WARNING", "ERROR"}:
+        log_level_default = "INFO"
+
+    result = {}
+    try:
+        root = tk.Tk()
+    except Exception:
+        return None
+
+    root.title("WinTAK Meshtastic Gateway Start")
+    root.geometry("540x320")
+    root.resizable(False, False)
+
+    main_frame = ttk.Frame(root, padding=12)
+    main_frame.pack(fill="both", expand=True)
+
+    ttk.Label(main_frame, text="Log-Level").pack(anchor="w")
+    log_var = tk.StringVar(value=log_level_default)
+    log_combo = ttk.Combobox(
+        main_frame,
+        textvariable=log_var,
+        state="readonly",
+        values=["DEBUG", "INFO", "WARNING", "ERROR"],
+        width=15
+    )
+    log_combo.pack(anchor="w", pady=(2, 10))
+
+    ttk.Label(main_frame, text="Meshtastic Port(s) (z.B. COM7 oder COM7,COM3)").pack(anchor="w")
+    ports_var = tk.StringVar(value=default_ports)
+    ports_entry = ttk.Entry(main_frame, textvariable=ports_var, width=50)
+    ports_entry.pack(fill="x", pady=(2, 8))
+
+    detected_text = ", ".join(detected_ports) if detected_ports else "Keine Ports erkannt"
+    ttk.Label(main_frame, text=f"Erkannte Ports: {detected_text}").pack(anchor="w", pady=(0, 10))
+
+    all_ports_var = tk.BooleanVar(value=cli_all_ports)
+    ttk.Checkbutton(
+        main_frame,
+        text="Alle erkannten Ports automatisch verwenden (--all-ports)",
+        variable=all_ports_var
+    ).pack(anchor="w", pady=(0, 16))
+
+    status_var = tk.StringVar(value="")
+    ttk.Label(main_frame, textvariable=status_var, foreground="red").pack(anchor="w", pady=(0, 8))
+
+    button_frame = ttk.Frame(main_frame)
+    button_frame.pack(fill="x")
+
+    def on_start():
+        selected_ports = _parse_ports_text(ports_var.get())
+        if not all_ports_var.get() and not selected_ports:
+            status_var.set("Bitte mindestens einen Port angeben oder '--all-ports' aktivieren.")
+            return
+        result["log_level"] = log_var.get()
+        result["all_ports_mode"] = all_ports_var.get()
+        result["ports"] = selected_ports
+        root.destroy()
+
+    def on_cancel():
+        result["cancelled"] = True
+        root.destroy()
+
+    ttk.Button(button_frame, text="Start", command=on_start).pack(side="left")
+    ttk.Button(button_frame, text="Abbrechen", command=on_cancel).pack(side="left", padx=(8, 0))
+
+    root.protocol("WM_DELETE_WINDOW", on_cancel)
+    root.mainloop()
+
+    if result.get("cancelled"):
+        return {"cancelled": True}
+    if result:
+        return result
+    return None
 
 
 class TAKMeshtasticGateway:
@@ -598,6 +714,16 @@ if __name__ == "__main__":
         args = parser.parse_args()
 
         cfg = load_config()
+        startup_options = launch_startup_ui(cfg, cli_all_ports=args.all_ports)
+        if startup_options and startup_options.get("cancelled"):
+            print("Start durch Benutzer abgebrochen.")
+            sys.exit(0)
+        if startup_options:
+            cfg["log_level"] = startup_options.get("log_level", cfg.get("log_level", "INFO"))
+            if startup_options.get("ports"):
+                selected = startup_options["ports"]
+                cfg["meshtastic_port"] = selected[0] if len(selected) == 1 else selected
+            args.all_ports = bool(startup_options.get("all_ports_mode", args.all_ports))
 
         # Falls fehlende Abhängigkeiten -> klare Fehlermeldung
         missing = []
