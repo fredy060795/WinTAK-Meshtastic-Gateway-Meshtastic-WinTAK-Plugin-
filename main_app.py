@@ -315,6 +315,7 @@ class TAKMeshtasticGateway:
         """Try common meshtastic APIs to set/publish a fixed position."""
         if target is None:
             return False
+        # Meshtastic Python APIs differ between versions; try known method/signature variants.
         for method_name in ("setFixedPosition", "set_fixed_position", "setPosition", "set_position"):
             method = getattr(target, method_name, None)
             if not callable(method):
@@ -331,6 +332,7 @@ class TAKMeshtasticGateway:
                     self.logger.debug(f"Gateway-Positionssetter erfolgreich über {method_name}")
                     return True
                 except TypeError:
+                    self.logger.debug(f"Gateway-Positionssetter Signatur passt nicht für {method_name}, nächster Versuch.")
                     continue
                 except Exception:
                     self.logger.warning("Fehler beim Setzen der Gateway-Position:\n" + traceback.format_exc())
