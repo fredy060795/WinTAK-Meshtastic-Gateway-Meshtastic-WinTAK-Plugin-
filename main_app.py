@@ -53,6 +53,13 @@ def get_tak_timestamp():
 
 
 def as_bool(value, default=False):
+    """Convert common config value types to bool with a fallback default.
+
+    True values: bool True, non-zero numbers, and strings like
+    '1', 'true', 'yes', 'y', 'on' (case-insensitive).
+    False values: bool False, zero numbers, and strings like
+    '0', 'false', 'no', 'n', 'off' (case-insensitive).
+    """
     if isinstance(value, bool):
         return value
     if isinstance(value, str):
@@ -67,6 +74,12 @@ def as_bool(value, default=False):
 
 
 def normalize_coordinates(lat, lon):
+    """Validate and normalize latitude/longitude values.
+
+    Returns:
+        tuple[float, float]: Valid (lat, lon) coordinates.
+        None: If parsing fails, values are NaN/out of range, or exactly (0, 0).
+    """
     try:
         lat_f = float(lat)
         lon_f = float(lon)
