@@ -154,8 +154,6 @@ def launch_startup_ui(cfg, cli_all_ports=False):
     """
     if tk is None:
         return None
-    if os.name != "nt" and not os.environ.get("DISPLAY"):
-        return None
 
     detected_ports = detect_serial_port_devices()
 
@@ -165,7 +163,7 @@ def launch_startup_ui(cfg, cli_all_ports=False):
     elif cfg_port:
         default_ports = str(cfg_port).strip()
     else:
-        default_ports = ", ".join(detected_ports[:1]) if detected_ports else "COM7"
+        default_ports = ", ".join(detected_ports[:1]) if detected_ports else ""
 
     log_level_default = str(cfg.get("log_level", "INFO")).upper()
     if log_level_default not in {"DEBUG", "INFO", "WARNING", "ERROR"}:
@@ -195,7 +193,7 @@ def launch_startup_ui(cfg, cli_all_ports=False):
     )
     log_combo.pack(anchor="w", pady=(2, 10))
 
-    ttk.Label(main_frame, text="Meshtastic Port(s) (z. B. COM7 oder COM7,COM3)").pack(anchor="w")
+    ttk.Label(main_frame, text="Meshtastic Port(s) (z. B. COM7 oder /dev/ttyUSB0)").pack(anchor="w")
     ports_var = tk.StringVar(value=default_ports)
     ports_entry = ttk.Entry(main_frame, textvariable=ports_var, width=50)
     ports_entry.pack(fill="x", pady=(2, 8))
