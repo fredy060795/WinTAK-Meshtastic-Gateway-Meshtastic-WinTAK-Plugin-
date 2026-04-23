@@ -22,10 +22,9 @@ import traceback
 from xml.etree.ElementTree import Element, SubElement, tostring
 try:
     import tkinter as tk
-    from tkinter import TclError, ttk
+    from tkinter import ttk
 except ImportError:
     tk = None
-    TclError = None
     ttk = None
 
 # optionale Abhängigkeiten
@@ -175,7 +174,7 @@ def launch_startup_ui(cfg, cli_all_ports=False):
     result = {}
     try:
         root = tk.Tk()
-    except (TclError, RuntimeError):
+    except (tk.TclError, RuntimeError):
         return None
 
     root.title("WinTAK Meshtastic Gateway Start")
