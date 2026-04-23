@@ -337,8 +337,7 @@ class TAKMeshtasticGateway:
                     continue
                 except Exception:
                     self.logger.warning(
-                        f"Fehler beim Setzen der Gateway-Position über {method_name} "
-                        f"mit args={args} kwargs={kwargs}:\n" + traceback.format_exc()
+                        f"Fehler beim Setzen der Gateway-Position über {method_name}:\n{traceback.format_exc()}"
                     )
                     method_failed = True
                     break
@@ -366,6 +365,7 @@ class TAKMeshtasticGateway:
             try:
                 local_node = getattr(iface, "localNode", None)
                 # localNode first, then interface as fallback for older/newer API variants.
+                # Altitude defaults to 0 because this gateway only stores fixed fallback coordinates.
                 local_node_updated = self._invoke_position_setter(local_node, lat, lon, 0)
                 iface_updated = False
                 if not local_node_updated:
