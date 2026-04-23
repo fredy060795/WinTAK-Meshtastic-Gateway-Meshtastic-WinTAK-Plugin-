@@ -23,3 +23,8 @@ send_nodes_without_gps: true
 # Beispiel: Koordinaten eurer Basis/Funkstelle eintragen:
 # park_lat: 48.1351
 # park_lon: 11.5820
+
+# Log-Level: INFO (Standard) zeigt nur wichtige Meldungen.
+# DEBUG aktiviert Rohdaten-Ausgabe aller empfangenen Meshtastic-Pakete.
+# Mögliche Werte: DEBUG, INFO, WARNING, ERROR
+# log_level: DEBUG

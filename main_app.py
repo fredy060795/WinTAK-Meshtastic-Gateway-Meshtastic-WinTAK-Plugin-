@@ -208,8 +208,10 @@ class TAKMeshtasticGateway:
 
     def setup_logging(self):
         # Logger mit colorlog wenn verfügbar, sonst Standardlogging
+        log_level_str = str(self.cfg.get("log_level", "INFO")).upper()
+        log_level = getattr(logging, log_level_str, logging.INFO)
         logger = logging.getLogger("TAK_Meshtastic_Gateway")
-        logger.setLevel(logging.INFO)
+        logger.setLevel(log_level)
         if not logger.handlers:
             if colorlog is not None:
                 handler = colorlog.StreamHandler()
@@ -268,6 +270,7 @@ class TAKMeshtasticGateway:
         Fallback: sucht in allen verbundenen Interfaces nach dem Node.
         """
         try:
+            self.logger.debug(f"RAW Paket empfangen: {packet}")
             from_id = packet.get('fromId') or packet.get('from')
             if from_id:
                 node = None
