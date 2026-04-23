@@ -14,6 +14,7 @@ import sys
 import argparse
 import datetime
 import math
+import re
 import socket
 import time
 import logging
@@ -152,7 +153,18 @@ def detect_serial_port_devices():
 
 
 def _parse_ports_text(ports_text):
-    return [p.strip() for p in ports_text.replace(";", ",").split(",") if p.strip()]
+    if not ports_text:
+        return []
+    raw_ports = [p.strip() for p in re.split(r"[,\s;]+", ports_text) if p.strip()]
+    seen = set()
+    unique_ports = []
+    for p in raw_ports:
+        upper_p = p.upper()
+        if upper_p in seen:
+            continue
+        seen.add(upper_p)
+        unique_ports.append(p)
+    return unique_ports
 
 
 class _GUILogHandler(logging.Handler):
@@ -218,10 +230,20 @@ class GatewayApp:
         ports_entry.grid(row=0, column=1, sticky="ew", padx=(4, 10))
 
         detected = detect_serial_port_devices()
+        self._detected_ports = detected
         detected_str = ", ".join(detected) if detected else "–"
         ttk.Label(cfg_frame, text=f"Erkannt: {detected_str}", foreground="#777777").grid(
             row=0, column=2, sticky="w"
         )
+        self._detected_ports_list = tk.Listbox(
+            cfg_frame, height=min(max(len(detected), 1), 6), selectmode="extended", exportselection=False
+        )
+        self._detected_ports_list.grid(row=1, column=1, sticky="ew", padx=(4, 10), pady=(4, 0))
+        for port in detected:
+            self._detected_ports_list.insert("end", port)
+        ttk.Button(
+            cfg_frame, text="Auswahl übernehmen", command=self._apply_selected_ports_from_list
+        ).grid(row=1, column=2, sticky="w", pady=(4, 0))
 
         ttk.Label(cfg_frame, text="Log-Level:").grid(row=0, column=3, sticky="w", padx=(16, 4))
         log_default = str(self.cfg.get("log_level", "INFO")).upper()
@@ -290,6 +312,16 @@ class GatewayApp:
             text="Befehle: sync | log debug|info|warning|error | clear | help",
             foreground="#777777"
         ).pack(pady=(0, 4))
+
+    def _apply_selected_ports_from_list(self):
+        if not self._detected_ports:
+            return
+        indices = self._detected_ports_list.curselection()
+        if not indices:
+            return
+        selected = [self._detected_ports[i] for i in indices if 0 <= i < len(self._detected_ports)]
+        if selected:
+            self._ports_var.set(", ".join(selected))
 
     # ─────────────────────────── Gateway-Steuerung ────────────────────────────
 
