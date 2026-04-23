@@ -13,6 +13,13 @@ tak_server_port: 8088
 
 tak_server_protocol: TCP                               
 
+# true  = alle Nodes anzeigen – Nodes ohne GPS-Fix werden bei park_lat/park_lon platziert (empfohlen)
 # false = nur Nodes mit gültigen GPS-Koordinaten senden
-# true  = Nodes ohne GPS-Fix ebenfalls senden (Fallback park_lat/park_lon)
-send_nodes_without_gps: false
+send_nodes_without_gps: true
+
+# Fallback-Koordinaten für Nodes ohne GPS-Fix.
+# WICHTIG: Diese müssen gesetzt sein wenn send_nodes_without_gps=true,
+# sonst erscheinen no-fix Nodes bei (0,0) / Null Island im Atlantik!
+# Beispiel: Koordinaten eurer Basis/Funkstelle eintragen:
+# park_lat: 48.1351
+# park_lon: 11.5820

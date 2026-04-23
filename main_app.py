@@ -171,10 +171,18 @@ class TAKMeshtasticGateway:
         # Park coordinates wenn kein GPS-Fix (optional)
         self.park_lat = float(self.cfg.get("park_lat", 0.0))
         self.park_lon = float(self.cfg.get("park_lon", 0.0))
-        self.send_nodes_without_gps = as_bool(self.cfg.get("send_nodes_without_gps", False), default=False)
-        
+        self.send_nodes_without_gps = as_bool(self.cfg.get("send_nodes_without_gps", True), default=True)
+
         # Sync interval
         self.sync_interval_seconds = int(self.cfg.get("sync_interval_seconds", 300))
+
+        # Warn when no-fix nodes would be placed at (0,0) / Null Island
+        if self.send_nodes_without_gps and self.park_lat == 0.0 and self.park_lon == 0.0:
+            self.logger.warning(
+                "ACHTUNG: send_nodes_without_gps=true, aber park_lat/park_lon sind nicht gesetzt. "
+                "Nodes ohne GPS-Fix werden bei (0,0) / Null Island dargestellt. "
+                "Bitte park_lat und park_lon in config.yaml auf einen sinnvollen Standort setzen."
+            )
 
         # Start
         try:
