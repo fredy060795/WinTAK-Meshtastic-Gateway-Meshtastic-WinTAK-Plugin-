@@ -16,6 +16,7 @@ import datetime
 import math
 import re
 import socket
+import sqlite3
 import time
 import logging
 import threading
@@ -178,6 +179,99 @@ def _parse_ports_text(ports_text):
         seen.add(upper_p)
         unique_ports.append(p)
     return unique_ports
+
+
+class NodeDatabase:
+    """SQLite-Datenbank für Meshtastic-Knoten mit GPS-Koordinaten.
+
+    Speichert jeden bekannten Knoten mit seinem Rufzeichen, seinen GPS-Koordinaten,
+    dem Zeitstempel des letzten Empfangs und der Positionsquelle.
+    GPS-Koordinaten werden automatisch aktualisiert, sobald sich eine neue Position empfangen wird.
+    Manuelle Positionen können über set_manual_position() gesetzt werden.
+    """
+
+    _CREATE_TABLE = """
+        CREATE TABLE IF NOT EXISTS nodes (
+            uid              TEXT PRIMARY KEY,
+            callsign         TEXT,
+            lat              REAL NOT NULL,
+            lon              REAL NOT NULL,
+            alt              REAL    DEFAULT 0,
+            last_seen        TEXT,
+            position_source  TEXT    DEFAULT 'GPS'
+        )
+    """
+
+    def __init__(self, db_path):
+        self.db_path = db_path
+        self._lock = threading.Lock()
+        self._init_db()
+
+    def _init_db(self):
+        with self._lock, sqlite3.connect(self.db_path) as conn:
+            conn.execute(self._CREATE_TABLE)
+            conn.commit()
+
+    def upsert_node(self, uid, callsign, lat, lon, alt, source="GPS"):
+        """Füge einen Knoten ein oder aktualisiere seine Position."""
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        with self._lock, sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO nodes (uid, callsign, lat, lon, alt, last_seen, position_source)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(uid) DO UPDATE SET
+                    callsign=excluded.callsign,
+                    lat=excluded.lat,
+                    lon=excluded.lon,
+                    alt=excluded.alt,
+                    last_seen=excluded.last_seen,
+                    position_source=excluded.position_source
+                """,
+                (uid, callsign, lat, lon, alt if alt is not None else 0, now, source),
+            )
+            conn.commit()
+
+    def get_node(self, uid):
+        """Gibt (lat, lon, alt, callsign, last_seen, position_source) zurück, oder None."""
+        with self._lock, sqlite3.connect(self.db_path) as conn:
+            return conn.execute(
+                "SELECT lat, lon, alt, callsign, last_seen, position_source "
+                "FROM nodes WHERE uid=?",
+                (uid,),
+            ).fetchone()
+
+    def get_all_nodes(self):
+        """Gibt alle Knoten sortiert nach Rufzeichen zurück."""
+        with self._lock, sqlite3.connect(self.db_path) as conn:
+            return conn.execute(
+                "SELECT uid, callsign, lat, lon, alt, last_seen, position_source "
+                "FROM nodes ORDER BY callsign",
+            ).fetchall()
+
+    def set_manual_position(self, uid, lat, lon, alt=0.0, callsign=None):
+        """Setzt die Position eines Knotens manuell (behält vorhandenes Rufzeichen bei)."""
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        with self._lock, sqlite3.connect(self.db_path) as conn:
+            if callsign is None:
+                row = conn.execute(
+                    "SELECT callsign FROM nodes WHERE uid=?", (uid,)
+                ).fetchone()
+                callsign = row[0] if row else uid
+            conn.execute(
+                """
+                INSERT INTO nodes (uid, callsign, lat, lon, alt, last_seen, position_source)
+                VALUES (?, ?, ?, ?, ?, ?, 'MANUAL')
+                ON CONFLICT(uid) DO UPDATE SET
+                    lat=excluded.lat,
+                    lon=excluded.lon,
+                    alt=excluded.alt,
+                    last_seen=excluded.last_seen,
+                    position_source='MANUAL'
+                """,
+                (uid, callsign, lat, lon, alt if alt is not None else 0, now),
+            )
+            conn.commit()
 
 
 class _GUILogHandler(logging.Handler):
@@ -833,9 +927,10 @@ class GatewayApp:
         self._handle_command(cmd)
 
     def _handle_command(self, cmd):
-        parts = cmd.lower().split()
-        if not parts:
+        parts_raw = cmd.split()
+        if not parts_raw:
             return
+        parts = [p.lower() for p in parts_raw]
         action = parts[0]
         if action == "sync":
             self._on_manual_sync()
@@ -850,13 +945,56 @@ class GatewayApp:
             self._log_text.configure(state="normal")
             self._log_text.delete("1.0", "end")
             self._log_text.configure(state="disabled")
+        elif action == "nodes":
+            gw = self._gateway
+            if not gw:
+                self._append_log("Gateway ist nicht gestartet.", "WARNING")
+                return
+            rows = gw.node_db.get_all_nodes()
+            if not rows:
+                self._append_log("Keine Knoten in der Datenbank.", "INFO")
+            else:
+                self._append_log(
+                    f"{'UID':<22} {'Rufzeichen':<20} {'Lat':>10} {'Lon':>11} {'Alt':>6}  {'Quelle':<10} Zuletzt gesehen",
+                    "INFO",
+                )
+                for uid, callsign, lat, lon, alt, last_seen, source in rows:
+                    self._append_log(
+                        f"{uid:<22} {callsign:<20} {lat:>10.5f} {lon:>11.5f} {alt:>6.0f}  {source:<10} {last_seen or '-'}",
+                        "INFO",
+                    )
+        elif action == "setpos" and len(parts_raw) >= 4:
+            uid = parts_raw[1]
+            try:
+                lat = float(parts_raw[2])
+                lon = float(parts_raw[3])
+                alt = float(parts_raw[4]) if len(parts_raw) >= 5 else 0.0
+            except ValueError:
+                self._append_log("setpos: ungültige Koordinaten. Syntax: setpos <uid> <lat> <lon> [alt]", "WARNING")
+                return
+            normalized = normalize_coordinates(lat, lon)
+            if normalized is None:
+                self._append_log(f"setpos: ungültige Koordinaten ({lat}, {lon}).", "WARNING")
+                return
+            lat, lon = normalized
+            gw = self._gateway
+            if not gw:
+                self._append_log("Gateway ist nicht gestartet.", "WARNING")
+                return
+            gw.node_db.set_manual_position(uid, lat, lon, alt)
+            gw.last_known_positions[uid] = (lat, lon, alt)
+            self._append_log(f"Position für '{uid}' auf ({lat:.6f}, {lon:.6f}, {alt:.0f}m) gesetzt.", "INFO")
+        elif action == "setpos":
+            self._append_log("Syntax: setpos <uid> <lat> <lon> [alt]", "WARNING")
         elif action == "help":
             for line in [
                 "Verfügbare Befehle:",
-                "  sync              – Manuelle Vollsynchronisation aller Nodes",
-                "  log <level>       – Log-Level setzen (debug/info/warning/error)",
-                "  clear             – Log-Ausgabe leeren",
-                "  help              – Diese Hilfe anzeigen",
+                "  sync                         – Manuelle Vollsynchronisation aller Nodes",
+                "  nodes                        – Alle Knoten aus der Datenbank anzeigen",
+                "  setpos <uid> <lat> <lon> [alt] – Position eines Knotens manuell setzen",
+                "  log <level>                  – Log-Level setzen (debug/info/warning/error)",
+                "  clear                        – Log-Ausgabe leeren",
+                "  help                         – Diese Hilfe anzeigen",
             ]:
                 self._append_log(line, "INFO")
         else:
@@ -928,6 +1066,18 @@ class TAKMeshtasticGateway:
         self.server_lock = threading.Lock()
         self.shutdown_flag = threading.Event()  # For graceful shutdown
         self.last_known_positions = {}
+
+        # Knoten-Datenbank (SQLite) – persistente GPS-Koordinaten über Neustarts hinweg
+        db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nodes.db")
+        self.node_db = NodeDatabase(db_path)
+        self.logger.info(f"Knoten-Datenbank geöffnet: {db_path}")
+        # Letzte bekannte Positionen aus der Datenbank vorausfüllen
+        for _uid, _cs, _lat, _lon, _alt, _ts, _src in self.node_db.get_all_nodes():
+            self.last_known_positions[_uid] = (_lat, _lon, _alt if _alt is not None else 0)
+        if self.last_known_positions:
+            self.logger.info(
+                f"{len(self.last_known_positions)} Knoten-Position(en) aus Datenbank geladen."
+            )
 
         # Park coordinates wenn kein GPS-Fix (optional)
         self.park_lat = to_float_or_none(self.cfg.get("park_lat"))
@@ -1186,8 +1336,16 @@ class TAKMeshtasticGateway:
             if is_real:
                 position_source = "GPS"
                 self.last_known_positions[uid] = (final_lat, final_lon, alt)
+                # GPS-Position in Datenbank persistieren (aktualisiert bei Änderung)
+                self.node_db.upsert_node(uid, callsign, final_lat, final_lon, alt, "GPS")
             else:
                 last_known = self.last_known_positions.get(uid)
+                if not last_known:
+                    # Datenbank als Fallback prüfen (z.B. nach Neustart oder manuelle Eingabe)
+                    db_row = self.node_db.get_node(uid)
+                    if db_row:
+                        last_known = (db_row[0], db_row[1], db_row[2] if db_row[2] is not None else 0)
+                        self.last_known_positions[uid] = last_known
                 if last_known:
                     final_lat, final_lon, cached_alt = last_known
                     alt = alt or cached_alt
