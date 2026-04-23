@@ -313,11 +313,13 @@ class TAKMeshtasticGateway:
             if lat_i is not None and lon_i is not None:
                 normalized = normalize_coordinates(lat_i * 1e-7, lon_i * 1e-7)
                 if normalized:
-                    final_lat, final_lon, is_real = normalized[0], normalized[1], True
+                    final_lat, final_lon = normalized
+                    is_real = True
             if (not is_real) and lat_f is not None and lon_f is not None:
                 normalized = normalize_coordinates(lat_f, lon_f)
                 if normalized:
-                    final_lat, final_lon, is_real = normalized[0], normalized[1], True
+                    final_lat, final_lon = normalized
+                    is_real = True
 
             if not is_real:
                 if not self.send_nodes_without_gps:
