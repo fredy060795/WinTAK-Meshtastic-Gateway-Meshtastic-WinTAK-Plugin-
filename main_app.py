@@ -13,6 +13,7 @@ import os
 import sys
 import argparse
 import datetime
+import math
 import socket
 import time
 import logging
@@ -49,6 +50,61 @@ CFG_FILENAME = "config.yaml"
 
 def get_tak_timestamp():
     return datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+
+
+def as_bool(value, default=False):
+    """Convert common config value types to bool with a fallback default.
+
+    Args:
+        value: Input value from config (bool/str/number/other).
+        default (bool): Fallback when value cannot be mapped explicitly.
+
+    Returns:
+        bool: Parsed boolean value.
+
+    Notes:
+        True values: bool True, non-zero numbers (including negative), and strings like
+        '1', 'true', 'yes', 'y', 'on' (case-insensitive).
+        False values: bool False, zero, and strings like
+        '0', 'false', 'no', 'n', 'off' (case-insensitive).
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off"}:
+            return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return default
+
+
+def normalize_coordinates(lat, lon):
+    """Validate and normalize latitude/longitude values.
+
+    Args:
+        lat: Latitude value convertible to float.
+        lon: Longitude value convertible to float.
+
+    Returns:
+        tuple[float, float] | None: Valid (lat, lon) coordinates, or None if
+        parsing fails, values are NaN/out of range, or exactly (0, 0).
+    """
+    try:
+        latitude = float(lat)
+        longitude = float(lon)
+    except (TypeError, ValueError):
+        return None
+
+    if math.isnan(latitude) or math.isnan(longitude):
+        return None
+    if not (-90.0 <= latitude <= 90.0 and -180.0 <= longitude <= 180.0):
+        return None
+    if latitude == 0.0 and longitude == 0.0:
+        return None
+    return latitude, longitude
 
 
 def load_config():
@@ -115,9 +171,18 @@ class TAKMeshtasticGateway:
         # Park coordinates wenn kein GPS-Fix (optional)
         self.park_lat = float(self.cfg.get("park_lat", 0.0))
         self.park_lon = float(self.cfg.get("park_lon", 0.0))
-        
+        self.send_nodes_without_gps = as_bool(self.cfg.get("send_nodes_without_gps", True))
+
         # Sync interval
         self.sync_interval_seconds = int(self.cfg.get("sync_interval_seconds", 300))
+
+        # Warn when no-fix nodes would be placed at an invalid/unconfigured position
+        if self.send_nodes_without_gps and normalize_coordinates(self.park_lat, self.park_lon) is None:
+            self.logger.warning(
+                "ACHTUNG: send_nodes_without_gps=true, aber park_lat/park_lon sind nicht gesetzt. "
+                "Nodes ohne GPS-Fix werden bei (0,0) / Null Island dargestellt. "
+                "Bitte park_lat und park_lon in config.yaml auf einen sinnvollen Standort setzen."
+            )
 
         # Start
         try:
@@ -254,17 +319,26 @@ class TAKMeshtasticGateway:
             # per README: "Nodes without a valid GPS fix are placed at 0.0, 0.0 by default"
             # This prevents displaying nodes at "Null Island" in the Atlantic Ocean
             # OR logic is intentional: accepts lat=0 OR lon=0 (equator/prime meridian) but rejects (0,0)
-            if lat_i is not None and lon_i is not None and (lat_i != 0 or lon_i != 0):
-                final_lat, final_lon, is_real = lat_i * 1e-7, lon_i * 1e-7, True
-            elif lat_f is not None and lon_f is not None and (lat_f != 0 or lon_f != 0):
-                final_lat, final_lon, is_real = lat_f, lon_f, True
+            if lat_i is not None and lon_i is not None:
+                normalized = normalize_coordinates(lat_i * 1e-7, lon_i * 1e-7)
+                if normalized:
+                    final_lat, final_lon = normalized
+                    is_real = True
+            if (not is_real) and lat_f is not None and lon_f is not None:
+                normalized = normalize_coordinates(lat_f, lon_f)
+                if normalized:
+                    final_lat, final_lon = normalized
+                    is_real = True
 
             if not is_real:
+                if not self.send_nodes_without_gps:
+                    self.logger.debug(f"Überspringe Node ohne gültigen GPS-Fix: {callsign}")
+                    return
                 final_lat = self.park_lat - (index * 0.001)
                 final_lon = self.park_lon
 
             if is_real and force_update:
-                self.logger.info(f"LIVE: {callsign} @ {final_lat:.5f}, {final_lon:.5f}")
+                self.logger.info(f"LIVE: Position-Update empfangen von {callsign}")
 
             alt = pos.get('altitude', 0) or 0
             self.send_broadcast(uid, callsign, final_lat, final_lon, alt, is_real)
