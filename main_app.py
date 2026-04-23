@@ -328,11 +328,12 @@ class TAKMeshtasticGateway:
             for args, kwargs in call_variants:
                 try:
                     method(*args, **kwargs)
+                    self.logger.debug(f"Gateway-Positionssetter erfolgreich über {method_name}")
                     return True
                 except TypeError:
                     continue
                 except Exception:
-                    self.logger.debug("Fehler beim Setzen der Gateway-Position:\n" + traceback.format_exc())
+                    self.logger.warning("Fehler beim Setzen der Gateway-Position:\n" + traceback.format_exc())
                     return False
         return False
 
@@ -355,15 +356,17 @@ class TAKMeshtasticGateway:
         for iface in self.interfaces:
             try:
                 local_node = getattr(iface, "localNode", None)
-                if self._invoke_position_setter(local_node, lat, lon, 0) or self._invoke_position_setter(iface, lat, lon, 0):
+                # localNode first, then interface as fallback for older/newer API variants.
+                local_node_updated = self._invoke_position_setter(local_node, lat, lon, 0)
+                iface_updated = False if local_node_updated else self._invoke_position_setter(iface, lat, lon, 0)
+                if local_node_updated or iface_updated:
                     updated_ports.append(getattr(iface, "devPath", "unknown"))
             except Exception:
                 self.logger.debug("Fehler beim Anwenden der Gateway-Fixed-Position:\n" + traceback.format_exc())
 
         if updated_ports:
             self.logger.info(
-                f"Gateway-Fixed-Position gesetzt/gesendet: lat={lat:.6f}, lon={lon:.6f} "
-                f"auf Port(s): {', '.join(updated_ports)}"
+                f"Gateway-Fixed-Position gesetzt/gesendet auf Port(s): {', '.join(updated_ports)}"
             )
         else:
             self.logger.warning(
