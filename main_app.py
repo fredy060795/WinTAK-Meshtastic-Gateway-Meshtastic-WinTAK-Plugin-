@@ -62,10 +62,11 @@ def as_bool(value, default=False):
     Returns:
         bool: Parsed boolean value.
 
-    True values: bool True, non-zero numbers, and strings like
-    '1', 'true', 'yes', 'y', 'on' (case-insensitive).
-    False values: bool False, zero numbers, and strings like
-    '0', 'false', 'no', 'n', 'off' (case-insensitive).
+    Notes:
+        True values: bool True, non-zero numbers, and strings like
+        '1', 'true', 'yes', 'y', 'on' (case-insensitive).
+        False values: bool False, zero numbers, and strings like
+        '0', 'false', 'no', 'n', 'off' (case-insensitive).
     """
     if isinstance(value, bool):
         return value
@@ -88,8 +89,8 @@ def normalize_coordinates(lat, lon):
         lon: Longitude value convertible to float.
 
     Returns:
-        tuple[float, float]: Valid (lat, lon) coordinates.
-        None: If parsing fails, values are NaN/out of range, or exactly (0, 0).
+        tuple[float, float] | None: Valid (lat, lon) coordinates, or None if
+        parsing fails, values are NaN/out of range, or exactly (0, 0).
     """
     try:
         lat_f = float(lat)
