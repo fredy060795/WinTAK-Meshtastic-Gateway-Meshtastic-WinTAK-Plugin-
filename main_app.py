@@ -14,6 +14,7 @@ import sys
 import argparse
 import datetime
 import math
+import re
 import socket
 import time
 import logging
@@ -52,6 +53,9 @@ except Exception:
     pub = None
 
 CFG_FILENAME = "config.yaml"
+MAX_DETECTED_PORTS_DISPLAY = 6
+MIN_PORT_NUMBER = 1
+MAX_PORT_NUMBER = 65535
 
 
 def get_tak_timestamp():
@@ -141,6 +145,16 @@ def load_config():
     return cfg
 
 
+def save_config(cfg):
+    """Saves config.yaml in the script directory (if PyYAML is available)."""
+    if yaml is None:
+        return
+    base = os.path.dirname(os.path.abspath(__file__))
+    cfg_path = os.path.join(base, CFG_FILENAME)
+    with open(cfg_path, "w", encoding="utf-8") as fh:
+        yaml.safe_dump(cfg, fh, sort_keys=False, allow_unicode=True)
+
+
 def detect_serial_port_devices():
     """Return a list of detected serial port device names."""
     if serial is None:
@@ -152,7 +166,18 @@ def detect_serial_port_devices():
 
 
 def _parse_ports_text(ports_text):
-    return [p.strip() for p in ports_text.replace(";", ",").split(",") if p.strip()]
+    if not ports_text:
+        return []
+    raw_ports = [p for p in (part.strip() for part in re.split(r"[,\s;]+", ports_text)) if p]
+    seen = set()
+    unique_ports = []
+    for p in raw_ports:
+        upper_p = p.upper()
+        if upper_p in seen:
+            continue
+        seen.add(upper_p)
+        unique_ports.append(p)
+    return unique_ports
 
 
 class _GUILogHandler(logging.Handler):
@@ -218,10 +243,23 @@ class GatewayApp:
         ports_entry.grid(row=0, column=1, sticky="ew", padx=(4, 10))
 
         detected = detect_serial_port_devices()
+        self._detected_ports = detected
         detected_str = ", ".join(detected) if detected else "–"
         ttk.Label(cfg_frame, text=f"Erkannt: {detected_str}", foreground="#777777").grid(
             row=0, column=2, sticky="w"
         )
+        self._detected_ports_list = tk.Listbox(
+            cfg_frame,
+            height=min(max(len(detected), 1), MAX_DETECTED_PORTS_DISPLAY),
+            selectmode="extended",
+            exportselection=False
+        )
+        self._detected_ports_list.grid(row=1, column=1, sticky="ew", padx=(4, 10), pady=(4, 0))
+        for port in detected:
+            self._detected_ports_list.insert("end", port)
+        ttk.Button(
+            cfg_frame, text="Auswahl übernehmen", command=self._apply_selected_ports_from_list
+        ).grid(row=1, column=2, sticky="w", pady=(4, 0))
 
         ttk.Label(cfg_frame, text="Log-Level:").grid(row=0, column=3, sticky="w", padx=(16, 4))
         log_default = str(self.cfg.get("log_level", "INFO")).upper()
@@ -234,6 +272,82 @@ class GatewayApp:
         )
         log_combo.grid(row=0, column=4, padx=(0, 8))
         log_combo.bind("<<ComboboxSelected>>", self._on_log_level_change)
+
+        ttk.Label(cfg_frame, text="Remote TAK Host:").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        self._server_host_var = tk.StringVar(value=str(self.cfg.get("tak_server_host", "82.165.11.84")))
+        ttk.Entry(cfg_frame, textvariable=self._server_host_var, width=28).grid(
+            row=2, column=1, sticky="ew", padx=(4, 10), pady=(8, 0)
+        )
+        ttk.Label(cfg_frame, text="Remote Port:").grid(row=2, column=3, sticky="w", padx=(16, 4), pady=(8, 0))
+        self._server_port_var = tk.StringVar(value=str(self.cfg.get("tak_server_port", 8087)))
+        ttk.Entry(cfg_frame, textvariable=self._server_port_var, width=10).grid(
+            row=2, column=4, sticky="w", pady=(8, 0)
+        )
+
+        ttk.Label(cfg_frame, text="Remote Protokoll:").grid(row=3, column=0, sticky="w", pady=(4, 0))
+        server_protocol = str(self.cfg.get("tak_server_protocol", "TCP")).upper()
+        if server_protocol not in ("TCP", "UDP"):
+            server_protocol = "TCP"
+        self._server_protocol_var = tk.StringVar(value=server_protocol)
+        ttk.Combobox(
+            cfg_frame, textvariable=self._server_protocol_var,
+            state="readonly", values=["TCP", "UDP"], width=10
+        ).grid(row=3, column=1, sticky="w", padx=(4, 10), pady=(4, 0))
+        ttk.Label(cfg_frame, text="Local TAK IP:").grid(row=3, column=3, sticky="w", padx=(16, 4), pady=(4, 0))
+        self._local_tak_ip_var = tk.StringVar(value=str(self.cfg.get("local_tak_ip", "127.0.0.1")))
+        ttk.Entry(cfg_frame, textvariable=self._local_tak_ip_var, width=14).grid(
+            row=3, column=4, sticky="w", pady=(4, 0)
+        )
+
+        ttk.Label(cfg_frame, text="Local TAK Port:").grid(row=4, column=0, sticky="w", pady=(4, 0))
+        self._local_tak_port_var = tk.StringVar(value=str(self.cfg.get("local_tak_port", 4242)))
+        ttk.Entry(cfg_frame, textvariable=self._local_tak_port_var, width=10).grid(
+            row=4, column=1, sticky="w", padx=(4, 10), pady=(4, 0)
+        )
+        ttk.Label(cfg_frame, text="Sync-Intervall (s):").grid(row=4, column=3, sticky="w", padx=(16, 4), pady=(4, 0))
+        self._sync_interval_var = tk.StringVar(value=str(self.cfg.get("sync_interval_seconds", 300)))
+        ttk.Entry(cfg_frame, textvariable=self._sync_interval_var, width=10).grid(
+            row=4, column=4, sticky="w", pady=(4, 0)
+        )
+
+        self._send_nodes_without_gps_var = tk.BooleanVar(
+            value=as_bool(self.cfg.get("send_nodes_without_gps", True))
+        )
+        self._set_gateway_position_var = tk.BooleanVar(
+            value=as_bool(self.cfg.get("set_gateway_position_on_start", False))
+        )
+        ttk.Checkbutton(
+            cfg_frame,
+            text="Nodes ohne GPS senden",
+            variable=self._send_nodes_without_gps_var,
+            command=self._update_no_gps_hint
+        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        ttk.Checkbutton(
+            cfg_frame,
+            text="Gateway-Position beim Start setzen",
+            variable=self._set_gateway_position_var
+        ).grid(row=5, column=3, columnspan=2, sticky="w", padx=(16, 0), pady=(4, 0))
+
+        ttk.Label(cfg_frame, text="park_lat:").grid(row=6, column=0, sticky="w", pady=(4, 0))
+        park_lat_val = "" if self.cfg.get("park_lat") is None else str(self.cfg.get("park_lat"))
+        self._park_lat_var = tk.StringVar(value=park_lat_val)
+        ttk.Entry(cfg_frame, textvariable=self._park_lat_var, width=14).grid(
+            row=6, column=1, sticky="w", padx=(4, 10), pady=(4, 0)
+        )
+        ttk.Label(cfg_frame, text="park_lon:").grid(row=6, column=3, sticky="w", padx=(16, 4), pady=(4, 0))
+        park_lon_val = "" if self.cfg.get("park_lon") is None else str(self.cfg.get("park_lon"))
+        self._park_lon_var = tk.StringVar(value=park_lon_val)
+        ttk.Entry(cfg_frame, textvariable=self._park_lon_var, width=14).grid(
+            row=6, column=4, sticky="w", pady=(4, 0)
+        )
+        self._park_lat_var.trace_add("write", lambda *_: self._update_no_gps_hint())
+        self._park_lon_var.trace_add("write", lambda *_: self._update_no_gps_hint())
+
+        self._no_gps_hint_var = tk.StringVar()
+        ttk.Label(cfg_frame, textvariable=self._no_gps_hint_var, foreground="#aa5500").grid(
+            row=7, column=0, columnspan=5, sticky="w", pady=(4, 0)
+        )
+        self._update_no_gps_hint()
 
         cfg_frame.columnconfigure(1, weight=1)
 
@@ -291,6 +405,72 @@ class GatewayApp:
             foreground="#777777"
         ).pack(pady=(0, 4))
 
+    def _apply_selected_ports_from_list(self):
+        if not self._detected_ports:
+            return
+        indices = self._detected_ports_list.curselection()
+        if not indices:
+            return
+        selected = [self._detected_ports[i] for i in indices if 0 <= i < len(self._detected_ports)]
+        if selected:
+            self._ports_var.set(", ".join(selected))
+
+    def _update_no_gps_hint(self):
+        send_without_gps = bool(self._send_nodes_without_gps_var.get())
+        has_park = bool(self._park_lat_var.get().strip()) and bool(self._park_lon_var.get().strip())
+        if send_without_gps and not has_park:
+            self._no_gps_hint_var.set(
+                "Hinweis: für Nodes ohne GPS bitte park_lat und park_lon setzen, sonst werden sie übersprungen."
+            )
+        else:
+            self._no_gps_hint_var.set("")
+
+    def _parse_int_field(self, raw_value, field_name, min_value=MIN_PORT_NUMBER, max_value=MAX_PORT_NUMBER):
+        try:
+            value = int(str(raw_value).strip())
+        except (TypeError, ValueError):
+            raise ValueError(f"{field_name} muss eine ganze Zahl sein.")
+        if not (min_value <= value <= max_value):
+            raise ValueError(f"{field_name} muss zwischen {min_value} und {max_value} liegen.")
+        return value
+
+    def _apply_form_to_cfg(self, ports):
+        self.cfg["log_level"] = self._log_level_var.get()
+        self.cfg["meshtastic_port"] = ports[0] if len(ports) == 1 else ports
+        self.cfg["tak_server_host"] = self._server_host_var.get().strip()
+        self.cfg["tak_server_protocol"] = self._server_protocol_var.get().strip().upper() or "TCP"
+        self.cfg["local_tak_ip"] = self._local_tak_ip_var.get().strip() or "127.0.0.1"
+
+        self.cfg["tak_server_port"] = self._parse_int_field(self._server_port_var.get(), "Remote Port")
+        self.cfg["local_tak_port"] = self._parse_int_field(self._local_tak_port_var.get(), "Local TAK Port")
+        self.cfg["sync_interval_seconds"] = self._parse_int_field(
+            self._sync_interval_var.get(), "Sync-Intervall", min_value=1, max_value=86400
+        )
+
+        self.cfg["send_nodes_without_gps"] = bool(self._send_nodes_without_gps_var.get())
+        self.cfg["set_gateway_position_on_start"] = bool(self._set_gateway_position_var.get())
+
+        park_lat_text = self._park_lat_var.get().strip()
+        park_lon_text = self._park_lon_var.get().strip()
+        if park_lat_text and park_lon_text:
+            try:
+                self.cfg["park_lat"] = float(park_lat_text)
+            except ValueError:
+                raise ValueError("park_lat muss eine gültige Zahl sein.")
+            try:
+                self.cfg["park_lon"] = float(park_lon_text)
+            except ValueError:
+                raise ValueError("park_lon muss eine gültige Zahl sein.")
+        elif not park_lat_text and not park_lon_text:
+            self.cfg.pop("park_lat", None)
+            self.cfg.pop("park_lon", None)
+        else:
+            missing = "park_lon" if park_lat_text else "park_lat"
+            raise ValueError(
+                "Beide Koordinaten (park_lat und park_lon) müssen gesetzt sein oder beide leer bleiben. "
+                f"Aktuell fehlt: {missing}."
+            )
+
     # ─────────────────────────── Gateway-Steuerung ────────────────────────────
 
     def _on_start(self):
@@ -300,8 +480,12 @@ class GatewayApp:
             self._append_log("Kein Port angegeben.", "WARNING")
             return
 
-        self.cfg["log_level"] = self._log_level_var.get()
-        self.cfg["meshtastic_port"] = ports[0] if len(ports) == 1 else ports
+        try:
+            self._apply_form_to_cfg(ports)
+            save_config(self.cfg)
+        except Exception as e:
+            self._append_log(f"Ungültige Einstellungen: {e}", "WARNING")
+            return
 
         self._start_btn.configure(state="disabled")
         self._stop_btn.configure(state="normal")

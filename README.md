@@ -104,7 +104,7 @@ Das Programm öffnet automatisch ein **GUI-Fenster**, das das reine Terminal-Fen
 
 | Bereich | Beschreibung |
 |---|---|
-| **Einstellungen** | Port(s) und Log-Level direkt im Fenster eintragen / auswählen |
+| **Einstellungen** | Alle zentralen Config-Werte im Fenster steuerbar (Port(s), Remote/Local TAK, Protokoll, Sync, No-GPS inkl. park_lat/park_lon) |
 | **▶ Start / ■ Stop** | Gateway starten und stoppen ohne Neustart |
 | **Log-Ausgabe** | Alle Meldungen erscheinen live farbig im Fenster (DEBUG=grau, INFO=weiß, WARNING=gelb, ERROR=rot) |
 | **Eingabe / Befehl** | Direkteingabe von Befehlen während der Gateway läuft |
