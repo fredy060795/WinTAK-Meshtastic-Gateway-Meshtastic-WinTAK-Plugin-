@@ -320,6 +320,7 @@ class TAKMeshtasticGateway:
             method = getattr(target, method_name, None)
             if not callable(method):
                 continue
+            method_failed = False
             call_variants = (
                 ((), {"lat": lat, "lon": lon, "alt": alt}),
                 ((), {"latitude": lat, "longitude": lon, "altitude": alt}),
@@ -335,8 +336,14 @@ class TAKMeshtasticGateway:
                     self.logger.debug(f"Gateway-Positionssetter Signatur passt nicht für {method_name}, nächster Versuch.")
                     continue
                 except Exception:
-                    self.logger.warning("Fehler beim Setzen der Gateway-Position:\n" + traceback.format_exc())
-                    return False
+                    self.logger.warning(
+                        f"Fehler beim Setzen der Gateway-Position über {method_name} "
+                        f"mit args={args} kwargs={kwargs}:\n" + traceback.format_exc()
+                    )
+                    method_failed = True
+                    break
+            if method_failed:
+                continue
         return False
 
     def apply_gateway_fixed_position(self):
