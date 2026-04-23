@@ -20,6 +20,12 @@ import logging
 import threading
 import traceback
 from xml.etree.ElementTree import Element, SubElement, tostring
+try:
+    import tkinter as tk
+    from tkinter import ttk
+except ImportError:
+    tk = None
+    ttk = None
 
 # optionale Abhängigkeiten
 try:
@@ -133,6 +139,297 @@ def load_config():
         except Exception as e:
             print(f"Fehler beim Lesen von {CFG_FILENAME}: {e}")
     return cfg
+
+
+def detect_serial_port_devices():
+    """Return a list of detected serial port device names."""
+    if serial is None:
+        return []
+    try:
+        return [p.device for p in serial.tools.list_ports.comports()]
+    except Exception:
+        return []
+
+
+def _parse_ports_text(ports_text):
+    return [p.strip() for p in ports_text.replace(";", ",").split(",") if p.strip()]
+
+
+class _GUILogHandler(logging.Handler):
+    """Logging-Handler, der Einträge thread-sicher in eine GUI-Callback-Funktion weiterleitet."""
+
+    def __init__(self, callback):
+        super().__init__()
+        self._callback = callback
+
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            self._callback(msg, record.levelname)
+        except Exception:
+            pass
+
+
+class GatewayApp:
+    """Vollständige Tkinter-GUI für den WinTAK Meshtastic Gateway.
+
+    Ersetzt das reine Terminal-Fenster. Zeigt Log-Ausgaben live im Fenster
+    und erlaubt direkte Befehlseingaben während der Gateway läuft.
+    """
+
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self._gateway = None
+        self._gateway_thread = None
+        self._gui_handler = None
+
+        try:
+            self._root = tk.Tk()
+        except (tk.TclError, RuntimeError):
+            raise
+
+        self._root.title("WinTAK Meshtastic Gateway")
+        self._root.geometry("860x580")
+        self._root.minsize(640, 420)
+        self._root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        self._build_ui()
+
+    # ─────────────────────────── UI-Aufbau ────────────────────────────────────
+
+    def _build_ui(self):
+        root = self._root
+
+        # ── Einstellungen oben ──
+        cfg_frame = ttk.LabelFrame(root, text=" Einstellungen ", padding=8)
+        cfg_frame.pack(fill="x", padx=8, pady=(8, 4))
+
+        ttk.Label(cfg_frame, text="Port(s):").grid(row=0, column=0, sticky="w")
+        cfg_port = self.cfg.get("meshtastic_port", "")
+        if isinstance(cfg_port, list):
+            default_ports = ", ".join(str(p) for p in cfg_port)
+        elif cfg_port:
+            default_ports = str(cfg_port).strip()
+        else:
+            detected_init = detect_serial_port_devices()
+            default_ports = ", ".join(detected_init[:1]) if detected_init else ""
+        self._ports_var = tk.StringVar(value=default_ports)
+        ports_entry = ttk.Entry(cfg_frame, textvariable=self._ports_var, width=28)
+        ports_entry.grid(row=0, column=1, sticky="ew", padx=(4, 10))
+
+        detected = detect_serial_port_devices()
+        detected_str = ", ".join(detected) if detected else "–"
+        ttk.Label(cfg_frame, text=f"Erkannt: {detected_str}", foreground="#777777").grid(
+            row=0, column=2, sticky="w"
+        )
+
+        ttk.Label(cfg_frame, text="Log-Level:").grid(row=0, column=3, sticky="w", padx=(16, 4))
+        log_default = str(self.cfg.get("log_level", "INFO")).upper()
+        if log_default not in ("DEBUG", "INFO", "WARNING", "ERROR"):
+            log_default = "INFO"
+        self._log_level_var = tk.StringVar(value=log_default)
+        log_combo = ttk.Combobox(
+            cfg_frame, textvariable=self._log_level_var,
+            state="readonly", values=["DEBUG", "INFO", "WARNING", "ERROR"], width=10
+        )
+        log_combo.grid(row=0, column=4, padx=(0, 8))
+        log_combo.bind("<<ComboboxSelected>>", self._on_log_level_change)
+
+        cfg_frame.columnconfigure(1, weight=1)
+
+        # ── Toolbar ──
+        btn_frame = ttk.Frame(root, padding=(8, 2))
+        btn_frame.pack(fill="x")
+
+        self._start_btn = ttk.Button(btn_frame, text="▶ Start", command=self._on_start)
+        self._start_btn.pack(side="left")
+        self._stop_btn = ttk.Button(btn_frame, text="■ Stop", command=self._on_stop, state="disabled")
+        self._stop_btn.pack(side="left", padx=(6, 0))
+        ttk.Button(btn_frame, text="🔄 Sync", command=self._on_manual_sync).pack(side="left", padx=(6, 0))
+
+        self._status_var = tk.StringVar(value="⬛ Gestoppt")
+        ttk.Label(btn_frame, textvariable=self._status_var).pack(side="left", padx=(16, 0))
+
+        # ── Log-Ausgabebereich ──
+        log_frame = ttk.LabelFrame(root, text=" Log-Ausgabe ", padding=4)
+        log_frame.pack(fill="both", expand=True, padx=8, pady=(4, 0))
+
+        self._log_text = tk.Text(
+            log_frame, wrap="word", state="disabled",
+            bg="#1e1e1e", fg="#d4d4d4",
+            font=("Consolas", 9), relief="flat", bd=0,
+            insertbackground="#d4d4d4"
+        )
+        scrollbar = ttk.Scrollbar(log_frame, command=self._log_text.yview)
+        self._log_text.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        self._log_text.pack(fill="both", expand=True)
+
+        # Farb-Tags je Log-Level
+        self._log_text.tag_configure("DEBUG",    foreground="#888888")
+        self._log_text.tag_configure("INFO",     foreground="#d4d4d4")
+        self._log_text.tag_configure("WARNING",  foreground="#ffcc00")
+        self._log_text.tag_configure("ERROR",    foreground="#ff5555")
+        self._log_text.tag_configure("CRITICAL", foreground="#ff0000")
+        self._log_text.tag_configure("CMD",      foreground="#569cd6")
+
+        # ── Eingabe / Befehlszeile unten ──
+        input_frame = ttk.LabelFrame(root, text=" Eingabe / Befehl ", padding=6)
+        input_frame.pack(fill="x", padx=8, pady=(4, 4))
+
+        self._input_var = tk.StringVar()
+        input_entry = ttk.Entry(input_frame, textvariable=self._input_var)
+        input_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
+        input_entry.bind("<Return>", lambda _e: self._on_send_command())
+
+        ttk.Button(input_frame, text="Senden", command=self._on_send_command).pack(side="left")
+
+        # Hilfe-Hinweis
+        ttk.Label(
+            root,
+            text="Befehle: sync | log debug|info|warning|error | clear | help",
+            foreground="#777777"
+        ).pack(pady=(0, 4))
+
+    # ─────────────────────────── Gateway-Steuerung ────────────────────────────
+
+    def _on_start(self):
+        ports_text = self._ports_var.get().strip()
+        ports = _parse_ports_text(ports_text)
+        if not ports:
+            self._append_log("Kein Port angegeben.", "WARNING")
+            return
+
+        self.cfg["log_level"] = self._log_level_var.get()
+        self.cfg["meshtastic_port"] = ports[0] if len(ports) == 1 else ports
+
+        self._start_btn.configure(state="disabled")
+        self._stop_btn.configure(state="normal")
+        self._status_var.set("🟡 Startet …")
+
+        # GUI-Handler anlegen und VOR Gateway-Erstellung am Logger registrieren,
+        # damit TAKMeshtasticGateway.setup_logging() keinen StreamHandler mehr ergänzt.
+        log_level = getattr(logging, self.cfg.get("log_level", "INFO"), logging.INFO)
+        self._gui_handler = _GUILogHandler(self._queue_log)
+        self._gui_handler.setLevel(log_level)
+        self._gui_handler.setFormatter(
+            logging.Formatter("[%(asctime)s] %(levelname)s: %(message)s", datefmt="%H:%M:%S")
+        )
+        logger = logging.getLogger("TAK_Meshtastic_Gateway")
+        logger.addHandler(self._gui_handler)
+
+        self._gateway_thread = threading.Thread(
+            target=self._run_gateway, args=(ports,), daemon=True
+        )
+        self._gateway_thread.start()
+
+    def _run_gateway(self, ports):
+        try:
+            gw = TAKMeshtasticGateway(ports, self.cfg)
+            self._gateway = gw
+            self._root.after(0, lambda: self._status_var.set(f"🟢 Läuft  –  {', '.join(ports)}"))
+            gw.run()
+        except Exception:
+            err = traceback.format_exc()
+            self._queue_log(f"Gateway-Thread Fehler:\n{err}", "ERROR")
+        finally:
+            self._root.after(0, self._on_gateway_stopped)
+
+    def _on_stop(self):
+        gw = self._gateway
+        if gw:
+            gw.shutdown_flag.set()
+        self._stop_btn.configure(state="disabled")
+        self._status_var.set("🟡 Stoppt …")
+
+    def _on_gateway_stopped(self):
+        if self._gui_handler:
+            logging.getLogger("TAK_Meshtastic_Gateway").removeHandler(self._gui_handler)
+            self._gui_handler = None
+        self._gateway = None
+        self._start_btn.configure(state="normal")
+        self._stop_btn.configure(state="disabled")
+        self._status_var.set("⬛ Gestoppt")
+
+    def _on_manual_sync(self):
+        gw = self._gateway
+        if gw:
+            threading.Thread(target=gw.full_sync, daemon=True).start()
+            self._append_log("Manuelle Vollsynchronisation ausgelöst.", "INFO")
+        else:
+            self._append_log("Gateway ist nicht gestartet.", "WARNING")
+
+    def _on_log_level_change(self, _event=None):
+        level_str = self._log_level_var.get()
+        level = getattr(logging, level_str, logging.INFO)
+        logging.getLogger("TAK_Meshtastic_Gateway").setLevel(level)
+        if self._gui_handler:
+            self._gui_handler.setLevel(level)
+        self._append_log(f"Log-Level geändert auf {level_str}.", "INFO")
+
+    # ─────────────────────────── Befehlseingabe ───────────────────────────────
+
+    def _on_send_command(self):
+        cmd = self._input_var.get().strip()
+        if not cmd:
+            return
+        self._input_var.set("")
+        self._append_log(f"> {cmd}", "CMD")
+        self._handle_command(cmd)
+
+    def _handle_command(self, cmd):
+        parts = cmd.lower().split()
+        if not parts:
+            return
+        action = parts[0]
+        if action == "sync":
+            self._on_manual_sync()
+        elif action == "log" and len(parts) >= 2:
+            new_level = parts[1].upper()
+            if new_level in ("DEBUG", "INFO", "WARNING", "ERROR"):
+                self._log_level_var.set(new_level)
+                self._on_log_level_change()
+            else:
+                self._append_log(f"Unbekannter Level: '{parts[1]}'. Gültig: debug|info|warning|error", "WARNING")
+        elif action == "clear":
+            self._log_text.configure(state="normal")
+            self._log_text.delete("1.0", "end")
+            self._log_text.configure(state="disabled")
+        elif action == "help":
+            for line in [
+                "Verfügbare Befehle:",
+                "  sync              – Manuelle Vollsynchronisation aller Nodes",
+                "  log <level>       – Log-Level setzen (debug/info/warning/error)",
+                "  clear             – Log-Ausgabe leeren",
+                "  help              – Diese Hilfe anzeigen",
+            ]:
+                self._append_log(line, "INFO")
+        else:
+            self._append_log(f"Unbekannter Befehl: '{cmd}'. Tippe 'help' für Hilfe.", "WARNING")
+
+    # ─────────────────────────── Logging in GUI ───────────────────────────────
+
+    def _queue_log(self, msg, level="INFO"):
+        """Thread-sicherer Aufruf: Nachricht in den GUI-Thread einreihen."""
+        self._root.after(0, self._append_log, msg, level)
+
+    def _append_log(self, msg, level="INFO"):
+        self._log_text.configure(state="normal")
+        tag = level if level in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "CMD") else "INFO"
+        self._log_text.insert("end", msg + "\n", tag)
+        self._log_text.see("end")
+        self._log_text.configure(state="disabled")
+
+    # ─────────────────────────── Shutdown ─────────────────────────────────────
+
+    def _on_close(self):
+        gw = self._gateway
+        if gw:
+            gw.shutdown_flag.set()
+        self._root.destroy()
+
+    def run(self):
+        self._root.mainloop()
 
 
 class TAKMeshtasticGateway:
@@ -676,6 +973,30 @@ def choose_serial_ports(cfg, all_ports_mode=False):
     return selected_ports
 
 
+def _run_terminal_mode(cfg, args):
+    """Terminal-Fallback: Klassische Konsoleninteraktion ohne GUI."""
+    # Fehlende Abhängigkeiten anzeigen
+    missing = []
+    if meshtastic is None:
+        missing.append("meshtastic")
+    if pub is None:
+        missing.append("pypubsub")
+    if serial is None:
+        missing.append("pyserial")
+    if missing:
+        print("WARNUNG: Folgende Python-Pakete fehlen oder konnten nicht importiert werden:")
+        for m in missing:
+            print(" - " + m)
+        print("Bitte installiere sie (z.B. pip install meshtastic pypubsub pyserial colorlog pyyaml).")
+        print("Fortfahren? (Enter=ja, Ctrl-C zum Abbrechen)")
+        input()
+
+    p_devs = choose_serial_ports(cfg, all_ports_mode=args.all_ports)
+    print(f"Verwende Port(s): {', '.join(p_devs)}")
+    gw = TAKMeshtasticGateway(p_devs, cfg)
+    gw.run()
+
+
 if __name__ == "__main__":
     try:
         parser = argparse.ArgumentParser(description="TAK Meshtastic Gateway")
@@ -683,37 +1004,26 @@ if __name__ == "__main__":
             "--all-ports", action="store_true",
             help="Alle verfügbaren seriellen USB-Ports automatisch verwenden (kein interaktiver Dialog)"
         )
+        parser.add_argument(
+            "--no-gui", action="store_true",
+            help="GUI deaktivieren und im Terminal-Modus starten"
+        )
         args = parser.parse_args()
 
         cfg = load_config()
 
-        # Falls fehlende Abhängigkeiten -> klare Fehlermeldung
-        missing = []
-        if meshtastic is None:
-            missing.append("meshtastic")
-        if pub is None:
-            missing.append("pypubsub")
-        if serial is None:
-            missing.append("pyserial")
-        if colorlog is None:
-            # colorlog ist optional; keine Aufnahme in missing zwingend
-            pass
-        if missing:
-            print("WARNUNG: Folgende Python-Pakete fehlen oder konnten nicht importiert werden:")
-            for m in missing:
-                print(" - " + m)
-            print("Bitte installiere sie (z.B. pip install meshtastic pypubsub pyserial colorlog pyyaml).")
-            print("Fortfahren? (Enter=ja, Ctrl-C zum Abbrechen)")
-            input()
+        # GUI-Modus wenn Tkinter verfügbar und nicht explizit deaktiviert
+        if tk is not None and not args.no_gui:
+            try:
+                app = GatewayApp(cfg)
+                app.run()
+            except (tk.TclError, RuntimeError):
+                # Kein Display / Tkinter-Fehler → Terminal-Fallback
+                _run_terminal_mode(cfg, args)
+        else:
+            _run_terminal_mode(cfg, args)
 
-        # Port-Auswahl (mit config override, unterstützt mehrere Streams)
-        p_devs = choose_serial_ports(cfg, all_ports_mode=args.all_ports)
-        print(f"Verwende Port(s): {', '.join(p_devs)}")
-
-        gw = TAKMeshtasticGateway(p_devs, cfg)
-        gw.run()
-
-    except Exception as exc:
+    except Exception:
         print("Unerwarteter Fehler beim Starten:")
         traceback.print_exc()
         print("Drücke Enter zum Beenden...")

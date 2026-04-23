@@ -100,6 +100,31 @@ The script automatically requests Administrator privileges and launches the gate
 python main_app.py
 ```
 
+Das Programm öffnet automatisch ein **GUI-Fenster**, das das reine Terminal-Fenster ersetzt:
+
+| Bereich | Beschreibung |
+|---|---|
+| **Einstellungen** | Port(s) und Log-Level direkt im Fenster eintragen / auswählen |
+| **▶ Start / ■ Stop** | Gateway starten und stoppen ohne Neustart |
+| **Log-Ausgabe** | Alle Meldungen erscheinen live farbig im Fenster (DEBUG=grau, INFO=weiß, WARNING=gelb, ERROR=rot) |
+| **Eingabe / Befehl** | Direkteingabe von Befehlen während der Gateway läuft |
+
+#### Verfügbare Befehle im Eingabefeld
+
+| Befehl | Wirkung |
+|---|---|
+| `sync` | Manuelle Vollsynchronisation aller Nodes |
+| `log debug` / `log info` / `log warning` / `log error` | Log-Level sofort umschalten |
+| `clear` | Log-Ausgabe leeren |
+| `help` | Befehlsliste anzeigen |
+
+```bash
+# Terminal-Modus erzwingen (z. B. auf Server ohne Display)
+python main_app.py --no-gui
+```
+
+Falls kein Display verfügbar ist (z. B. Server ohne Desktop), startet die Anwendung automatisch im Terminal-Modus.
+
 ### Option 3 — Build a standalone EXE with PyInstaller
 
 ```bash
