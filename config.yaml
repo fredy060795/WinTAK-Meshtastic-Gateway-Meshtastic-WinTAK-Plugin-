@@ -12,3 +12,7 @@ tak_server_host: 123.12.12.12
 tak_server_port: 8088
 
 tak_server_protocol: TCP                               
+
+# false = nur Nodes mit gültigen GPS-Koordinaten senden
+# true  = Nodes ohne GPS-Fix ebenfalls senden (Fallback park_lat/park_lon)
+send_nodes_without_gps: false

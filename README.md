@@ -11,7 +11,7 @@ The gateway reads position data from Meshtastic nodes over a serial connection a
 |---|---|
 | **Dual-Streaming** | Sends CoT data simultaneously to local WinTAK (UDP 4242) and a remote TAK Server (TCP/UDP). |
 | **Automatic Reconnect** | Maintains the remote TAK Server connection with automatic retry on disconnect. |
-| **GPS Fallback** | Nodes without a GPS fix are placed at configurable fallback coordinates so they still appear in the TAK contact list. |
+| **GPS Filter + Fallback (optional)** | By default only nodes with valid GPS coordinates are sent. Optional fallback mode can still place no-fix nodes at configurable coordinates. |
 | **Config-Driven** | All settings (IPs, ports, callsign, COM port) are managed in a single `config.yaml`. |
 | **Admin Startup Script** | Included `.bat` file auto-elevates to Administrator privileges on Windows. |
 
@@ -68,6 +68,11 @@ tak_server_protocol: TCP            # TCP or UDP
 
 sync_interval_seconds: 300          # Full node re-sync interval (seconds)
 
+# GPS filtering:
+# false = only send nodes with valid GPS coordinates (recommended)
+# true  = also send nodes without GPS fix using fallback park coordinates
+send_nodes_without_gps: false
+
 # Optional – fallback coordinates for nodes without GPS fix (default: 0.0)
 # park_lat: 0.0
 # park_lon: 0.0
@@ -115,9 +120,8 @@ If Meshtastic nodes appear in your local WinTAK but **not** on ATAK/iTAK devices
 
 ## Notes on GPS Fixes
 
-- Nodes **without** a valid GPS fix (e.g. indoors) are placed at fallback coordinates (`park_lat` / `park_lon` in `config.yaml`, default `0.0 / 0.0`).
-- This ensures the node appears in the TAK contact list immediately instead of being invisible until a fix is acquired.
-- Nodes at fallback coordinates are marked with the remark *"Listed (No GPS Fix)"* and the precision source is set to `USER` instead of `GPS`.
+- Default behavior: nodes **without** a valid GPS fix are filtered out and are not sent to TAK.
+- If `send_nodes_without_gps: true` is set, no-fix nodes are placed at fallback coordinates (`park_lat` / `park_lon`) and marked with *"Listed (No GPS Fix)"*.
 
 ---
 
