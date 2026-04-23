@@ -107,6 +107,14 @@ def normalize_coordinates(lat, lon):
     return latitude, longitude
 
 
+def to_float_or_none(value):
+    """Best-effort float conversion."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def load_config():
     """
     Lädt config.yaml aus dem selben Verzeichnis wie dieses Skript (falls vorhanden).
@@ -169,18 +177,20 @@ class TAKMeshtasticGateway:
         self.shutdown_flag = threading.Event()  # For graceful shutdown
 
         # Park coordinates wenn kein GPS-Fix (optional)
-        self.park_lat = float(self.cfg.get("park_lat", 0.0))
-        self.park_lon = float(self.cfg.get("park_lon", 0.0))
+        self.park_lat = to_float_or_none(self.cfg.get("park_lat"))
+        self.park_lon = to_float_or_none(self.cfg.get("park_lon"))
+        self.park_coords = normalize_coordinates(self.park_lat, self.park_lon)
         self.send_nodes_without_gps = as_bool(self.cfg.get("send_nodes_without_gps", True))
+        self.set_gateway_position_on_start = as_bool(self.cfg.get("set_gateway_position_on_start", False))
 
         # Sync interval
         self.sync_interval_seconds = int(self.cfg.get("sync_interval_seconds", 300))
 
         # Warn when no-fix nodes would be placed at an invalid/unconfigured position
-        if self.send_nodes_without_gps and normalize_coordinates(self.park_lat, self.park_lon) is None:
+        if self.send_nodes_without_gps and self.park_coords is None:
             self.logger.warning(
                 "ACHTUNG: send_nodes_without_gps=true, aber park_lat/park_lon sind nicht gesetzt. "
-                "Nodes ohne GPS-Fix werden bei (0,0) / Null Island dargestellt. "
+                "Nodes ohne GPS-Fix werden übersprungen. "
                 "Bitte park_lat und park_lon in config.yaml auf einen sinnvollen Standort setzen."
             )
 
@@ -200,6 +210,7 @@ class TAKMeshtasticGateway:
                 self.logger.warning("pypubsub nicht gefunden: Live-Empfangs-Callbacks möglicherweise nicht aktiv.")
             # Start maintenance thread
             threading.Thread(target=self.maintain_server, daemon=True).start()
+            self.apply_gateway_fixed_position()
             self.logger.info("Gateway gestartet. Führe initiale Vollsynchronisation aus.")
             self.full_sync()
         except Exception as e:
@@ -300,6 +311,66 @@ class TAKMeshtasticGateway:
             except Exception:
                 self.logger.error("Fehler während full_sync:\n" + traceback.format_exc())
 
+    def _invoke_position_setter(self, target, lat, lon, alt):
+        """Try common meshtastic APIs to set/publish a fixed position."""
+        if target is None:
+            return False
+        for method_name in ("setFixedPosition", "set_fixed_position", "setPosition", "set_position"):
+            method = getattr(target, method_name, None)
+            if not callable(method):
+                continue
+            call_variants = (
+                ((), {"lat": lat, "lon": lon, "alt": alt}),
+                ((), {"latitude": lat, "longitude": lon, "altitude": alt}),
+                ((lat, lon, alt), {}),
+                ((lat, lon), {}),
+            )
+            for args, kwargs in call_variants:
+                try:
+                    method(*args, **kwargs)
+                    return True
+                except TypeError:
+                    continue
+                except Exception:
+                    self.logger.debug("Fehler beim Setzen der Gateway-Position:\n" + traceback.format_exc())
+                    return False
+        return False
+
+    def apply_gateway_fixed_position(self):
+        """
+        Optional: publish/set a fixed position for the local gateway node at startup.
+        Uses park_lat/park_lon as source coordinates.
+        """
+        if not self.set_gateway_position_on_start:
+            return
+        if self.park_coords is None:
+            self.logger.warning(
+                "set_gateway_position_on_start=true, aber park_lat/park_lon sind ungültig. "
+                "Gateway-Position wurde nicht gesetzt."
+            )
+            return
+
+        lat, lon = self.park_coords
+        updated_ports = []
+        for iface in self.interfaces:
+            try:
+                local_node = getattr(iface, "localNode", None)
+                if self._invoke_position_setter(local_node, lat, lon, 0) or self._invoke_position_setter(iface, lat, lon, 0):
+                    updated_ports.append(getattr(iface, "devPath", "unknown"))
+            except Exception:
+                self.logger.debug("Fehler beim Anwenden der Gateway-Fixed-Position:\n" + traceback.format_exc())
+
+        if updated_ports:
+            self.logger.info(
+                f"Gateway-Fixed-Position gesetzt/gesendet: lat={lat:.6f}, lon={lon:.6f} "
+                f"auf Port(s): {', '.join(updated_ports)}"
+            )
+        else:
+            self.logger.warning(
+                "set_gateway_position_on_start=true, aber API zum Setzen der Position "
+                "wurde in der installierten Meshtastic-Version nicht gefunden."
+            )
+
     def process_node(self, node, index, force_update=False):
         """
         Extrahiert Daten aus node und sendet CoT-Event
@@ -337,8 +408,11 @@ class TAKMeshtasticGateway:
                 if not self.send_nodes_without_gps:
                     self.logger.debug(f"Überspringe Node ohne gültigen GPS-Fix: {callsign}")
                     return
-                final_lat = self.park_lat - (index * 0.001)
-                final_lon = self.park_lon
+                if self.park_coords is None:
+                    self.logger.debug(f"Überspringe Node ohne gültigen GPS-Fix (kein park_lat/park_lon): {callsign}")
+                    return
+                final_lat = self.park_coords[0] - (index * 0.001)
+                final_lon = self.park_coords[1]
 
             if is_real and force_update:
                 self.logger.info(f"LIVE: Position-Update empfangen von {callsign}")

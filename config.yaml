@@ -19,10 +19,14 @@ send_nodes_without_gps: true
 
 # Fallback-Koordinaten für Nodes ohne GPS-Fix.
 # WICHTIG: Diese müssen gesetzt sein wenn send_nodes_without_gps=true,
-# sonst erscheinen no-fix Nodes bei (0,0) / Null Island im Atlantik!
+# sonst werden no-fix Nodes übersprungen.
 # Beispiel: Koordinaten eurer Basis/Funkstelle eintragen:
 # park_lat: 48.1351
 # park_lon: 11.5820
+
+# Optional: Beim Start die eigene Gateway-Position ins Mesh schreiben
+# (nutzt park_lat/park_lon als feste Position für den lokalen Knoten)
+# set_gateway_position_on_start: true
 
 # Log-Level: INFO (Standard) zeigt nur wichtige Meldungen.
 # DEBUG aktiviert Rohdaten-Ausgabe aller empfangenen Meshtastic-Pakete.
