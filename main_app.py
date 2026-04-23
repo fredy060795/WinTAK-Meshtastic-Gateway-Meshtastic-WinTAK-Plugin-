@@ -108,7 +108,7 @@ def normalize_coordinates(lat, lon):
 
 
 def to_float_or_none(value):
-    """Best-effort float conversion."""
+    """Convert value to float if possible, otherwise return None."""
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -336,7 +336,7 @@ class TAKMeshtasticGateway:
                     continue
                 except Exception:
                     self.logger.warning("Fehler beim Setzen der Gateway-Position:\n" + traceback.format_exc())
-                    return False
+                    continue
         return False
 
     def apply_gateway_fixed_position(self):
@@ -360,7 +360,9 @@ class TAKMeshtasticGateway:
                 local_node = getattr(iface, "localNode", None)
                 # localNode first, then interface as fallback for older/newer API variants.
                 local_node_updated = self._invoke_position_setter(local_node, lat, lon, 0)
-                iface_updated = False if local_node_updated else self._invoke_position_setter(iface, lat, lon, 0)
+                iface_updated = False
+                if not local_node_updated:
+                    iface_updated = self._invoke_position_setter(iface, lat, lon, 0)
                 if local_node_updated or iface_updated:
                     updated_ports.append(getattr(iface, "devPath", "unknown"))
             except Exception:
