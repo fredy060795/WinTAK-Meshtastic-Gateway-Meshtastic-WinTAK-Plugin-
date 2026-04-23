@@ -204,17 +204,18 @@ class NodeDatabase:
 
     def __init__(self, db_path):
         self.db_path = db_path
+        self._lock = threading.Lock()
         self._init_db()
 
     def _init_db(self):
-        with sqlite3.connect(self.db_path) as conn:
+        with self._lock, sqlite3.connect(self.db_path) as conn:
             conn.execute(self._CREATE_TABLE)
             conn.commit()
 
     def upsert_node(self, uid, callsign, lat, lon, alt, source="GPS"):
         """Füge einen Knoten ein oder aktualisiere seine Position."""
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        with sqlite3.connect(self.db_path) as conn:
+        with self._lock, sqlite3.connect(self.db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO nodes (uid, callsign, lat, lon, alt, last_seen, position_source)
@@ -227,13 +228,13 @@ class NodeDatabase:
                     last_seen=excluded.last_seen,
                     position_source=excluded.position_source
                 """,
-                (uid, callsign, lat, lon, alt or 0, now, source),
+                (uid, callsign, lat, lon, alt if alt is not None else 0, now, source),
             )
             conn.commit()
 
     def get_node(self, uid):
         """Gibt (lat, lon, alt, callsign, last_seen, position_source) zurück, oder None."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._lock, sqlite3.connect(self.db_path) as conn:
             return conn.execute(
                 "SELECT lat, lon, alt, callsign, last_seen, position_source "
                 "FROM nodes WHERE uid=?",
@@ -242,7 +243,7 @@ class NodeDatabase:
 
     def get_all_nodes(self):
         """Gibt alle Knoten sortiert nach Rufzeichen zurück."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._lock, sqlite3.connect(self.db_path) as conn:
             return conn.execute(
                 "SELECT uid, callsign, lat, lon, alt, last_seen, position_source "
                 "FROM nodes ORDER BY callsign",
@@ -251,7 +252,7 @@ class NodeDatabase:
     def set_manual_position(self, uid, lat, lon, alt=0.0, callsign=None):
         """Setzt die Position eines Knotens manuell (behält vorhandenes Rufzeichen bei)."""
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        with sqlite3.connect(self.db_path) as conn:
+        with self._lock, sqlite3.connect(self.db_path) as conn:
             if callsign is None:
                 row = conn.execute(
                     "SELECT callsign FROM nodes WHERE uid=?", (uid,)
@@ -268,7 +269,7 @@ class NodeDatabase:
                     last_seen=excluded.last_seen,
                     position_source='MANUAL'
                 """,
-                (uid, callsign, lat, lon, alt or 0, now),
+                (uid, callsign, lat, lon, alt if alt is not None else 0, now),
             )
             conn.commit()
 
@@ -1072,7 +1073,7 @@ class TAKMeshtasticGateway:
         self.logger.info(f"Knoten-Datenbank geöffnet: {db_path}")
         # Letzte bekannte Positionen aus der Datenbank vorausfüllen
         for _uid, _cs, _lat, _lon, _alt, _ts, _src in self.node_db.get_all_nodes():
-            self.last_known_positions[_uid] = (_lat, _lon, _alt or 0)
+            self.last_known_positions[_uid] = (_lat, _lon, _alt if _alt is not None else 0)
         if self.last_known_positions:
             self.logger.info(
                 f"{len(self.last_known_positions)} Knoten-Position(en) aus Datenbank geladen."
@@ -1343,7 +1344,7 @@ class TAKMeshtasticGateway:
                     # Datenbank als Fallback prüfen (z.B. nach Neustart oder manuelle Eingabe)
                     db_row = self.node_db.get_node(uid)
                     if db_row:
-                        last_known = (db_row[0], db_row[1], db_row[2] or 0)
+                        last_known = (db_row[0], db_row[1], db_row[2] if db_row[2] is not None else 0)
                         self.last_known_positions[uid] = last_known
                 if last_known:
                     final_lat, final_lon, cached_alt = last_known
