@@ -93,18 +93,18 @@ def normalize_coordinates(lat, lon):
         parsing fails, values are NaN/out of range, or exactly (0, 0).
     """
     try:
-        lat_f = float(lat)
-        lon_f = float(lon)
+        latitude = float(lat)
+        longitude = float(lon)
     except (TypeError, ValueError):
         return None
 
-    if math.isnan(lat_f) or math.isnan(lon_f):
+    if math.isnan(latitude) or math.isnan(longitude):
         return None
-    if not (-90.0 <= lat_f <= 90.0 and -180.0 <= lon_f <= 180.0):
+    if not (-90.0 <= latitude <= 90.0 and -180.0 <= longitude <= 180.0):
         return None
-    if lat_f == 0.0 and lon_f == 0.0:
+    if latitude == 0.0 and longitude == 0.0:
         return None
-    return lat_f, lon_f
+    return latitude, longitude
 
 
 def load_config():

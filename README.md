@@ -11,7 +11,7 @@ The gateway reads position data from Meshtastic nodes over a serial connection a
 |---|---|
 | **Dual-Streaming** | Sends CoT data simultaneously to local WinTAK (UDP 4242) and a remote TAK Server (TCP/UDP). |
 | **Automatic Reconnect** | Maintains the remote TAK Server connection with automatic retry on disconnect. |
-| **GPS Filter + Fallback (optional)** | By default only nodes with valid GPS coordinates are sent. Optional fallback mode can still place no-fix nodes at configurable coordinates. |
+| **All-Nodes Visibility** | All nodes are forwarded to TAK by default. Nodes with valid GPS (including phone GPS shared over mesh) appear at their real position; no-fix nodes are placed at configurable fallback coordinates and clearly marked. |
 | **Config-Driven** | All settings (IPs, ports, callsign, COM port) are managed in a single `config.yaml`. |
 | **Admin Startup Script** | Included `.bat` file auto-elevates to Administrator privileges on Windows. |
 
