@@ -63,9 +63,9 @@ def as_bool(value, default=False):
         bool: Parsed boolean value.
 
     Notes:
-        True values: bool True, non-zero numbers, and strings like
+        True values: bool True, non-zero numbers (including negative), and strings like
         '1', 'true', 'yes', 'y', 'on' (case-insensitive).
-        False values: bool False, zero numbers, and strings like
+        False values: bool False, zero, and strings like
         '0', 'false', 'no', 'n', 'off' (case-insensitive).
     """
     if isinstance(value, bool):
@@ -339,7 +339,6 @@ class TAKMeshtasticGateway:
 
             if is_real and force_update:
                 self.logger.info(f"LIVE: Position-Update empfangen von {callsign}")
-                self.logger.debug(f"LIVE: {callsign} @ {final_lat:.5f}, {final_lon:.5f}")
 
             alt = pos.get('altitude', 0) or 0
             self.send_broadcast(uid, callsign, final_lat, final_lon, alt, is_real)
