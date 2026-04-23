@@ -22,9 +22,10 @@ import traceback
 from xml.etree.ElementTree import Element, SubElement, tostring
 try:
     import tkinter as tk
-    from tkinter import ttk
-except Exception:
+    from tkinter import TclError, ttk
+except ImportError:
     tk = None
+    TclError = None
     ttk = None
 
 # optionale Abhängigkeiten
@@ -174,7 +175,7 @@ def launch_startup_ui(cfg, cli_all_ports=False):
     result = {}
     try:
         root = tk.Tk()
-    except Exception:
+    except (TclError, RuntimeError):
         return None
 
     root.title("WinTAK Meshtastic Gateway Start")
@@ -195,7 +196,7 @@ def launch_startup_ui(cfg, cli_all_ports=False):
     )
     log_combo.pack(anchor="w", pady=(2, 10))
 
-    ttk.Label(main_frame, text="Meshtastic Port(s) (z.B. COM7 oder COM7,COM3)").pack(anchor="w")
+    ttk.Label(main_frame, text="Meshtastic Port(s) (z. B. COM7 oder COM7,COM3)").pack(anchor="w")
     ports_var = tk.StringVar(value=default_ports)
     ports_entry = ttk.Entry(main_frame, textvariable=ports_var, width=50)
     ports_entry.pack(fill="x", pady=(2, 8))
