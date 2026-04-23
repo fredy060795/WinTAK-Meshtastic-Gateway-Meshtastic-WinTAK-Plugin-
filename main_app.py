@@ -171,7 +171,7 @@ class TAKMeshtasticGateway:
         # Park coordinates wenn kein GPS-Fix (optional)
         self.park_lat = float(self.cfg.get("park_lat", 0.0))
         self.park_lon = float(self.cfg.get("park_lon", 0.0))
-        self.send_nodes_without_gps = as_bool(self.cfg.get("send_nodes_without_gps", True), default=True)
+        self.send_nodes_without_gps = as_bool(self.cfg.get("send_nodes_without_gps", True))
 
         # Sync interval
         self.sync_interval_seconds = int(self.cfg.get("sync_interval_seconds", 300))
