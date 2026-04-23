@@ -214,22 +214,221 @@ class GatewayApp:
             raise
 
         self._root.title("WinTAK Meshtastic Gateway")
-        self._root.geometry("860x580")
-        self._root.minsize(640, 420)
+        self._root.geometry("980x700")
+        self._root.minsize(700, 480)
         self._root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._root.configure(bg="#1f2937")
 
+        self._setup_styles()
         self._build_ui()
+
+    # ─────────────────────────── Styles / Theming ─────────────────────────────
+
+    def _setup_styles(self):
+        style = ttk.Style(self._root)
+        style.theme_use("clam")
+
+        # ── Farben ──
+        BG        = "#1f2937"   # Dunkelblau-Grau (Fenster-Hintergrund)
+        PANEL     = "#111827"   # Noch dunklerer Hintergrund für Panels
+        CARD      = "#374151"   # Karten-/Rahmen-Hintergrund
+        BORDER    = "#4b5563"   # Rahmenfarbe
+        FG        = "#f9fafb"   # Heller Text
+        FG_SUB    = "#9ca3af"   # Dezenter Hilfstext
+        ACCENT    = "#3b82f6"   # Blau (Akzent)
+        ACCENT_H  = "#2563eb"   # Blau Hover
+        SUCCESS   = "#22c55e"   # Grün
+        WARNING   = "#f59e0b"   # Amber
+        DANGER    = "#ef4444"   # Rot
+
+        # ── Allgemein ──
+        style.configure(".",
+                         background=BG,
+                         foreground=FG,
+                         font=("Segoe UI", 9),
+                         relief="flat",
+                         borderwidth=0)
+
+        # ── TFrame ──
+        style.configure("TFrame", background=BG)
+        style.configure("Card.TFrame", background=CARD)
+
+        # ── TLabel ──
+        style.configure("TLabel", background=BG, foreground=FG)
+        style.configure("Sub.TLabel", background=CARD, foreground=FG_SUB)
+        style.configure("Card.TLabel", background=CARD, foreground=FG)
+        style.configure("Hint.TLabel", background=CARD, foreground=WARNING)
+
+        # ── TLabelFrame ──
+        style.configure("TLabelframe",
+                         background=CARD,
+                         foreground=FG_SUB,
+                         bordercolor=BORDER,
+                         relief="solid",
+                         borderwidth=1)
+        style.configure("TLabelframe.Label",
+                         background=CARD,
+                         foreground=ACCENT,
+                         font=("Segoe UI", 9, "bold"))
+
+        # ── TEntry ──
+        style.configure("TEntry",
+                         fieldbackground="#1f2937",
+                         foreground=FG,
+                         insertcolor=FG,
+                         selectbackground=ACCENT,
+                         selectforeground=FG,
+                         bordercolor=BORDER,
+                         lightcolor=BORDER,
+                         darkcolor=BORDER,
+                         relief="solid",
+                         borderwidth=1)
+        style.map("TEntry",
+                  bordercolor=[("focus", ACCENT)],
+                  lightcolor=[("focus", ACCENT)],
+                  darkcolor=[("focus", ACCENT)])
+
+        # ── TCombobox ──
+        style.configure("TCombobox",
+                         fieldbackground="#1f2937",
+                         foreground=FG,
+                         selectbackground=ACCENT,
+                         selectforeground=FG,
+                         bordercolor=BORDER,
+                         arrowcolor=FG_SUB)
+        style.map("TCombobox",
+                  bordercolor=[("focus", ACCENT)],
+                  fieldbackground=[("readonly", "#1f2937")])
+        self._root.option_add("*TCombobox*Listbox.background", "#1f2937")
+        self._root.option_add("*TCombobox*Listbox.foreground", FG)
+        self._root.option_add("*TCombobox*Listbox.selectBackground", ACCENT)
+
+        # ── TButton (Primär) ──
+        style.configure("TButton",
+                         background="#374151",
+                         foreground=FG,
+                         bordercolor=BORDER,
+                         focuscolor=ACCENT,
+                         padding=(10, 5),
+                         relief="flat",
+                         font=("Segoe UI", 9))
+        style.map("TButton",
+                  background=[("active", BORDER), ("disabled", "#1f2937")],
+                  foreground=[("disabled", FG_SUB)])
+
+        # ── Accent.TButton ──
+        style.configure("Accent.TButton",
+                         background=ACCENT,
+                         foreground="#ffffff",
+                         bordercolor=ACCENT,
+                         padding=(12, 5),
+                         relief="flat",
+                         font=("Segoe UI", 9, "bold"))
+        style.map("Accent.TButton",
+                  background=[("active", ACCENT_H), ("disabled", BORDER)],
+                  foreground=[("disabled", FG_SUB)])
+
+        # ── Danger.TButton ──
+        style.configure("Danger.TButton",
+                         background="#7f1d1d",
+                         foreground="#fca5a5",
+                         bordercolor="#991b1b",
+                         padding=(12, 5),
+                         relief="flat",
+                         font=("Segoe UI", 9, "bold"))
+        style.map("Danger.TButton",
+                  background=[("active", "#991b1b"), ("disabled", BORDER)],
+                  foreground=[("disabled", FG_SUB)])
+
+        # ── TCheckbutton ──
+        style.configure("TCheckbutton",
+                         background=CARD,
+                         foreground=FG,
+                         indicatorcolor="#1f2937",
+                         indicatorbackground="#1f2937",
+                         indicatorrelief="flat")
+        style.map("TCheckbutton",
+                  indicatorcolor=[("selected", ACCENT)],
+                  background=[("active", CARD)])
+
+        # ── TSeparator ──
+        style.configure("TSeparator", background=BORDER)
+
+        # ── TScrollbar ──
+        style.configure("TScrollbar",
+                         background=CARD,
+                         troughcolor="#1f2937",
+                         arrowcolor=FG_SUB,
+                         bordercolor=BORDER,
+                         relief="flat")
+        style.map("TScrollbar",
+                  background=[("active", BORDER)])
+
+        # ── Listbox (nicht-ttk, via option_add) ──
+        self._root.option_add("*Listbox.background", "#1f2937")
+        self._root.option_add("*Listbox.foreground", FG)
+        self._root.option_add("*Listbox.selectBackground", ACCENT)
+        self._root.option_add("*Listbox.selectForeground", "#ffffff")
+        self._root.option_add("*Listbox.relief", "flat")
+        self._root.option_add("*Listbox.borderWidth", "1")
+        self._root.option_add("*Listbox.highlightThickness", "0")
+
+        # Speichere Farben für direkte Nutzung in _build_ui
+        self._colors = {
+            "bg": BG, "panel": PANEL, "card": CARD, "border": BORDER,
+            "fg": FG, "fg_sub": FG_SUB, "accent": ACCENT,
+            "success": SUCCESS, "warning": WARNING, "danger": DANGER,
+        }
+
+        # Font-Verfügbarkeit einmalig prüfen und cachen
+        try:
+            import tkinter.font as tkfont
+            available_families = set(tkfont.families())
+        except Exception:
+            available_families = set()
+        self._log_font = (
+            "Cascadia Code" if "Cascadia Code" in available_families else "Consolas", 9
+        )
 
     # ─────────────────────────── UI-Aufbau ────────────────────────────────────
 
     def _build_ui(self):
         root = self._root
+        C = self._colors
 
-        # ── Einstellungen oben ──
-        cfg_frame = ttk.LabelFrame(root, text=" Einstellungen ", padding=8)
-        cfg_frame.pack(fill="x", padx=8, pady=(8, 4))
+        # ── Header-Banner ──
+        header = tk.Frame(root, bg=C["panel"], height=56)
+        header.pack(fill="x")
+        header.pack_propagate(False)
+        tk.Label(
+            header,
+            text="  🛰  WinTAK Meshtastic Gateway",
+            bg=C["panel"], fg=C["fg"],
+            font=("Segoe UI", 14, "bold"),
+            anchor="w",
+        ).pack(side="left", padx=12, pady=0, fill="y")
+        tk.Label(
+            header,
+            text="Meshtastic → TAK Bridge",
+            bg=C["panel"], fg=C["fg_sub"],
+            font=("Segoe UI", 9),
+            anchor="e",
+        ).pack(side="right", padx=12, pady=0)
 
-        ttk.Label(cfg_frame, text="Port(s):").grid(row=0, column=0, sticky="w")
+        ttk.Separator(root, orient="horizontal").pack(fill="x")
+
+        # ── Einstellungen ──
+        cfg_frame = ttk.LabelFrame(root, text=" ⚙  Einstellungen ", padding=(12, 8))
+        cfg_frame.pack(fill="x", padx=10, pady=(10, 4))
+
+        # Hilfsfunktion für einheitliche Labels in cfg_frame
+        def cfg_label(text, row, col, **kw):
+            lbl = ttk.Label(cfg_frame, text=text, style="Card.TLabel")
+            lbl.grid(row=row, column=col, sticky="w", **kw)
+            return lbl
+
+        # ── Zeile 0: Ports + Log-Level ──
+        cfg_label("Meshtastic Port(s):", row=0, col=0, pady=(0, 4))
         cfg_port = self.cfg.get("meshtastic_port", "")
         if isinstance(cfg_port, list):
             default_ports = ", ".join(str(p) for p in cfg_port)
@@ -239,36 +438,10 @@ class GatewayApp:
             detected_init = detect_serial_port_devices()
             default_ports = ", ".join(detected_init) if detected_init else ""
         self._ports_var = tk.StringVar(value=default_ports)
-        ports_entry = ttk.Entry(cfg_frame, textvariable=self._ports_var, width=28)
-        ports_entry.grid(row=0, column=1, sticky="ew", padx=(4, 10))
+        ttk.Entry(cfg_frame, textvariable=self._ports_var, width=28).grid(
+            row=0, column=1, sticky="ew", padx=(6, 12), pady=(0, 4))
 
-        detected = detect_serial_port_devices()
-        self._detected_ports = detected
-        self._detected_ports_var = tk.StringVar()
-        self._detected_ports_var.set(f"Erkannt: {', '.join(detected) if detected else '–'}")
-        ttk.Label(cfg_frame, textvariable=self._detected_ports_var, foreground="#777777").grid(
-            row=0, column=2, sticky="w"
-        )
-        self._detected_ports_list = tk.Listbox(
-            cfg_frame,
-            height=min(max(len(detected), 1), MAX_DETECTED_PORTS_DISPLAY),
-            selectmode="extended",
-            exportselection=False
-        )
-        self._detected_ports_list.grid(row=1, column=1, sticky="ew", padx=(4, 10), pady=(4, 0))
-        detected_scrollbar = ttk.Scrollbar(cfg_frame, orient="vertical", command=self._detected_ports_list.yview)
-        self._detected_ports_list.configure(yscrollcommand=detected_scrollbar.set)
-        detected_scrollbar.grid(row=1, column=2, sticky="nsw", pady=(4, 0))
-        for port in detected:
-            self._detected_ports_list.insert("end", port)
-        ttk.Button(
-            cfg_frame, text="Auswahl übernehmen", command=self._apply_selected_ports_from_list
-        ).grid(row=1, column=3, sticky="w", pady=(4, 0))
-        ttk.Button(
-            cfg_frame, text="Ports aktualisieren", command=self._refresh_detected_ports
-        ).grid(row=1, column=4, sticky="w", padx=(16, 4), pady=(4, 0))
-
-        ttk.Label(cfg_frame, text="Log-Level:").grid(row=0, column=3, sticky="w", padx=(16, 4))
+        cfg_label("Log-Level:", row=0, col=2, padx=(8, 6), pady=(0, 4))
         log_default = str(self.cfg.get("log_level", "INFO")).upper()
         if log_default not in ("DEBUG", "INFO", "WARNING", "ERROR"):
             log_default = "INFO"
@@ -277,21 +450,54 @@ class GatewayApp:
             cfg_frame, textvariable=self._log_level_var,
             state="readonly", values=["DEBUG", "INFO", "WARNING", "ERROR"], width=10
         )
-        log_combo.grid(row=0, column=4, padx=(0, 8))
+        log_combo.grid(row=0, column=3, sticky="w", padx=(0, 12), pady=(0, 4))
         log_combo.bind("<<ComboboxSelected>>", self._on_log_level_change)
 
-        ttk.Label(cfg_frame, text="Remote TAK Host:").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        # ── Zeile 1: Erkannte Ports-Liste ──
+        detected = detect_serial_port_devices()
+        self._detected_ports = detected
+        self._detected_ports_var = tk.StringVar(
+            value=f"Erkannte Ports: {', '.join(detected) if detected else '–'}"
+        )
+        ttk.Label(cfg_frame, textvariable=self._detected_ports_var, style="Sub.TLabel").grid(
+            row=1, column=0, columnspan=2, sticky="w", pady=(0, 2))
+        self._detected_ports_list = tk.Listbox(
+            cfg_frame,
+            height=min(max(len(detected), 1), MAX_DETECTED_PORTS_DISPLAY),
+            selectmode="extended",
+            exportselection=False,
+        )
+        self._detected_ports_list.grid(row=2, column=1, sticky="ew", padx=(6, 4), pady=(0, 6))
+        detected_scrollbar = ttk.Scrollbar(cfg_frame, orient="vertical",
+                                            command=self._detected_ports_list.yview)
+        self._detected_ports_list.configure(yscrollcommand=detected_scrollbar.set)
+        detected_scrollbar.grid(row=2, column=2, sticky="nsw", padx=(0, 8), pady=(0, 6))
+        for port in detected:
+            self._detected_ports_list.insert("end", port)
+        ttk.Button(
+            cfg_frame, text="↩ Auswahl übernehmen",
+            command=self._apply_selected_ports_from_list
+        ).grid(row=2, column=3, sticky="w", pady=(0, 6))
+        ttk.Button(
+            cfg_frame, text="🔄 Ports aktualisieren",
+            command=self._refresh_detected_ports
+        ).grid(row=2, column=4, sticky="w", padx=(8, 0), pady=(0, 6))
+
+        ttk.Separator(cfg_frame, orient="horizontal").grid(
+            row=3, column=0, columnspan=6, sticky="ew", pady=(2, 8))
+
+        # ── Zeile 4: Remote TAK ──
+        cfg_label("Remote TAK Host:", row=4, col=0, pady=(0, 4))
         self._server_host_var = tk.StringVar(value=str(self.cfg.get("tak_server_host", "82.165.11.84")))
         ttk.Entry(cfg_frame, textvariable=self._server_host_var, width=28).grid(
-            row=2, column=1, sticky="ew", padx=(4, 10), pady=(8, 0)
-        )
-        ttk.Label(cfg_frame, text="Remote Port:").grid(row=2, column=3, sticky="w", padx=(16, 4), pady=(8, 0))
+            row=4, column=1, sticky="ew", padx=(6, 12), pady=(0, 4))
+        cfg_label("Remote Port:", row=4, col=2, padx=(8, 6), pady=(0, 4))
         self._server_port_var = tk.StringVar(value=str(self.cfg.get("tak_server_port", 8087)))
         ttk.Entry(cfg_frame, textvariable=self._server_port_var, width=10).grid(
-            row=2, column=4, sticky="w", pady=(8, 0)
-        )
+            row=4, column=3, sticky="w", pady=(0, 4))
 
-        ttk.Label(cfg_frame, text="Remote Protokoll:").grid(row=3, column=0, sticky="w", pady=(4, 0))
+        # ── Zeile 5: Protokoll + Local TAK ──
+        cfg_label("Remote Protokoll:", row=5, col=0, pady=(0, 4))
         server_protocol = str(self.cfg.get("tak_server_protocol", "TCP")).upper()
         if server_protocol not in ("TCP", "UDP"):
             server_protocol = "TCP"
@@ -299,24 +505,26 @@ class GatewayApp:
         ttk.Combobox(
             cfg_frame, textvariable=self._server_protocol_var,
             state="readonly", values=["TCP", "UDP"], width=10
-        ).grid(row=3, column=1, sticky="w", padx=(4, 10), pady=(4, 0))
-        ttk.Label(cfg_frame, text="Local TAK IP:").grid(row=3, column=3, sticky="w", padx=(16, 4), pady=(4, 0))
+        ).grid(row=5, column=1, sticky="w", padx=(6, 12), pady=(0, 4))
+        cfg_label("Local TAK IP:", row=5, col=2, padx=(8, 6), pady=(0, 4))
         self._local_tak_ip_var = tk.StringVar(value=str(self.cfg.get("local_tak_ip", "127.0.0.1")))
-        ttk.Entry(cfg_frame, textvariable=self._local_tak_ip_var, width=14).grid(
-            row=3, column=4, sticky="w", pady=(4, 0)
-        )
+        ttk.Entry(cfg_frame, textvariable=self._local_tak_ip_var, width=16).grid(
+            row=5, column=3, sticky="w", pady=(0, 4))
 
-        ttk.Label(cfg_frame, text="Local TAK Port:").grid(row=4, column=0, sticky="w", pady=(4, 0))
+        # ── Zeile 6: Local Port + Sync-Intervall ──
+        cfg_label("Local TAK Port:", row=6, col=0, pady=(0, 4))
         self._local_tak_port_var = tk.StringVar(value=str(self.cfg.get("local_tak_port", 4242)))
         ttk.Entry(cfg_frame, textvariable=self._local_tak_port_var, width=10).grid(
-            row=4, column=1, sticky="w", padx=(4, 10), pady=(4, 0)
-        )
-        ttk.Label(cfg_frame, text="Sync-Intervall (s):").grid(row=4, column=3, sticky="w", padx=(16, 4), pady=(4, 0))
+            row=6, column=1, sticky="w", padx=(6, 12), pady=(0, 4))
+        cfg_label("Sync-Intervall (s):", row=6, col=2, padx=(8, 6), pady=(0, 4))
         self._sync_interval_var = tk.StringVar(value=str(self.cfg.get("sync_interval_seconds", 300)))
         ttk.Entry(cfg_frame, textvariable=self._sync_interval_var, width=10).grid(
-            row=4, column=4, sticky="w", pady=(4, 0)
-        )
+            row=6, column=3, sticky="w", pady=(0, 4))
 
+        ttk.Separator(cfg_frame, orient="horizontal").grid(
+            row=7, column=0, columnspan=6, sticky="ew", pady=(2, 8))
+
+        # ── Zeile 8: GPS-Optionen ──
         self._send_nodes_without_gps_var = tk.BooleanVar(
             value=as_bool(self.cfg.get("send_nodes_without_gps", True))
         )
@@ -325,92 +533,107 @@ class GatewayApp:
         )
         ttk.Checkbutton(
             cfg_frame,
-            text="Nodes ohne GPS senden",
+            text="Nodes ohne GPS-Fix senden",
             variable=self._send_nodes_without_gps_var,
-            command=self._update_no_gps_hint
-        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 0))
+            command=self._update_no_gps_hint,
+        ).grid(row=8, column=0, columnspan=2, sticky="w", pady=(0, 4))
         ttk.Checkbutton(
             cfg_frame,
             text="Gateway-Position beim Start setzen",
-            variable=self._set_gateway_position_var
-        ).grid(row=5, column=3, columnspan=2, sticky="w", padx=(16, 0), pady=(4, 0))
+            variable=self._set_gateway_position_var,
+        ).grid(row=8, column=2, columnspan=3, sticky="w", padx=(8, 0), pady=(0, 4))
 
-        ttk.Label(cfg_frame, text="park_lat:").grid(row=6, column=0, sticky="w", pady=(4, 0))
+        # ── Zeile 9: park_lat / park_lon ──
+        cfg_label("Fallback Lat (park_lat):", row=9, col=0, pady=(0, 4))
         park_lat_val = "" if self.cfg.get("park_lat") is None else str(self.cfg.get("park_lat"))
         self._park_lat_var = tk.StringVar(value=park_lat_val)
-        ttk.Entry(cfg_frame, textvariable=self._park_lat_var, width=14).grid(
-            row=6, column=1, sticky="w", padx=(4, 10), pady=(4, 0)
-        )
-        ttk.Label(cfg_frame, text="park_lon:").grid(row=6, column=3, sticky="w", padx=(16, 4), pady=(4, 0))
+        ttk.Entry(cfg_frame, textvariable=self._park_lat_var, width=16).grid(
+            row=9, column=1, sticky="w", padx=(6, 12), pady=(0, 4))
+        cfg_label("Fallback Lon (park_lon):", row=9, col=2, padx=(8, 6), pady=(0, 4))
         park_lon_val = "" if self.cfg.get("park_lon") is None else str(self.cfg.get("park_lon"))
         self._park_lon_var = tk.StringVar(value=park_lon_val)
-        ttk.Entry(cfg_frame, textvariable=self._park_lon_var, width=14).grid(
-            row=6, column=4, sticky="w", pady=(4, 0)
-        )
+        ttk.Entry(cfg_frame, textvariable=self._park_lon_var, width=16).grid(
+            row=9, column=3, sticky="w", pady=(0, 4))
         self._park_lat_var.trace_add("write", lambda *_: self._update_no_gps_hint())
         self._park_lon_var.trace_add("write", lambda *_: self._update_no_gps_hint())
 
+        # ── Zeile 10: Hinweis ──
         self._no_gps_hint_var = tk.StringVar()
-        ttk.Label(cfg_frame, textvariable=self._no_gps_hint_var, foreground="#aa5500").grid(
-            row=7, column=0, columnspan=5, sticky="w", pady=(4, 0)
-        )
+        ttk.Label(cfg_frame, textvariable=self._no_gps_hint_var, style="Hint.TLabel").grid(
+            row=10, column=0, columnspan=6, sticky="w", pady=(0, 2))
         self._update_no_gps_hint()
 
         cfg_frame.columnconfigure(1, weight=1)
+        cfg_frame.columnconfigure(3, weight=1)
 
-        # ── Toolbar ──
-        btn_frame = ttk.Frame(root, padding=(8, 2))
-        btn_frame.pack(fill="x")
+        # ── Toolbar / Steuerleiste ──
+        toolbar = tk.Frame(root, bg=C["panel"], pady=6)
+        toolbar.pack(fill="x", padx=0)
 
-        self._start_btn = ttk.Button(btn_frame, text="▶ Start", command=self._on_start)
-        self._start_btn.pack(side="left")
-        self._stop_btn = ttk.Button(btn_frame, text="■ Stop", command=self._on_stop, state="disabled")
-        self._stop_btn.pack(side="left", padx=(6, 0))
-        ttk.Button(btn_frame, text="🔄 Sync", command=self._on_manual_sync).pack(side="left", padx=(6, 0))
+        self._start_btn = ttk.Button(
+            toolbar, text="▶  Start", command=self._on_start, style="Accent.TButton", width=10)
+        self._start_btn.pack(side="left", padx=(10, 4))
+        self._stop_btn = ttk.Button(
+            toolbar, text="⏹  Stop", command=self._on_stop, state="disabled",
+            style="Danger.TButton", width=10)
+        self._stop_btn.pack(side="left", padx=(0, 4))
+        ttk.Button(
+            toolbar, text="🔄  Sync", command=self._on_manual_sync, width=10
+        ).pack(side="left", padx=(0, 4))
 
-        self._status_var = tk.StringVar(value="⬛ Gestoppt")
-        ttk.Label(btn_frame, textvariable=self._status_var).pack(side="left", padx=(16, 0))
+        self._status_var = tk.StringVar(value="⬛  Gestoppt")
+        ttk.Label(
+            toolbar, textvariable=self._status_var,
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="left", padx=(16, 0))
 
         # ── Log-Ausgabebereich ──
-        log_frame = ttk.LabelFrame(root, text=" Log-Ausgabe ", padding=4)
-        log_frame.pack(fill="both", expand=True, padx=8, pady=(4, 0))
+        log_frame = ttk.LabelFrame(root, text=" 📋  Log-Ausgabe ", padding=4)
+        log_frame.pack(fill="both", expand=True, padx=10, pady=(6, 0))
 
         self._log_text = tk.Text(
             log_frame, wrap="word", state="disabled",
-            bg="#1e1e1e", fg="#d4d4d4",
-            font=("Consolas", 9), relief="flat", bd=0,
-            insertbackground="#d4d4d4"
+            bg="#0d1117", fg="#c9d1d9",
+            font=self._log_font,
+            relief="flat", bd=0,
+            insertbackground="#c9d1d9",
+            selectbackground="#264f78",
         )
         scrollbar = ttk.Scrollbar(log_frame, command=self._log_text.yview)
         self._log_text.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
-        self._log_text.pack(fill="both", expand=True)
+        self._log_text.pack(fill="both", expand=True, padx=2, pady=2)
 
         # Farb-Tags je Log-Level
-        self._log_text.tag_configure("DEBUG",    foreground="#888888")
-        self._log_text.tag_configure("INFO",     foreground="#d4d4d4")
-        self._log_text.tag_configure("WARNING",  foreground="#ffcc00")
-        self._log_text.tag_configure("ERROR",    foreground="#ff5555")
-        self._log_text.tag_configure("CRITICAL", foreground="#ff0000")
-        self._log_text.tag_configure("CMD",      foreground="#569cd6")
+        self._log_text.tag_configure("DEBUG",    foreground="#6e7681")
+        self._log_text.tag_configure("INFO",     foreground="#c9d1d9")
+        self._log_text.tag_configure("WARNING",  foreground="#d29922")
+        self._log_text.tag_configure("ERROR",    foreground="#f85149")
+        self._log_text.tag_configure("CRITICAL", foreground="#ff7b72", font=("Consolas", 9, "bold"))
+        self._log_text.tag_configure("CMD",      foreground="#79c0ff")
 
-        # ── Eingabe / Befehlszeile unten ──
-        input_frame = ttk.LabelFrame(root, text=" Eingabe / Befehl ", padding=6)
-        input_frame.pack(fill="x", padx=8, pady=(4, 4))
+        # ── Eingabe / Befehlszeile ──
+        input_frame = ttk.LabelFrame(root, text=" ⌨  Befehlseingabe ", padding=6)
+        input_frame.pack(fill="x", padx=10, pady=(6, 0))
 
         self._input_var = tk.StringVar()
         input_entry = ttk.Entry(input_frame, textvariable=self._input_var)
         input_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
         input_entry.bind("<Return>", lambda _e: self._on_send_command())
+        ttk.Button(input_frame, text="Senden", command=self._on_send_command,
+                   style="Accent.TButton").pack(side="left")
 
-        ttk.Button(input_frame, text="Senden", command=self._on_send_command).pack(side="left")
-
-        # Hilfe-Hinweis
-        ttk.Label(
-            root,
-            text="Befehle: sync | log debug|info|warning|error | clear | help",
-            foreground="#777777"
-        ).pack(pady=(0, 4))
+        # ── Statusleiste unten ──
+        status_bar = tk.Frame(root, bg=C["panel"], height=22)
+        status_bar.pack(fill="x", side="bottom")
+        status_bar.pack_propagate(False)
+        tk.Label(
+            status_bar,
+            text="Befehle: sync  |  log debug|info|warning|error  |  clear  |  help",
+            bg=C["panel"], fg=C["fg_sub"],
+            font=("Segoe UI", 8),
+            anchor="w",
+        ).pack(side="left", padx=10, fill="y")
 
     def _apply_selected_ports_from_list(self):
         if not self._detected_ports:
@@ -434,7 +657,7 @@ class GatewayApp:
     def _refresh_detected_ports(self):
         self._detected_ports = detect_serial_port_devices()
         self._detected_ports_var.set(
-            f"Erkannt: {', '.join(self._detected_ports) if self._detected_ports else '–'}"
+            f"Erkannte Ports: {', '.join(self._detected_ports) if self._detected_ports else '–'}"
         )
         self._detected_ports_list.delete(0, "end")
         for port in self._detected_ports:
@@ -689,7 +912,19 @@ class TAKMeshtasticGateway:
         # Park coordinates wenn kein GPS-Fix (optional)
         self.park_lat = to_float_or_none(self.cfg.get("park_lat"))
         self.park_lon = to_float_or_none(self.cfg.get("park_lon"))
-        self.park_coords = normalize_coordinates(self.park_lat, self.park_lon)
+        # NOTE: (0,0) is intentionally allowed for park_coords (explicit user-configured
+        # fallback), unlike GPS fixes where (0,0) means "no fix".
+        if (
+            self.park_lat is not None
+            and self.park_lon is not None
+            and not math.isnan(self.park_lat)
+            and not math.isnan(self.park_lon)
+            and -90.0 <= self.park_lat <= 90.0
+            and -180.0 <= self.park_lon <= 180.0
+        ):
+            self.park_coords = (self.park_lat, self.park_lon)
+        else:
+            self.park_coords = None
         self.send_nodes_without_gps = as_bool(self.cfg.get("send_nodes_without_gps", True))
         self.set_gateway_position_on_start = as_bool(self.cfg.get("set_gateway_position_on_start", False))
 
