@@ -53,6 +53,7 @@ except Exception:
     pub = None
 
 CFG_FILENAME = "config.yaml"
+MAX_DETECTED_PORTS_DISPLAY = 6
 
 
 def get_tak_timestamp():
@@ -143,7 +144,7 @@ def load_config():
 
 
 def save_config(cfg):
-    """Speichert config.yaml im Skriptverzeichnis (falls PyYAML verfügbar)."""
+    """Saves config.yaml in the script directory (if PyYAML is available)."""
     if yaml is None:
         return
     base = os.path.dirname(os.path.abspath(__file__))
@@ -246,7 +247,10 @@ class GatewayApp:
             row=0, column=2, sticky="w"
         )
         self._detected_ports_list = tk.Listbox(
-            cfg_frame, height=min(max(len(detected), 1), 6), selectmode="extended", exportselection=False
+            cfg_frame,
+            height=min(max(len(detected), 1), MAX_DETECTED_PORTS_DISPLAY),
+            selectmode="extended",
+            exportselection=False
         )
         self._detected_ports_list.grid(row=1, column=1, sticky="ew", padx=(4, 10), pady=(4, 0))
         for port in detected:
@@ -414,7 +418,7 @@ class GatewayApp:
         has_park = bool(self._park_lat_var.get().strip()) and bool(self._park_lon_var.get().strip())
         if send_without_gps and not has_park:
             self._no_gps_hint_var.set(
-                "Hinweis: Für Nodes ohne GPS bitte park_lat und park_lon setzen, sonst werden sie übersprungen."
+                "Hinweis: für Nodes ohne GPS bitte park_lat und park_lon setzen, sonst werden sie übersprungen."
             )
         else:
             self._no_gps_hint_var.set("")
@@ -447,8 +451,14 @@ class GatewayApp:
         park_lat_text = self._park_lat_var.get().strip()
         park_lon_text = self._park_lon_var.get().strip()
         if park_lat_text and park_lon_text:
-            self.cfg["park_lat"] = float(park_lat_text)
-            self.cfg["park_lon"] = float(park_lon_text)
+            try:
+                self.cfg["park_lat"] = float(park_lat_text)
+            except ValueError:
+                raise ValueError("park_lat muss eine gültige Zahl sein.")
+            try:
+                self.cfg["park_lon"] = float(park_lon_text)
+            except ValueError:
+                raise ValueError("park_lon muss eine gültige Zahl sein.")
         elif not park_lat_text and not park_lon_text:
             self.cfg.pop("park_lat", None)
             self.cfg.pop("park_lon", None)
