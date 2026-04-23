@@ -400,6 +400,26 @@ class GatewayApp:
         header = tk.Frame(root, bg=C["panel"], height=56)
         header.pack(fill="x")
         header.pack_propagate(False)
+
+        # Logo
+        try:
+            _logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.png")
+            self._logo_image = tk.PhotoImage(file=_logo_path)
+            _logo_h = 40
+            _orig_h = self._logo_image.height()
+            _orig_w = self._logo_image.width()
+            if _orig_h > _logo_h:
+                _subsample = max(1, round(_orig_h / _logo_h))
+                self._logo_image = self._logo_image.subsample(_subsample, _subsample)
+            tk.Label(
+                header,
+                image=self._logo_image,
+                bg=C["panel"],
+                anchor="w",
+            ).pack(side="left", padx=(8, 0), pady=6)
+        except Exception:
+            self._logo_image = None
+
         tk.Label(
             header,
             text="  🛰  WinTAK Meshtastic Gateway",
