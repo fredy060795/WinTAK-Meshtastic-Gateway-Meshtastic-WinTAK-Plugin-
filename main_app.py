@@ -237,15 +237,16 @@ class GatewayApp:
             default_ports = str(cfg_port).strip()
         else:
             detected_init = detect_serial_port_devices()
-            default_ports = ", ".join(detected_init[:1]) if detected_init else ""
+            default_ports = ", ".join(detected_init) if detected_init else ""
         self._ports_var = tk.StringVar(value=default_ports)
         ports_entry = ttk.Entry(cfg_frame, textvariable=self._ports_var, width=28)
         ports_entry.grid(row=0, column=1, sticky="ew", padx=(4, 10))
 
         detected = detect_serial_port_devices()
         self._detected_ports = detected
-        detected_str = ", ".join(detected) if detected else "–"
-        ttk.Label(cfg_frame, text=f"Erkannt: {detected_str}", foreground="#777777").grid(
+        self._detected_ports_var = tk.StringVar()
+        self._detected_ports_var.set(f"Erkannt: {', '.join(detected) if detected else '–'}")
+        ttk.Label(cfg_frame, textvariable=self._detected_ports_var, foreground="#777777").grid(
             row=0, column=2, sticky="w"
         )
         self._detected_ports_list = tk.Listbox(
@@ -255,11 +256,17 @@ class GatewayApp:
             exportselection=False
         )
         self._detected_ports_list.grid(row=1, column=1, sticky="ew", padx=(4, 10), pady=(4, 0))
+        detected_scrollbar = ttk.Scrollbar(cfg_frame, orient="vertical", command=self._detected_ports_list.yview)
+        self._detected_ports_list.configure(yscrollcommand=detected_scrollbar.set)
+        detected_scrollbar.grid(row=1, column=2, sticky="nsw", pady=(4, 0))
         for port in detected:
             self._detected_ports_list.insert("end", port)
         ttk.Button(
             cfg_frame, text="Auswahl übernehmen", command=self._apply_selected_ports_from_list
-        ).grid(row=1, column=2, sticky="w", pady=(4, 0))
+        ).grid(row=1, column=3, sticky="w", pady=(4, 0))
+        ttk.Button(
+            cfg_frame, text="Ports aktualisieren", command=self._refresh_detected_ports
+        ).grid(row=1, column=4, sticky="w", padx=(16, 4), pady=(4, 0))
 
         ttk.Label(cfg_frame, text="Log-Level:").grid(row=0, column=3, sticky="w", padx=(16, 4))
         log_default = str(self.cfg.get("log_level", "INFO")).upper()
@@ -413,7 +420,28 @@ class GatewayApp:
             return
         selected = [self._detected_ports[i] for i in indices if 0 <= i < len(self._detected_ports)]
         if selected:
-            self._ports_var.set(", ".join(selected))
+            existing = _parse_ports_text(self._ports_var.get())
+            merged = []
+            seen = set()
+            for port in existing + selected:
+                upper_port = port.upper()
+                if upper_port in seen:
+                    continue
+                seen.add(upper_port)
+                merged.append(port)
+            self._ports_var.set(", ".join(merged))
+
+    def _refresh_detected_ports(self):
+        self._detected_ports = detect_serial_port_devices()
+        self._detected_ports_var.set(
+            f"Erkannt: {', '.join(self._detected_ports) if self._detected_ports else '–'}"
+        )
+        self._detected_ports_list.delete(0, "end")
+        for port in self._detected_ports:
+            self._detected_ports_list.insert("end", port)
+        self._detected_ports_list.configure(
+            height=min(max(len(self._detected_ports), 1), MAX_DETECTED_PORTS_DISPLAY)
+        )
 
     def _update_no_gps_hint(self):
         send_without_gps = bool(self._send_nodes_without_gps_var.get())
@@ -656,6 +684,7 @@ class TAKMeshtasticGateway:
         self.interfaces = []
         self.server_lock = threading.Lock()
         self.shutdown_flag = threading.Event()  # For graceful shutdown
+        self.last_known_positions = {}
 
         # Park coordinates wenn kein GPS-Fix (optional)
         self.park_lat = to_float_or_none(self.cfg.get("park_lat"))
@@ -880,13 +909,13 @@ class TAKMeshtasticGateway:
 
             lat_i, lon_i = pos.get('latitude_i'), pos.get('longitude_i')
             lat_f, lon_f = pos.get('latitude'), pos.get('longitude')
+            alt = pos.get('altitude', 0) or 0
 
             final_lat, final_lon, is_real = 0.0, 0.0, False
+            position_source = "USER"
 
-            # Priorität: integer-Telemetrie (1e-7) -> float -> fallback park
+            # Priorität: integer-Telemetrie (1e-7) -> float -> last known -> fallback park
             # NOTE: Coordinates at exactly (0,0) are treated as no GPS fix and use fallback
-            # per README: "Nodes without a valid GPS fix are placed at 0.0, 0.0 by default"
-            # This prevents displaying nodes at "Null Island" in the Atlantic Ocean
             # OR logic is intentional: accepts lat=0 OR lon=0 (equator/prime meridian) but rejects (0,0)
             if lat_i is not None and lon_i is not None:
                 normalized = normalize_coordinates(lat_i * 1e-7, lon_i * 1e-7)
@@ -899,25 +928,36 @@ class TAKMeshtasticGateway:
                     final_lat, final_lon = normalized
                     is_real = True
 
-            if not is_real:
-                if not self.send_nodes_without_gps:
-                    self.logger.debug(f"Überspringe Node ohne gültigen GPS-Fix: {callsign}")
-                    return
-                if self.park_coords is None:
-                    self.logger.debug(f"Überspringe Node ohne gültigen GPS-Fix (kein park_lat/park_lon): {callsign}")
-                    return
-                final_lat = self.park_coords[0] - (index * 0.001)
-                final_lon = self.park_coords[1]
+            if is_real:
+                position_source = "GPS"
+                self.last_known_positions[uid] = (final_lat, final_lon, alt)
+            else:
+                last_known = self.last_known_positions.get(uid)
+                if last_known:
+                    final_lat, final_lon, cached_alt = last_known
+                    alt = alt or cached_alt
+                    position_source = "LAST_KNOWN"
+                else:
+                    if not self.send_nodes_without_gps:
+                        self.logger.debug(f"Überspringe Node ohne gültigen GPS-Fix: {callsign}")
+                        return
+                    if self.park_coords is None:
+                        self.logger.debug(f"Überspringe Node ohne gültigen GPS-Fix (kein park_lat/park_lon): {callsign}")
+                        return
+                    final_lat = self.park_coords[0] - (index * 0.001)
+                    final_lon = self.park_coords[1]
+                    position_source = "USER"
 
             if is_real and force_update:
                 self.logger.info(f"LIVE: Position-Update empfangen von {callsign}")
+            elif position_source == "LAST_KNOWN" and force_update:
+                self.logger.info(f"LIVE: Nutze letzte bekannte Position für {callsign}")
 
-            alt = pos.get('altitude', 0) or 0
-            self.send_broadcast(uid, callsign, final_lat, final_lon, alt, is_real)
+            self.send_broadcast(uid, callsign, final_lat, final_lon, alt, is_real, position_source)
         except Exception:
             self.logger.error("Fehler in process_node:\n" + traceback.format_exc())
 
-    def send_broadcast(self, uid, callsign, lat, lon, alt, is_real):
+    def send_broadcast(self, uid, callsign, lat, lon, alt, is_real, position_source="GPS"):
         """
         Baut das CoT-XML und sendet es lokal per UDP an WinTAK und optional an entfernten TAK-Server (TCP/UDP).
         """
@@ -944,8 +984,16 @@ class TAKMeshtasticGateway:
             detail = SubElement(event, 'detail')
             SubElement(detail, 'contact', {'callsign': callsign, 'endpoint': f"{self.tak_ip}:{self.tak_port}:udp"})
             SubElement(detail, '__group', {'name': 'Cyan', 'role': 'Team Member'})
-            SubElement(detail, 'precisionlocation', {'geopointsrc': 'GPS' if is_real else 'USER'})
-            if not is_real:
+            if position_source == "GPS":
+                geopointsrc = "GPS"
+            elif position_source == "LAST_KNOWN":
+                geopointsrc = "ESTIMATED"
+            else:
+                geopointsrc = "USER"
+            SubElement(detail, 'precisionlocation', {'geopointsrc': geopointsrc})
+            if position_source == "LAST_KNOWN":
+                SubElement(detail, 'remarks').text = "Listed (Last Known Position)"
+            elif not is_real:
                 SubElement(detail, 'remarks').text = "Listed (No GPS Fix)"
 
             # ElementTree.tostring mit UTF-8 ergibt bytes
