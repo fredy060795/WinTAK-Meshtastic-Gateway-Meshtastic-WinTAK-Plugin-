@@ -336,7 +336,7 @@ class TAKMeshtasticGateway:
                     continue
                 except Exception:
                     self.logger.warning("Fehler beim Setzen der Gateway-Position:\n" + traceback.format_exc())
-                    continue
+                    return False
         return False
 
     def apply_gateway_fixed_position(self):
