@@ -422,7 +422,7 @@ class GatewayApp:
 
         tk.Label(
             header,
-            text="  🛰  WinTAK Meshtastic Gateway",
+            text="WinTAK Meshtastic Gateway",
             bg=C["panel"], fg=C["fg"],
             font=("Segoe UI", 14, "bold"),
             anchor="w",
