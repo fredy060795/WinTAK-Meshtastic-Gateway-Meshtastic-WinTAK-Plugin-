@@ -176,8 +176,8 @@ class TAKMeshtasticGateway:
         # Sync interval
         self.sync_interval_seconds = int(self.cfg.get("sync_interval_seconds", 300))
 
-        # Warn when no-fix nodes would be placed at (0,0) / Null Island
-        if self.send_nodes_without_gps and self.park_lat == 0.0 and self.park_lon == 0.0:
+        # Warn when no-fix nodes would be placed at an invalid/unconfigured position
+        if self.send_nodes_without_gps and normalize_coordinates(self.park_lat, self.park_lon) is None:
             self.logger.warning(
                 "ACHTUNG: send_nodes_without_gps=true, aber park_lat/park_lon sind nicht gesetzt. "
                 "Nodes ohne GPS-Fix werden bei (0,0) / Null Island dargestellt. "
@@ -338,7 +338,8 @@ class TAKMeshtasticGateway:
                 final_lon = self.park_lon
 
             if is_real and force_update:
-                self.logger.info(f"LIVE: {callsign} @ {final_lat:.5f}, {final_lon:.5f}")
+                self.logger.info(f"LIVE: Position-Update empfangen von {callsign}")
+                self.logger.debug(f"LIVE: {callsign} @ {final_lat:.5f}, {final_lon:.5f}")
 
             alt = pos.get('altitude', 0) or 0
             self.send_broadcast(uid, callsign, final_lat, final_lon, alt, is_real)
