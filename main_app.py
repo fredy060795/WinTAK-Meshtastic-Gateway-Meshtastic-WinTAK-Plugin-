@@ -380,6 +380,16 @@ class GatewayApp:
             "success": SUCCESS, "warning": WARNING, "danger": DANGER,
         }
 
+        # Font-Verfügbarkeit einmalig prüfen und cachen
+        try:
+            import tkinter.font as tkfont
+            available_families = set(tkfont.families())
+        except Exception:
+            available_families = set()
+        self._log_font = (
+            "Cascadia Code" if "Cascadia Code" in available_families else "Consolas", 9
+        )
+
     # ─────────────────────────── UI-Aufbau ────────────────────────────────────
 
     def _build_ui(self):
@@ -584,7 +594,7 @@ class GatewayApp:
         self._log_text = tk.Text(
             log_frame, wrap="word", state="disabled",
             bg="#0d1117", fg="#c9d1d9",
-            font=("Cascadia Code", 9) if self._font_exists("Cascadia Code") else ("Consolas", 9),
+            font=self._log_font,
             relief="flat", bd=0,
             insertbackground="#c9d1d9",
             selectbackground="#264f78",
@@ -624,14 +634,6 @@ class GatewayApp:
             font=("Segoe UI", 8),
             anchor="w",
         ).pack(side="left", padx=10, fill="y")
-
-    def _font_exists(self, font_name):
-        """Return True if the given font name is available on this system."""
-        try:
-            import tkinter.font as tkfont
-            return font_name in tkfont.families()
-        except Exception:
-            return False
 
     def _apply_selected_ports_from_list(self):
         if not self._detected_ports:
