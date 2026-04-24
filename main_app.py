@@ -830,11 +830,6 @@ class GatewayApp:
                 lon_val = float(park_lon_text)
             except ValueError:
                 raise ValueError("park_lon muss eine gültige Zahl sein.")
-            if lat_val == 0.0 and lon_val == 0.0:
-                raise ValueError(
-                    "park_lat und park_lon dürfen nicht beide 0.0 sein (Null Island / kein gültiger Standort). "
-                    "Bitte echte Koordinaten eintragen oder beide Felder leer lassen."
-                )
             self.cfg["park_lat"] = lat_val
             self.cfg["park_lon"] = lon_val
         elif not park_lat_text and not park_lon_text:
@@ -1093,8 +1088,6 @@ class TAKMeshtasticGateway:
         # Park coordinates wenn kein GPS-Fix (optional)
         self.park_lat = to_float_or_none(self.cfg.get("park_lat"))
         self.park_lon = to_float_or_none(self.cfg.get("park_lon"))
-        # NOTE: (0,0) is treated as "not configured" (same as GPS fix logic) to prevent
-        # accidentally placing nodes on Null Island when the user leaves the default 0.0 values.
         if (
             self.park_lat is not None
             and self.park_lon is not None
@@ -1102,7 +1095,6 @@ class TAKMeshtasticGateway:
             and not math.isnan(self.park_lon)
             and -90.0 <= self.park_lat <= 90.0
             and -180.0 <= self.park_lon <= 180.0
-            and not (self.park_lat == 0.0 and self.park_lon == 0.0)
         ):
             self.park_coords = (self.park_lat, self.park_lon)
         else:
