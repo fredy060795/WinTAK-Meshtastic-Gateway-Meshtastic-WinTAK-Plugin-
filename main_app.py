@@ -661,14 +661,14 @@ class GatewayApp:
 
         # ── Zeile 9: park_lat / park_lon ──
         cfg_label("Fallback Lat (park_lat):", row=9, col=0, pady=(0, 4))
-        _v = self.cfg.get("park_lat")
-        park_lat_val = "" if _v is None else f"{float(_v):.6f}".rstrip("0").rstrip(".")
+        raw_park_lat = self.cfg.get("park_lat")
+        park_lat_val = "" if raw_park_lat is None else f"{float(raw_park_lat):.6f}".rstrip("0").rstrip(".")
         self._park_lat_var = tk.StringVar(value=park_lat_val)
         ttk.Entry(cfg_frame, textvariable=self._park_lat_var, width=16).grid(
             row=9, column=1, sticky="w", padx=(6, 12), pady=(0, 4))
         cfg_label("Fallback Lon (park_lon):", row=9, col=2, padx=(8, 6), pady=(0, 4))
-        _v = self.cfg.get("park_lon")
-        park_lon_val = "" if _v is None else f"{float(_v):.6f}".rstrip("0").rstrip(".")
+        raw_park_lon = self.cfg.get("park_lon")
+        park_lon_val = "" if raw_park_lon is None else f"{float(raw_park_lon):.6f}".rstrip("0").rstrip(".")
         self._park_lon_var = tk.StringVar(value=park_lon_val)
         ttk.Entry(cfg_frame, textvariable=self._park_lon_var, width=16).grid(
             row=9, column=3, sticky="w", pady=(0, 4))
