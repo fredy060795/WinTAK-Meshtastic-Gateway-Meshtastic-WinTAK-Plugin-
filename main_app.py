@@ -440,9 +440,11 @@ class GatewayApp:
                          foreground=FG,
                          indicatorcolor="#1f2937",
                          indicatorbackground="#1f2937",
+                         indicatorforeground="#ffffff",
                          indicatorrelief="flat")
         style.map("TCheckbutton",
                   indicatorcolor=[("selected", ACCENT)],
+                  indicatorforeground=[("selected", "#ffffff"), ("!selected", "#ffffff")],
                   background=[("active", CARD)])
 
         # ── TSeparator ──
@@ -659,12 +661,14 @@ class GatewayApp:
 
         # ── Zeile 9: park_lat / park_lon ──
         cfg_label("Fallback Lat (park_lat):", row=9, col=0, pady=(0, 4))
-        park_lat_val = "" if self.cfg.get("park_lat") is None else str(self.cfg.get("park_lat"))
+        _v = self.cfg.get("park_lat")
+        park_lat_val = "" if _v is None else f"{float(_v):.6f}".rstrip("0").rstrip(".")
         self._park_lat_var = tk.StringVar(value=park_lat_val)
         ttk.Entry(cfg_frame, textvariable=self._park_lat_var, width=16).grid(
             row=9, column=1, sticky="w", padx=(6, 12), pady=(0, 4))
         cfg_label("Fallback Lon (park_lon):", row=9, col=2, padx=(8, 6), pady=(0, 4))
-        park_lon_val = "" if self.cfg.get("park_lon") is None else str(self.cfg.get("park_lon"))
+        _v = self.cfg.get("park_lon")
+        park_lon_val = "" if _v is None else f"{float(_v):.6f}".rstrip("0").rstrip(".")
         self._park_lon_var = tk.StringVar(value=park_lon_val)
         ttk.Entry(cfg_frame, textvariable=self._park_lon_var, width=16).grid(
             row=9, column=3, sticky="w", pady=(0, 4))
@@ -819,13 +823,20 @@ class GatewayApp:
         park_lon_text = self._park_lon_var.get().strip()
         if park_lat_text and park_lon_text:
             try:
-                self.cfg["park_lat"] = float(park_lat_text)
+                lat_val = float(park_lat_text)
             except ValueError:
                 raise ValueError("park_lat muss eine gültige Zahl sein.")
             try:
-                self.cfg["park_lon"] = float(park_lon_text)
+                lon_val = float(park_lon_text)
             except ValueError:
                 raise ValueError("park_lon muss eine gültige Zahl sein.")
+            if lat_val == 0.0 and lon_val == 0.0:
+                raise ValueError(
+                    "park_lat und park_lon dürfen nicht beide 0.0 sein (Null Island / kein gültiger Standort). "
+                    "Bitte echte Koordinaten eintragen oder beide Felder leer lassen."
+                )
+            self.cfg["park_lat"] = lat_val
+            self.cfg["park_lon"] = lon_val
         elif not park_lat_text and not park_lon_text:
             self.cfg.pop("park_lat", None)
             self.cfg.pop("park_lon", None)
@@ -1082,8 +1093,8 @@ class TAKMeshtasticGateway:
         # Park coordinates wenn kein GPS-Fix (optional)
         self.park_lat = to_float_or_none(self.cfg.get("park_lat"))
         self.park_lon = to_float_or_none(self.cfg.get("park_lon"))
-        # NOTE: (0,0) is intentionally allowed for park_coords (explicit user-configured
-        # fallback), unlike GPS fixes where (0,0) means "no fix".
+        # NOTE: (0,0) is treated as "not configured" (same as GPS fix logic) to prevent
+        # accidentally placing nodes on Null Island when the user leaves the default 0.0 values.
         if (
             self.park_lat is not None
             and self.park_lon is not None
@@ -1091,6 +1102,7 @@ class TAKMeshtasticGateway:
             and not math.isnan(self.park_lon)
             and -90.0 <= self.park_lat <= 90.0
             and -180.0 <= self.park_lon <= 180.0
+            and not (self.park_lat == 0.0 and self.park_lon == 0.0)
         ):
             self.park_coords = (self.park_lat, self.park_lon)
         else:
@@ -1339,6 +1351,9 @@ class TAKMeshtasticGateway:
                 # GPS-Position in Datenbank persistieren (aktualisiert bei Änderung)
                 self.node_db.upsert_node(uid, callsign, final_lat, final_lon, alt, "GPS")
             else:
+                if not self.send_nodes_without_gps:
+                    self.logger.debug(f"Überspringe Node ohne gültigen GPS-Fix: {callsign}")
+                    return
                 last_known = self.last_known_positions.get(uid)
                 if not last_known:
                     # Datenbank als Fallback prüfen (z.B. nach Neustart oder manuelle Eingabe)
@@ -1351,9 +1366,6 @@ class TAKMeshtasticGateway:
                     alt = alt or cached_alt
                     position_source = "LAST_KNOWN"
                 else:
-                    if not self.send_nodes_without_gps:
-                        self.logger.debug(f"Überspringe Node ohne gültigen GPS-Fix: {callsign}")
-                        return
                     if self.park_coords is None:
                         self.logger.debug(f"Überspringe Node ohne gültigen GPS-Fix (kein park_lat/park_lon): {callsign}")
                         return
