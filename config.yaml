@@ -31,6 +31,13 @@ local_tak_chat_listen_port: 4243
 # Optionaler lokaler TCP-Port für WinTAK/admin_map-Kompatibilität
 # (z. B. WinTAK → 127.0.0.1:8087 per TCP).
 local_tak_tcp_listen_port: 8087
+# Optional: zusätzliche TAK-Multicast-Gruppen für GeoChat / SA lauschen
+# (hilfreich wenn WinTAK/ATAK oder ein TAK-Server Chat/CoT per Multicast verteilt).
+tak_multicast_groups:
+  - 224.10.10.1:17012
+  - 239.2.3.1:6969
+# Optional: lokale Interface-IP für den Multicast-Join (Standard 0.0.0.0 = OS-Default).
+# tak_multicast_interface_ip: 0.0.0.0
 # Optional: auf welcher lokalen IP der Chat-Listener lauscht.
 # Standard ist 0.0.0.0, damit WinTAK sowohl über 127.0.0.1 als auch über die LAN-IP
 # des Gateway-Rechners senden kann. Ausgehende Mesh-Nachrichten gehen immer auf Main-Channel 0.

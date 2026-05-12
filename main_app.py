@@ -67,6 +67,10 @@ MAX_PORT_NUMBER = 65535
 DEFAULT_CHATROOM_NAME = "All Chat Rooms"
 DEFAULT_CHAT_LISTEN_PORT = 4243
 TCP_LISTENER_DEFAULT_PORT = 8087
+DEFAULT_TAK_MULTICAST_GROUPS = (
+    "224.10.10.1:17012",
+    "239.2.3.1:6969",
+)
 DEFAULT_SOURCE_PROTOCOL = "UNKNOWN"
 TCP_SOCKET_TIMEOUT_SECONDS = 1.0
 TCP_LISTENER_BACKLOG = 5
@@ -625,6 +629,65 @@ def _store_ports_in_config(cfg, key, ports):
         cfg[key] = ports[0] if len(ports) == 1 else ports
     else:
         cfg.pop(key, None)
+
+
+def _normalize_tak_multicast_endpoint(value):
+    if isinstance(value, dict):
+        group = str(value.get("group") or value.get("host") or value.get("ip") or "").strip()
+        port = value.get("port")
+    else:
+        raw_value = str(value or "").strip()
+        if not raw_value:
+            return None
+        group, separator, port = raw_value.rpartition(":")
+        if not separator:
+            raise ValueError(
+                "tak_multicast_groups-Einträge müssen als 'Multicast-IP:Port' angegeben werden."
+            )
+        group = group.strip()
+        port = port.strip()
+
+    if not group:
+        raise ValueError("tak_multicast_groups-Eintrag ohne Multicast-IP.")
+    try:
+        packed_group = socket.inet_aton(group)
+    except OSError as exc:
+        raise ValueError(f"Ungültige Multicast-IP '{group}' in tak_multicast_groups.") from exc
+    first_octet = packed_group[0]
+    if not (224 <= first_octet <= 239):
+        raise ValueError(f"IP '{group}' in tak_multicast_groups ist keine IPv4-Multicast-Adresse.")
+    try:
+        port = int(str(port).strip())
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Ungültiger Port '{port}' in tak_multicast_groups.") from exc
+    if not (MIN_PORT_NUMBER <= port <= MAX_PORT_NUMBER):
+        raise ValueError(
+            f"Port '{port}' in tak_multicast_groups muss zwischen {MIN_PORT_NUMBER} und {MAX_PORT_NUMBER} liegen."
+        )
+    return group, port
+
+
+def _config_tak_multicast_groups_to_list(value):
+    if value is None:
+        raw_entries = list(DEFAULT_TAK_MULTICAST_GROUPS)
+    elif isinstance(value, list):
+        raw_entries = value
+    elif isinstance(value, tuple):
+        raw_entries = list(value)
+    elif isinstance(value, str):
+        raw_entries = [entry for entry in re.split(r"[,\n;]+", value) if entry.strip()]
+    else:
+        raw_entries = [value]
+
+    normalized_entries = []
+    seen = set()
+    for raw_entry in raw_entries:
+        normalized_entry = _normalize_tak_multicast_endpoint(raw_entry)
+        if normalized_entry is None or normalized_entry in seen:
+            continue
+        seen.add(normalized_entry)
+        normalized_entries.append(normalized_entry)
+    return normalized_entries
 
 
 class NodeDatabase:
@@ -1745,6 +1808,21 @@ class TAKMeshtasticGateway:
         except (ValueError, TypeError) as e:
             raise ValueError(f"Invalid local_tak_chat_listen_port in config: {e}")
         self.chat_listen_ip = str(self.cfg.get("local_tak_chat_listen_ip", "0.0.0.0")).strip() or "0.0.0.0"
+        self.tak_multicast_interface_ip = (
+            str(self.cfg.get("tak_multicast_interface_ip", "0.0.0.0")).strip() or "0.0.0.0"
+        )
+        try:
+            socket.inet_aton(self.tak_multicast_interface_ip)
+        except OSError as exc:
+            raise ValueError(
+                f"Invalid tak_multicast_interface_ip in config: {self.tak_multicast_interface_ip}"
+            ) from exc
+        try:
+            self.tak_multicast_groups = _config_tak_multicast_groups_to_list(
+                self.cfg.get("tak_multicast_groups")
+            )
+        except ValueError as exc:
+            raise ValueError(f"Invalid tak_multicast_groups in config: {exc}") from exc
         try:
             tcp_chat_listen_port = int(
                 self.cfg.get("local_tak_tcp_listen_port", TCP_LISTENER_DEFAULT_PORT)
@@ -1852,6 +1930,12 @@ class TAKMeshtasticGateway:
                 threading.Thread(
                     target=self.listen_for_tak_chat,
                     args=(listen_port,),
+                    daemon=True,
+                ).start()
+            for multicast_group, multicast_port in self.tak_multicast_groups:
+                threading.Thread(
+                    target=self.listen_for_tak_multicast,
+                    args=(multicast_group, multicast_port),
                     daemon=True,
                 ).start()
             threading.Thread(
@@ -2748,6 +2832,21 @@ class TAKMeshtasticGateway:
             raise last_error
         raise OSError("Kein Chat-Listener-Socket konnte erstellt werden.")
 
+    def _create_tak_multicast_listener_socket(self, multicast_group, listen_port):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        except (AttributeError, OSError):
+            pass
+        sock.settimeout(1.0)
+        sock.bind(("", listen_port))
+        membership_request = socket.inet_aton(multicast_group) + socket.inet_aton(
+            self.tak_multicast_interface_ip
+        )
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, membership_request)
+        return sock
+
     def _create_chat_tcp_listener_socket(self, listen_port):
         requested_ip = self.tcp_chat_listen_ip
         bind_attempts = []
@@ -2996,6 +3095,61 @@ class TAKMeshtasticGateway:
                 normalized_packet,
                 source_addr=addr,
                 source_protocol="UDP",
+                listener_port=listen_port,
+                packet_size=packet_size,
+                was_normalized=was_normalized,
+            )
+
+    def listen_for_tak_multicast(self, multicast_group, listen_port):
+        try:
+            sock = self._create_tak_multicast_listener_socket(multicast_group, listen_port)
+            self.sock_chat_listeners.append(sock)
+            self.logger.info(
+                f"TAK-Multicast-Listener aktiv auf {multicast_group}:{listen_port} "
+                f"(Interface {self.tak_multicast_interface_ip})."
+            )
+        except Exception as e:
+            self.logger.warning(
+                f"TAK-Multicast-Listener auf {multicast_group}:{listen_port} konnte nicht gestartet werden: {e}"
+            )
+            return
+
+        while not self.shutdown_flag.is_set():
+            try:
+                packet_xml, addr = sock.recvfrom(65535)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            except Exception:
+                self.logger.debug(
+                    "Fehler beim Empfangen von TAK-Multicast:\n" + traceback.format_exc()
+                )
+                continue
+            raw_packet_bytes = _ensure_bytes(packet_xml)
+            packet_size = len(raw_packet_bytes)
+            normalized_packet = self._normalize_inbound_tak_packet(packet_xml)
+            was_normalized = bool(normalized_packet) and _ensure_bytes(normalized_packet) != raw_packet_bytes
+            if not normalized_packet:
+                self._log_inbound_tak_diagnostics(
+                    source_addr=addr,
+                    source_protocol="UDP-MULTICAST",
+                    listener_port=listen_port,
+                    packet_size=packet_size,
+                    was_normalized=False,
+                    is_cot_event=False,
+                    is_chat_payload=False,
+                    payload_snippet=_build_safe_payload_snippet(packet_xml),
+                    discard_reason=(
+                        f"Multicast-Paket von {multicast_group}:{listen_port} "
+                        "konnte nicht zu einem TAK-Event normalisiert werden"
+                    ),
+                )
+                continue
+            self.handle_inbound_tak_packet(
+                normalized_packet,
+                source_addr=addr,
+                source_protocol="UDP-MULTICAST",
                 listener_port=listen_port,
                 packet_size=packet_size,
                 was_normalized=was_normalized,
