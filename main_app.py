@@ -65,8 +65,8 @@ MAX_DETECTED_PORTS_DISPLAY = 6
 MIN_PORT_NUMBER = 1
 MAX_PORT_NUMBER = 65535
 DEFAULT_CHATROOM_NAME = "All Chat Rooms"
-DEFAULT_CHAT_LISTEN_PORT = 4243
-TCP_LISTENER_DEFAULT_PORT = 8087
+DEFAULT_CHAT_LISTEN_PORT = 4242
+TCP_LISTENER_DEFAULT_PORT = 8088
 DEFAULT_TAK_MULTICAST_GROUPS = (
     "224.10.10.1:17012",
     "239.2.3.1:6969",
@@ -227,6 +227,18 @@ def _collect_xml_text(element):
         return ""
     text_parts = [text.strip() for text in element.itertext() if text and text.strip()]
     return "\n".join(text_parts)
+
+
+def _get_tak_tcp_listener_endpoint_from_cfg(cfg, strict_port=False):
+    """Return configured TCP listener bind IP/port with shared defaults."""
+    listen_ip = str(cfg.get("local_tak_tcp_listen_ip", "0.0.0.0")).strip() or "0.0.0.0"
+    try:
+        listen_port = int(cfg.get("local_tak_tcp_listen_port", TCP_LISTENER_DEFAULT_PORT))
+    except (TypeError, ValueError):
+        if strict_port:
+            raise
+        listen_port = TCP_LISTENER_DEFAULT_PORT
+    return listen_ip, listen_port
 
 
 def _strip_tak_sender_prefix(value):
@@ -1151,7 +1163,7 @@ class GatewayApp:
         ttk.Entry(cfg_frame, textvariable=self._server_host_var, width=28).grid(
             row=4, column=1, sticky="ew", padx=(6, 12), pady=(0, 4))
         cfg_label("Remote Port:", row=4, col=2, padx=(8, 6), pady=(0, 4))
-        self._server_port_var = tk.StringVar(value=str(self.cfg.get("tak_server_port", 8087)))
+        self._server_port_var = tk.StringVar(value=str(self.cfg.get("tak_server_port", 8088)))
         ttk.Entry(cfg_frame, textvariable=self._server_port_var, width=10).grid(
             row=4, column=3, sticky="w", pady=(0, 4))
 
@@ -1308,10 +1320,9 @@ class GatewayApp:
         ).pack(side="left", padx=(10, 0))
 
         # ── WinTAK TCP Monitor ──
-        tak_monitor_frame = ttk.LabelFrame(
-            body, text=" 📡  WinTAK-Nachrichten (TCP 127.0.0.1:8087) ", padding=6
-        )
+        tak_monitor_frame = ttk.LabelFrame(body, padding=6)
         tak_monitor_frame.pack(fill="x", padx=10, pady=(6, 0))
+        self._wintak_monitor_frame = tak_monitor_frame
 
         self._wintak_monitor_text = tk.Text(
             tak_monitor_frame, height=4, wrap="word", state="disabled",
@@ -1324,9 +1335,7 @@ class GatewayApp:
         tak_status_row = ttk.Frame(tak_monitor_frame)
         tak_status_row.pack(fill="x")
 
-        self._wintak_monitor_status_var = tk.StringVar(
-            value="⚪ Warte auf WinTAK-Verbindung auf TCP 127.0.0.1:8087 …"
-        )
+        self._wintak_monitor_status_var = tk.StringVar()
         ttk.Label(
             tak_status_row,
             textvariable=self._wintak_monitor_status_var,
@@ -1341,6 +1350,7 @@ class GatewayApp:
             style="Accent.TButton",
         )
         self._wintak_forward_btn.pack(side="right")
+        self._refresh_wintak_monitor_listener_ui()
 
         # ── Eingabe / Befehlszeile ──
         input_frame = ttk.LabelFrame(body, text=" ⌨  Befehlseingabe ", padding=6)
@@ -1473,11 +1483,6 @@ class GatewayApp:
         self.cfg["local_tak_tcp_listen_port"] = self._parse_int_field(
             self._local_tak_tcp_listen_port_var.get(), "Local TAK TCP Listen Port"
         )
-        if self.cfg["local_tak_chat_listen_port"] == self.cfg["local_tak_port"]:
-            raise ValueError(
-                f"Local TAK Chat Listen Port ({self.cfg['local_tak_chat_listen_port']}) "
-                f"must differ from Local TAK Port ({self.cfg['local_tak_port']})."
-            )
         self.cfg["sync_interval_seconds"] = self._parse_int_field(
             self._sync_interval_var.get(), "Sync-Intervall", min_value=1, max_value=86400
         )
@@ -1541,6 +1546,7 @@ class GatewayApp:
         try:
             self._apply_form_to_cfg(ports)
             save_config(self.cfg)
+            self._refresh_wintak_monitor_listener_ui()
         except Exception as e:
             self._append_log(f"Ungültige Einstellungen: {e}", "WARNING")
             return
@@ -1601,6 +1607,7 @@ class GatewayApp:
         self._status_var.set("⬛ Gestoppt")
         self._send_mesh_test_btn.configure(state="disabled")
         self._mesh_test_status_var.set("Gateway nicht gestartet.")
+        self._refresh_wintak_monitor_listener_ui()
 
     def _on_manual_sync(self):
         gw = self._gateway
@@ -1648,6 +1655,18 @@ class GatewayApp:
 
     # ─────────────────────────── WinTAK TCP Monitor ───────────────────────────
 
+    def _get_wintak_tcp_listener_endpoint(self):
+        return _get_tak_tcp_listener_endpoint_from_cfg(self.cfg)
+
+    def _refresh_wintak_monitor_listener_ui(self):
+        listen_ip, listen_port = self._get_wintak_tcp_listener_endpoint()
+        self._wintak_monitor_frame.configure(
+            text=f" 📡  WinTAK-Nachrichten (TCP {listen_ip}:{listen_port}) "
+        )
+        self._wintak_monitor_status_var.set(
+            f"⚪ Warte auf WinTAK-Verbindung auf TCP {listen_ip}:{listen_port} …"
+        )
+
     def _on_wintak_tcp_chat(self, kind, sender, message, addr=None):
         """Thread-safe callback invoked by the gateway TCP listener for WinTAK events."""
         self._root.after(0, self._update_wintak_monitor, kind, sender, message, addr)
@@ -1658,9 +1677,7 @@ class GatewayApp:
             ip = addr[0] if addr else "?"
             self._wintak_monitor_status_var.set(f"🟢 WinTAK verbunden von {ip}")
         elif kind == "disconnect":
-            self._wintak_monitor_status_var.set(
-                "⚪ Warte auf WinTAK-Verbindung auf TCP 127.0.0.1:8087 …"
-            )
+            self._refresh_wintak_monitor_listener_ui()
         elif kind == "chat":
             ts = datetime.datetime.now().strftime("%H:%M:%S")
             line = f"[{ts}] {sender}: {message}"
@@ -1824,7 +1841,7 @@ class TAKMeshtasticGateway:
         self.server_ip = self.cfg.get("tak_server_host", "82.165.11.84")
         # Validate port numbers
         try:
-            server_port = int(self.cfg.get("tak_server_port", 8087))
+            server_port = int(self.cfg.get("tak_server_port", 8088))
             if not (1 <= server_port <= 65535):
                 raise ValueError(f"Invalid server port: {server_port}")
             self.server_port = server_port
@@ -1843,7 +1860,9 @@ class TAKMeshtasticGateway:
         except (ValueError, TypeError) as e:
             raise ValueError(f"Invalid local_tak_port in config: {e}")
 
-        default_chat_listen_port = self.tak_port + 1 if self.tak_port < MAX_PORT_NUMBER else DEFAULT_CHAT_LISTEN_PORT
+        # Match the LPU5 TAK bridge pattern by defaulting the inbound chat
+        # listener to the same standard TAK UDP port used for local delivery.
+        default_chat_listen_port = self.tak_port
         try:
             chat_listen_port = int(
                 self.cfg.get(
@@ -1853,8 +1872,6 @@ class TAKMeshtasticGateway:
             )
             if not (1 <= chat_listen_port <= 65535):
                 raise ValueError(f"Invalid local TAK chat listen port: {chat_listen_port}")
-            if chat_listen_port == self.tak_port:
-                raise ValueError("local_tak_chat_listen_port must differ from local_tak_port")
             self.chat_listen_port = chat_listen_port
         except (ValueError, TypeError) as e:
             raise ValueError(f"Invalid local_tak_chat_listen_port in config: {e}")
@@ -1875,16 +1892,17 @@ class TAKMeshtasticGateway:
         except ValueError as exc:
             raise ValueError(f"Invalid tak_multicast_groups in config: {exc}") from exc
         try:
-            tcp_chat_listen_port = int(
-                self.cfg.get("local_tak_tcp_listen_port", TCP_LISTENER_DEFAULT_PORT)
+            tcp_chat_listen_ip, tcp_chat_listen_port = _get_tak_tcp_listener_endpoint_from_cfg(
+                self.cfg,
+                strict_port=True,
             )
             if not (1 <= tcp_chat_listen_port <= 65535):
                 raise ValueError(f"Invalid local TAK TCP listen port: {tcp_chat_listen_port}")
             self.tcp_chat_listen_port = tcp_chat_listen_port
         except (ValueError, TypeError) as e:
             raise ValueError(f"Invalid local_tak_tcp_listen_port in config: {e}")
-        self.tcp_chat_listen_ip = str(self.cfg.get("local_tak_tcp_listen_ip", "127.0.0.1")).strip() or "127.0.0.1"
-        
+        self.tcp_chat_listen_ip = tcp_chat_listen_ip
+
         self.sock_udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock_udp.settimeout(self.SOCKET_TIMEOUT)  # Add timeout to prevent hanging
         self.sock_chat_listeners = []
