@@ -1,7 +1,7 @@
 # WinTAK Meshtastic Gateway
 
 A stable bridge between **Meshtastic** mesh radios and the **TAK ecosystem** (WinTAK, ATAK, iTAK).  
-The gateway reads position data from Meshtastic nodes over a serial connection and forwards it as Cursor on Target (CoT) XML — both to a local WinTAK instance (UDP) and optionally to a remote TAK Server (TCP or UDP).
+The gateway reads position data and text messages from Meshtastic nodes over a serial connection and forwards them as Cursor on Target (CoT) XML — both to a local WinTAK instance (UDP) and optionally to a remote TAK Server (TCP or UDP). It can also accept GeoChat messages from WinTAK and broadcast them into the Meshtastic mesh.
 
 ---
 
@@ -10,6 +10,7 @@ The gateway reads position data from Meshtastic nodes over a serial connection a
 | Feature | Description |
 |---|---|
 | **Dual-Streaming** | Sends CoT data simultaneously to local WinTAK (UDP 4242) and a remote TAK Server (TCP/UDP). |
+| **Chat Bridging** | Forwards Meshtastic text messages to TAK GeoChat and can relay GeoChat messages from WinTAK back into the mesh. |
 | **Automatic Reconnect** | Maintains the remote TAK Server connection with automatic retry on disconnect. |
 | **All-Nodes Visibility** | All nodes are forwarded to TAK by default. Nodes with valid GPS (including phone GPS shared over mesh) appear at their real position; nodes without current GPS use their last known position when available, otherwise configurable fallback coordinates. |
 | **Config-Driven** | All settings (IPs, ports, callsign, COM port) are managed in a single `config.yaml`. |
@@ -62,6 +63,10 @@ gateway_callsign: MSHT-GW          # Callsign shown in logs
 gateway_uid: GW-01                  # Unique gateway ID
 meshtastic_port: COM7               # Serial port of the Meshtastic radio
 
+local_tak_ip: 127.0.0.1             # Local WinTAK IP
+local_tak_port: 4242                # Local WinTAK UDP input for positions/chat
+local_tak_chat_listen_port: 4243    # UDP input on this gateway for outgoing WinTAK GeoChat
+
 tak_server_host: 123.123.123.123    # Remote TAK Server IP
 tak_server_port: 8088               # Remote TAK Server port (8088 is the default bridge input port)
 tak_server_protocol: TCP            # TCP or UDP
@@ -84,6 +89,11 @@ send_nodes_without_gps: true
 ```
 
 > **Tip:** If `meshtastic_port` is not set or the configured port is not found, the gateway will prompt you to choose a port interactively.
+
+### WinTAK Chat Relay
+
+- **Meshtastic → WinTAK:** incoming `TEXT_MESSAGE_APP` packets are converted into TAK GeoChat events and sent to local WinTAK and the optional remote TAK target.
+- **WinTAK → Meshtastic:** configure WinTAK to send outgoing GeoChat CoT via UDP to `local_tak_chat_listen_port` (default `4243`) on the gateway host. The gateway listens there and rebroadcasts the chat text into Meshtastic.
 
 ---
 
