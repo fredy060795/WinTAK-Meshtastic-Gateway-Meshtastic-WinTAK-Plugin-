@@ -743,7 +743,7 @@ class GatewayApp:
         ttk.Separator(cfg_frame, orient="horizontal").grid(
             row=9, column=0, columnspan=6, sticky="ew", pady=(2, 8))
 
-        # ── Zeile 8: GPS-Optionen ──
+        # ── GPS-Optionen ──
         self._send_nodes_without_gps_var = tk.BooleanVar(
             value=as_bool(self.cfg.get("send_nodes_without_gps", True))
         )
@@ -1697,14 +1697,14 @@ class TAKMeshtasticGateway:
             "message": message,
         }
 
-    def _send_text_to_meshtastic(self, message):
-        chunks = self._prepare_meshtastic_text_chunks(message)
+    def _send_text_to_meshtastic(self, message, prepared_chunks=None):
+        chunks = prepared_chunks if prepared_chunks is not None else self._prepare_meshtastic_text_chunks(message)
         if not chunks:
             raise ValueError("Leere TAK-Chatnachricht kann nicht ins Mesh gesendet werden.")
         total_sent = 0
         for chunk in chunks:
             total_sent += len(self._send_text_to_interfaces(chunk, self.interfaces))
-        return total_sent, chunks
+        return total_sent
 
     def handle_tak_chat_message(self, packet_xml, source_addr=None):
         chat_payload = self._extract_tak_chat_payload(packet_xml)
@@ -1724,7 +1724,8 @@ class TAKMeshtasticGateway:
             return
 
         try:
-            _sent_count, sent_chunks = self._send_text_to_meshtastic(chat_payload["message"])
+            sent_chunks = self._prepare_meshtastic_text_chunks(chat_payload["message"])
+            self._send_text_to_meshtastic(chat_payload["message"], prepared_chunks=sent_chunks)
         except Exception as exc:
             self.logger.warning(f"TAK-Chat konnte nicht ins Mesh gesendet werden: {exc}")
             self.logger.debug("Fehler beim Senden von TAK-Chat ins Mesh:\n" + traceback.format_exc())
