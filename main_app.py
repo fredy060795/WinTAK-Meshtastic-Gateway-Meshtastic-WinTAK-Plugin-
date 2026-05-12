@@ -263,8 +263,10 @@ def _extract_latest_wintak_chat_attribute_message(element):
             match = _WINTAK_CHAT_FIELD_PATTERN.match(attr_name)
             if not match:
                 continue
-            attr_index = int(match.group("index") or 0)
+            attr_index = int(match.group("index") or "0")
             matching_attrs.append((attr_index, attr_name.lower(), normalized_value))
+        # Preserve the natural numbered order so later messageN fields can win when
+        # WinTAK exports several message-like attributes on the same XML element.
         matching_attrs.sort(key=lambda item: (item[0], item[1]))
         candidates.extend(value for _, _, value in matching_attrs)
 
