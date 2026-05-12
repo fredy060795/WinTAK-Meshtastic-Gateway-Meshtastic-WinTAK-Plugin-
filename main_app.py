@@ -150,6 +150,25 @@ def normalize_meshtastic_uid(raw_uid):
     return raw_uid.replace("!", "ID-", 1)
 
 
+def _xml_local_name(tag):
+    """Return an XML tag name without any namespace prefix."""
+    if not tag:
+        return ""
+    if "}" in tag:
+        return tag.rsplit("}", 1)[-1]
+    return tag
+
+
+def _find_child_by_local_name(parent, name):
+    """Find the first direct child with the given local XML tag name."""
+    if parent is None:
+        return None
+    for child in parent:
+        if _xml_local_name(child.tag) == name:
+            return child
+    return None
+
+
 def load_config():
     """
     Lädt config.yaml aus dem selben Verzeichnis wie dieses Skript (falls vorhanden).
@@ -1121,7 +1140,7 @@ class TAKMeshtasticGateway:
             self.chat_listen_port = chat_listen_port
         except (ValueError, TypeError) as e:
             raise ValueError(f"Invalid local_tak_chat_listen_port in config: {e}")
-        self.chat_listen_ip = str(self.cfg.get("local_tak_chat_listen_ip", "127.0.0.1")).strip() or "127.0.0.1"
+        self.chat_listen_ip = str(self.cfg.get("local_tak_chat_listen_ip", "0.0.0.0")).strip() or "0.0.0.0"
         
         self.sock_udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock_udp.settimeout(self.SOCKET_TIMEOUT)  # Add timeout to prevent hanging
@@ -1449,38 +1468,60 @@ class TAKMeshtasticGateway:
         except Exception:
             return None
 
-        if root.tag != "event":
+        if _xml_local_name(root.tag) != "event":
             return None
 
-        detail = root.find("detail")
+        detail = _find_child_by_local_name(root, "detail")
         if detail is None:
             return None
 
-        chat = detail.find("__chat")
-        remarks = detail.find("remarks")
-        if chat is None or remarks is None:
+        chat = _find_child_by_local_name(detail, "__chat")
+        remarks = _find_child_by_local_name(detail, "remarks")
+        chat_note = _find_child_by_local_name(detail, "_chat")
+        chatgrp = _find_child_by_local_name(detail, "chatgrp")
+        if chat is None and chatgrp is None:
             return None
 
-        message = (remarks.text or "").strip()
+        message = ""
+        if remarks is not None and remarks.text:
+            message = remarks.text.strip()
+        if not message and chat_note is not None:
+            note = _find_child_by_local_name(chat_note, "note")
+            if note is not None and note.text:
+                message = note.text.strip()
         if not message:
             return None
 
-        link = detail.find("link")
-        contact = detail.find("contact")
+        link = _find_child_by_local_name(detail, "link")
+        contact = _find_child_by_local_name(detail, "contact")
         sender_uid = root.get("uid")
         if link is not None and link.get("uid"):
             sender_uid = link.get("uid")
-        sender_callsign = chat.get("senderCallsign")
+        sender_callsign = chat.get("senderCallsign") if chat is not None else None
         if not sender_callsign and contact is not None:
             sender_callsign = contact.get("callsign")
+        if not sender_callsign and chatgrp is not None:
+            sender_callsign = chatgrp.get("uid0") or chatgrp.get("name")
         if not sender_callsign:
             sender_callsign = "UNKNOWN-SENDER"
+
+        chatroom = DEFAULT_CHATROOM_NAME
+        if chat is not None:
+            chatroom = (
+                chat.get("chatroom")
+                or chat.get("chatRoom")
+                or chat.get("id")
+                or chat.get("parent")
+                or chatroom
+            )
+        if chatroom == DEFAULT_CHATROOM_NAME and chatgrp is not None:
+            chatroom = chatgrp.get("id") or chatgrp.get("name") or chatroom
 
         return {
             "event_uid": root.get("uid"),
             "sender_uid": sender_uid,
             "sender_callsign": sender_callsign,
-            "chatroom": chat.get("chatroom") or DEFAULT_CHATROOM_NAME,
+            "chatroom": chatroom,
             "message": message,
         }
 
@@ -1503,6 +1544,10 @@ class TAKMeshtasticGateway:
     def handle_tak_chat_message(self, packet_xml, source_addr=None):
         chat_payload = self._extract_tak_chat_payload(packet_xml)
         if not chat_payload:
+            self.logger.debug(
+                "UDP-Paket am TAK-Chat-Listener empfangen, aber nicht als GeoChat erkannt"
+                + (f" ({source_addr[0]}:{source_addr[1]})" if source_addr else "")
+            )
             return
 
         sender_uid = chat_payload["sender_uid"] or self.gateway_uid
