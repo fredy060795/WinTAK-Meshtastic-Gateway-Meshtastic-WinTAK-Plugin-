@@ -1860,6 +1860,8 @@ class TAKMeshtasticGateway:
         except (ValueError, TypeError) as e:
             raise ValueError(f"Invalid local_tak_port in config: {e}")
 
+        # LPU5-style interoperability intentionally uses the same default UDP
+        # port for inbound chat/CoT and local TAK delivery.
         default_chat_listen_port = self.tak_port
         try:
             chat_listen_port = int(
@@ -1890,7 +1892,7 @@ class TAKMeshtasticGateway:
         except ValueError as exc:
             raise ValueError(f"Invalid tak_multicast_groups in config: {exc}") from exc
         try:
-            _, tcp_chat_listen_port = _get_tak_tcp_listener_endpoint_from_cfg(
+            tcp_chat_listen_ip, tcp_chat_listen_port = _get_tak_tcp_listener_endpoint_from_cfg(
                 self.cfg,
                 strict_port=True,
             )
@@ -1899,7 +1901,7 @@ class TAKMeshtasticGateway:
             self.tcp_chat_listen_port = tcp_chat_listen_port
         except (ValueError, TypeError) as e:
             raise ValueError(f"Invalid local_tak_tcp_listen_port in config: {e}")
-        self.tcp_chat_listen_ip, _ = _get_tak_tcp_listener_endpoint_from_cfg(self.cfg)
+        self.tcp_chat_listen_ip = tcp_chat_listen_ip
 
         self.sock_udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock_udp.settimeout(self.SOCKET_TIMEOUT)  # Add timeout to prevent hanging
