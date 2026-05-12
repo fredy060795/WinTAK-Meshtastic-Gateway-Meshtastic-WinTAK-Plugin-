@@ -73,6 +73,7 @@ TCP_LISTENER_BACKLOG = 5
 TCP_RECV_BUFFER_SIZE = 4096
 MAX_TCP_STREAM_BUFFER_BYTES = 262144
 TCP_STREAM_BUFFER_TAIL_BYTES = 64
+UTF8_BOM_CHAR = "\ufeff"
 RECENT_CHAT_CACHE_TTL_SECONDS = 30
 RECENT_CHAT_CACHE_MAX_ENTRIES = 256
 MESHTASTIC_TEXT_CHUNK_MAX_BYTES = 180
@@ -316,30 +317,30 @@ def _ensure_bytes(value):
     return str(value or "").encode("utf-8")
 
 
-def _decode_tak_packet_bytes(packet_bytes):
-    """Normalize common TAK UDP packet encodings to UTF-8 XML bytes."""
-    packet_bytes = _ensure_bytes(packet_bytes)
-    packet_bytes = packet_bytes.strip(b"\x00 \t\r\n")
+def _is_xml_text(text):
+    stripped = str(text or "").lstrip(UTF8_BOM_CHAR).strip()
+    return stripped.startswith("<") and ">" in stripped
+
+
+def _should_attempt_utf16_decode(raw_bytes):
+    null_bytes = raw_bytes.count(b"\x00")
+    return (
+        null_bytes >= MIN_NULL_BYTES_FOR_UTF16
+        and null_bytes >= len(raw_bytes) // UTF16_NULL_BYTE_RATIO_THRESHOLD
+    )
+
+
+def _detect_tak_stream_encoding(packet_bytes):
+    """Best-effort encoding detection for inbound TAK XML packets/streams."""
+    # Keep UTF-16 NUL bytes intact here; stripping them can corrupt odd-length payloads.
+    packet_bytes = _ensure_bytes(packet_bytes).strip(b" \t\r\n")
     if not packet_bytes:
-        return b""
+        return None
 
-    def _is_xml_text(text):
-        stripped = str(text or "").strip()
-        return stripped.startswith("<") and ">" in stripped
-
-    def _should_attempt_utf16_decode(raw_bytes):
-        null_bytes = raw_bytes.count(b"\x00")
-        return (
-            null_bytes >= MIN_NULL_BYTES_FOR_UTF16
-            and null_bytes >= len(raw_bytes) // UTF16_NULL_BYTE_RATIO_THRESHOLD
-        )
-
+    if packet_bytes.startswith(b"\xef\xbb\xbf"):
+        return "utf-8-sig"
     if packet_bytes.startswith((b"\xff\xfe", b"\xfe\xff")):
-        try:
-            return packet_bytes.decode("utf-16").encode("utf-8")
-        except UnicodeDecodeError:
-            return packet_bytes
-
+        return "utf-16"
     if _should_attempt_utf16_decode(packet_bytes):
         for encoding in ("utf-16-le", "utf-16-be"):
             try:
@@ -347,8 +348,28 @@ def _decode_tak_packet_bytes(packet_bytes):
             except UnicodeDecodeError:
                 continue
             if _is_xml_text(decoded_text):
-                return decoded_text.encode("utf-8")
-    return packet_bytes
+                return encoding
+        return None
+    if packet_bytes.startswith(b"<") or b"<event" in packet_bytes or b"<?xml" in packet_bytes:
+        return "utf-8"
+    return None
+
+
+def _decode_tak_packet_bytes(packet_bytes):
+    """Normalize common TAK UDP packet encodings to UTF-8 XML bytes."""
+    packet_bytes = _ensure_bytes(packet_bytes)
+    # Keep UTF-16 NUL bytes intact here; stripping them can corrupt odd-length payloads.
+    packet_bytes = packet_bytes.strip(b" \t\r\n")
+    if not packet_bytes:
+        return b""
+
+    encoding = _detect_tak_stream_encoding(packet_bytes)
+    if encoding is None:
+        return packet_bytes
+    try:
+        return packet_bytes.decode(encoding).encode("utf-8")
+    except UnicodeDecodeError:
+        return packet_bytes
 
 
 def _extract_first_tak_event(packet_bytes):
@@ -2736,7 +2757,8 @@ class TAKMeshtasticGateway:
 
     def _handle_tak_tcp_client(self, conn, addr):
         buffer_text = ""
-        decoder = codecs.getincrementaldecoder("utf-8")()
+        probe_buffer = b""
+        decoder = None
         conn.settimeout(TCP_SOCKET_TIMEOUT_SECONDS)
         try:
             while not self.shutdown_flag.is_set():
@@ -2744,6 +2766,16 @@ class TAKMeshtasticGateway:
                     data = conn.recv(TCP_RECV_BUFFER_SIZE)
                     if not data:
                         break
+                    if decoder is None:
+                        probe_buffer += data
+                        detected_encoding = _detect_tak_stream_encoding(probe_buffer)
+                        if detected_encoding is None:
+                            if len(probe_buffer) > MAX_TCP_STREAM_BUFFER_BYTES:
+                                probe_buffer = probe_buffer[-TCP_STREAM_BUFFER_TAIL_BYTES:]
+                            continue
+                        decoder = codecs.getincrementaldecoder(detected_encoding)(errors="ignore")
+                        data = probe_buffer
+                        probe_buffer = b""
                     buffer_text += decoder.decode(data)
                     events, buffer_text = self._extract_tak_events_from_stream_buffer(buffer_text)
                     for packet_xml in events:
@@ -2753,14 +2785,19 @@ class TAKMeshtasticGateway:
                         self.handle_inbound_tak_packet(normalized_packet, source_addr=addr, source_protocol="TCP")
                 except socket.timeout:
                     continue
-            buffer_text += decoder.decode(b"", final=True)
+            if decoder is not None:
+                buffer_text += decoder.decode(b"", final=True)
+            elif probe_buffer:
+                normalized_packet = self._normalize_inbound_tak_packet(probe_buffer)
+                if normalized_packet:
+                    self.handle_inbound_tak_packet(normalized_packet, source_addr=addr, source_protocol="TCP")
             events, buffer_text = self._extract_tak_events_from_stream_buffer(buffer_text)
             for packet_xml in events:
                 normalized_packet = self._normalize_inbound_tak_packet(packet_xml)
                 if not normalized_packet:
                     continue
                 self.handle_inbound_tak_packet(normalized_packet, source_addr=addr, source_protocol="TCP")
-        except OSError:
+        except (OSError, UnicodeError, ValueError):
             self.logger.debug("Fehler beim Lesen einer TAK-TCP-Verbindung:\n" + traceback.format_exc())
         finally:
             try:
