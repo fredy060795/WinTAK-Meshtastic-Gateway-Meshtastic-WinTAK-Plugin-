@@ -100,7 +100,7 @@ send_nodes_without_gps: true
 ### WinTAK Chat Relay
 
 - **Meshtastic → WinTAK:** incoming `TEXT_MESSAGE_APP` packets are converted into TAK GeoChat events and sent to local WinTAK and the optional remote TAK target.
-- **WinTAK → Meshtastic:** configure WinTAK to send outgoing GeoChat CoT via UDP to `local_tak_chat_listen_port` (default `4243`) on the gateway host. By default the listener binds to `0.0.0.0`, so WinTAK can target either `127.0.0.1` or the gateway PC's LAN IP. The gateway now accepts additional WinTAK GeoChat CoT variants, normalizes multiline messages, and splits oversized TAK chat text into multiple mesh-safe messages when needed.
+- **WinTAK → Meshtastic:** configure WinTAK to send outgoing GeoChat CoT via UDP to `local_tak_chat_listen_port` (default `4243`) on the gateway host. By default the listener binds to `0.0.0.0`, so WinTAK can target either `127.0.0.1` or the gateway PC's LAN IP. The gateway accepts common WinTAK GeoChat CoT variants including `<chat>` / `<__chat>` payloads with nested numbered message elements, normalizes multiline messages, and splits oversized TAK chat text into multiple mesh-safe messages when needed.
 
 ---
 

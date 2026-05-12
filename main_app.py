@@ -182,6 +182,21 @@ def _find_descendant_by_local_name(parent, name):
     return None
 
 
+def _collect_xml_text(element):
+    """Collect stripped text from an XML element and all of its descendants."""
+    if element is None:
+        return ""
+    text_parts = []
+    if element.text and element.text.strip():
+        text_parts.append(element.text.strip())
+    for child in element.iter():
+        if child is element:
+            continue
+        if child.text and child.text.strip():
+            text_parts.append(child.text.strip())
+    return "\n".join(text_parts)
+
+
 def load_config():
     """
     Lädt config.yaml aus dem selben Verzeichnis wie dieses Skript (falls vorhanden).
@@ -1632,6 +1647,8 @@ class TAKMeshtasticGateway:
             return None
 
         chat = _find_descendant_by_local_name(detail, "__chat")
+        if chat is None:
+            chat = _find_descendant_by_local_name(detail, "chat")
         remarks = _find_descendant_by_local_name(detail, "remarks")
         chat_note = _find_descendant_by_local_name(detail, "_chat")
         chatgrp = _find_descendant_by_local_name(detail, "chatgrp")
@@ -1644,19 +1661,24 @@ class TAKMeshtasticGateway:
         if remarks is not None and remarks.text:
             message = remarks.text.strip()
         note = _find_descendant_by_local_name(detail, "note")
-        if not message and note is not None and note.text:
-            message = note.text.strip()
         if not message:
-            for element in (note, chat_note, chat, remarks, chatgrp):
-                if element is None:
-                    continue
-                for attr in ("message", "text", "note", "remarks"):
-                    attr_value = element.get(attr)
-                    if attr_value and attr_value.strip():
-                        message = attr_value.strip()
-                        break
+            message = _collect_xml_text(note)
+        if not message:
+            for element in (chat, chat_note, note, remarks, chatgrp):
+                message = _collect_xml_text(element)
                 if message:
                     break
+            if not message:
+                for element in (chat, chat_note, note, remarks, chatgrp):
+                    if element is None:
+                        continue
+                    for attr in ("message", "text", "note", "remarks"):
+                        attr_value = element.get(attr)
+                        if attr_value and attr_value.strip():
+                            message = attr_value.strip()
+                            break
+                    if message:
+                        break
         if not message:
             return None
 
