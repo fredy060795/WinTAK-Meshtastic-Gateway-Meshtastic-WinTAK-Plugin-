@@ -11,6 +11,7 @@ The gateway reads position data and text messages from Meshtastic nodes over a s
 |---|---|
 | **Dual-Streaming** | Sends CoT data simultaneously to local WinTAK (UDP 4242) and a remote TAK Server (TCP/UDP). |
 | **Chat Bridging** | Forwards Meshtastic text messages to TAK GeoChat and can relay GeoChat messages from WinTAK back into the mesh. |
+| **COM Relay Mode** | Incoming Meshtastic text from one selected COM port can be forwarded automatically to the other selected COM ports. |
 | **Automatic Reconnect** | Maintains the remote TAK Server connection with automatic retry on disconnect. |
 | **All-Nodes Visibility** | All nodes are forwarded to TAK by default. Nodes with valid GPS (including phone GPS shared over mesh) appear at their real position; nodes without current GPS use their last known position when available, otherwise configurable fallback coordinates. |
 | **Config-Driven** | All settings (IPs, ports, callsign, COM port) are managed in a single `config.yaml`. |
@@ -71,6 +72,7 @@ local_tak_chat_listen_port: 4243    # UDP input on this gateway for outgoing Win
 tak_server_host: 123.123.123.123    # Remote TAK Server IP
 tak_server_port: 8088               # Remote TAK Server port (8088 is the default bridge input port)
 tak_server_protocol: TCP            # TCP or UDP
+relay_text_messages: true           # Relay incoming mesh text to the other selected COM ports
 
 sync_interval_seconds: 300          # Full node re-sync interval (seconds)
 
@@ -115,7 +117,7 @@ Das Programm öffnet automatisch ein **GUI-Fenster**, das das reine Terminal-Fen
 
 | Bereich | Beschreibung |
 |---|---|
-| **Einstellungen** | Alle zentralen Config-Werte im Fenster steuerbar (Port(s), Remote/Local TAK, Protokoll, Sync, No-GPS inkl. park_lat/park_lon) |
+| **Einstellungen** | Alle zentralen Config-Werte im Fenster steuerbar (Port(s), Remote/Local TAK, Protokoll, Sync, Relay, No-GPS inkl. park_lat/park_lon) |
 | **▶ Start / ■ Stop** | Gateway starten und stoppen ohne Neustart |
 | **Log-Ausgabe** | Alle Meldungen erscheinen live farbig im Fenster (DEBUG=grau, INFO=weiß, WARNING=gelb, ERROR=rot) |
 | **Eingabe / Befehl** | Direkteingabe von Befehlen während der Gateway läuft |
