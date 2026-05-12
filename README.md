@@ -73,6 +73,10 @@ tak_server_host: 123.123.123.123    # Remote TAK Server IP
 tak_server_port: 8088               # Remote TAK Server port (8088 is the default bridge input port)
 tak_server_protocol: TCP            # TCP or UDP
 relay_text_messages: true           # Relay incoming mesh text to the other selected COM ports
+# relay_text_from_ports: COM7       # Optional: only relay texts received on these COM ports
+# relay_text_to_ports:              # Optional: only relay texts to these COM ports
+#   - COM3
+#   - COM9
 
 sync_interval_seconds: 300          # Full node re-sync interval (seconds)
 
@@ -96,7 +100,7 @@ send_nodes_without_gps: true
 ### WinTAK Chat Relay
 
 - **Meshtastic → WinTAK:** incoming `TEXT_MESSAGE_APP` packets are converted into TAK GeoChat events and sent to local WinTAK and the optional remote TAK target.
-- **WinTAK → Meshtastic:** configure WinTAK to send outgoing GeoChat CoT via UDP to `local_tak_chat_listen_port` (default `4243`) on the gateway host. By default the listener binds to `0.0.0.0`, so WinTAK can target either `127.0.0.1` or the gateway PC's LAN IP. The gateway also accepts common WinTAK GeoChat CoT variants (`remarks` or `_chat/note`) and rebroadcasts the chat text into Meshtastic.
+- **WinTAK → Meshtastic:** configure WinTAK to send outgoing GeoChat CoT via UDP to `local_tak_chat_listen_port` (default `4243`) on the gateway host. By default the listener binds to `0.0.0.0`, so WinTAK can target either `127.0.0.1` or the gateway PC's LAN IP. The gateway now accepts additional WinTAK GeoChat CoT variants, normalizes multiline messages, and splits oversized TAK chat text into multiple mesh-safe messages when needed.
 
 ---
 
@@ -117,7 +121,7 @@ Das Programm öffnet automatisch ein **GUI-Fenster**, das das reine Terminal-Fen
 
 | Bereich | Beschreibung |
 |---|---|
-| **Einstellungen** | Alle zentralen Config-Werte im Fenster steuerbar (Port(s), Remote/Local TAK, Protokoll, Sync, Relay, No-GPS inkl. park_lat/park_lon) |
+| **Einstellungen** | Alle zentralen Config-Werte im Fenster steuerbar (Port(s), Remote/Local TAK, Protokoll, Sync, Relay inkl. Relay von/nach COM, No-GPS inkl. park_lat/park_lon) |
 | **▶ Start / ■ Stop** | Gateway starten und stoppen ohne Neustart |
 | **Log-Ausgabe** | Alle Meldungen erscheinen live farbig im Fenster (DEBUG=grau, INFO=weiß, WARNING=gelb, ERROR=rot) |
 | **Eingabe / Befehl** | Direkteingabe von Befehlen während der Gateway läuft |

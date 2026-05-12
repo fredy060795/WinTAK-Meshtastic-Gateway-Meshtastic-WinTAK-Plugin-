@@ -65,6 +65,7 @@ DEFAULT_CHATROOM_NAME = "All Chat Rooms"
 DEFAULT_CHAT_LISTEN_PORT = 4243
 RECENT_CHAT_CACHE_TTL_SECONDS = 30
 RECENT_CHAT_CACHE_MAX_ENTRIES = 256
+MESHTASTIC_TEXT_CHUNK_MAX_BYTES = 180
 
 
 def get_tak_timestamp():
@@ -169,6 +170,18 @@ def _find_child_by_local_name(parent, name):
     return None
 
 
+def _find_descendant_by_local_name(parent, name):
+    """Find the first descendant with the given local XML tag name."""
+    if parent is None:
+        return None
+    for child in parent.iter():
+        if child is parent:
+            continue
+        if _xml_local_name(child.tag) == name:
+            return child
+    return None
+
+
 def load_config():
     """
     Lädt config.yaml aus dem selben Verzeichnis wie dieses Skript (falls vorhanden).
@@ -222,6 +235,25 @@ def _parse_ports_text(ports_text):
         seen.add(upper_p)
         unique_ports.append(p)
     return unique_ports
+
+
+def _config_ports_to_list(value):
+    if isinstance(value, list):
+        return _parse_ports_text(", ".join(str(item) for item in value))
+    if value is None:
+        return []
+    return _parse_ports_text(str(value))
+
+
+def _format_ports_for_entry(value):
+    return ", ".join(_config_ports_to_list(value))
+
+
+def _store_ports_in_config(cfg, key, ports):
+    if ports:
+        cfg[key] = ports[0] if len(ports) == 1 else ports
+    else:
+        cfg.pop(key, None)
 
 
 class NodeDatabase:
@@ -695,10 +727,23 @@ class GatewayApp:
             variable=self._relay_text_messages_var,
         ).grid(row=7, column=2, columnspan=4, sticky="w", padx=(8, 0), pady=(0, 4))
 
-        ttk.Separator(cfg_frame, orient="horizontal").grid(
-            row=8, column=0, columnspan=6, sticky="ew", pady=(2, 8))
+        cfg_label("Relay von COM:", row=8, col=0, pady=(0, 4))
+        self._relay_text_from_ports_var = tk.StringVar(
+            value=_format_ports_for_entry(self.cfg.get("relay_text_from_ports"))
+        )
+        ttk.Entry(cfg_frame, textvariable=self._relay_text_from_ports_var, width=28).grid(
+            row=8, column=1, sticky="ew", padx=(6, 12), pady=(0, 4))
+        cfg_label("Relay nach COM:", row=8, col=2, padx=(8, 6), pady=(0, 4))
+        self._relay_text_to_ports_var = tk.StringVar(
+            value=_format_ports_for_entry(self.cfg.get("relay_text_to_ports"))
+        )
+        ttk.Entry(cfg_frame, textvariable=self._relay_text_to_ports_var, width=16).grid(
+            row=8, column=3, sticky="w", pady=(0, 4))
 
-        # ── Zeile 8: GPS-Optionen ──
+        ttk.Separator(cfg_frame, orient="horizontal").grid(
+            row=9, column=0, columnspan=6, sticky="ew", pady=(2, 8))
+
+        # ── GPS-Optionen ──
         self._send_nodes_without_gps_var = tk.BooleanVar(
             value=as_bool(self.cfg.get("send_nodes_without_gps", True))
         )
@@ -710,33 +755,33 @@ class GatewayApp:
             text="Nodes ohne GPS-Fix senden",
             variable=self._send_nodes_without_gps_var,
             command=self._update_no_gps_hint,
-        ).grid(row=9, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        ).grid(row=10, column=0, columnspan=2, sticky="w", pady=(0, 4))
         ttk.Checkbutton(
             cfg_frame,
             text="Gateway-Position beim Start setzen",
             variable=self._set_gateway_position_var,
-        ).grid(row=9, column=2, columnspan=3, sticky="w", padx=(8, 0), pady=(0, 4))
+        ).grid(row=10, column=2, columnspan=3, sticky="w", padx=(8, 0), pady=(0, 4))
 
         # ── Zeile 10: park_lat / park_lon ──
-        cfg_label("Fallback Lat (park_lat):", row=10, col=0, pady=(0, 4))
+        cfg_label("Fallback Lat (park_lat):", row=11, col=0, pady=(0, 4))
         raw_park_lat = self.cfg.get("park_lat")
         park_lat_val = "" if raw_park_lat is None else f"{float(raw_park_lat):.6f}".rstrip("0").rstrip(".")
         self._park_lat_var = tk.StringVar(value=park_lat_val)
         ttk.Entry(cfg_frame, textvariable=self._park_lat_var, width=16).grid(
-            row=10, column=1, sticky="w", padx=(6, 12), pady=(0, 4))
-        cfg_label("Fallback Lon (park_lon):", row=10, col=2, padx=(8, 6), pady=(0, 4))
+            row=11, column=1, sticky="w", padx=(6, 12), pady=(0, 4))
+        cfg_label("Fallback Lon (park_lon):", row=11, col=2, padx=(8, 6), pady=(0, 4))
         raw_park_lon = self.cfg.get("park_lon")
         park_lon_val = "" if raw_park_lon is None else f"{float(raw_park_lon):.6f}".rstrip("0").rstrip(".")
         self._park_lon_var = tk.StringVar(value=park_lon_val)
         ttk.Entry(cfg_frame, textvariable=self._park_lon_var, width=16).grid(
-            row=10, column=3, sticky="w", pady=(0, 4))
+            row=11, column=3, sticky="w", pady=(0, 4))
         self._park_lat_var.trace_add("write", lambda *_: self._update_no_gps_hint())
         self._park_lon_var.trace_add("write", lambda *_: self._update_no_gps_hint())
 
         # ── Zeile 11: Hinweis ──
         self._no_gps_hint_var = tk.StringVar()
         ttk.Label(cfg_frame, textvariable=self._no_gps_hint_var, style="Hint.TLabel").grid(
-            row=11, column=0, columnspan=6, sticky="w", pady=(0, 2))
+            row=12, column=0, columnspan=6, sticky="w", pady=(0, 2))
         self._update_no_gps_hint()
 
         cfg_frame.columnconfigure(1, weight=1)
@@ -882,6 +927,21 @@ class GatewayApp:
             self._sync_interval_var.get(), "Sync-Intervall", min_value=1, max_value=86400
         )
         self.cfg["relay_text_messages"] = bool(self._relay_text_messages_var.get())
+        relay_from_ports = _parse_ports_text(self._relay_text_from_ports_var.get())
+        relay_to_ports = _parse_ports_text(self._relay_text_to_ports_var.get())
+        selected_ports_upper = {port.upper() for port in ports}
+        unknown_relay_from = [port for port in relay_from_ports if port.upper() not in selected_ports_upper]
+        unknown_relay_to = [port for port in relay_to_ports if port.upper() not in selected_ports_upper]
+        if unknown_relay_from:
+            raise ValueError(
+                "Relay von COM enthält nicht ausgewählte Ports: " + ", ".join(unknown_relay_from)
+            )
+        if unknown_relay_to:
+            raise ValueError(
+                "Relay nach COM enthält nicht ausgewählte Ports: " + ", ".join(unknown_relay_to)
+            )
+        _store_ports_in_config(self.cfg, "relay_text_from_ports", relay_from_ports)
+        _store_ports_in_config(self.cfg, "relay_text_to_ports", relay_to_ports)
 
         self.cfg["send_nodes_without_gps"] = bool(self._send_nodes_without_gps_var.get())
         self.cfg["set_gateway_position_on_start"] = bool(self._set_gateway_position_var.get())
@@ -1171,6 +1231,12 @@ class TAKMeshtasticGateway:
         self.recent_meshtastic_chat_ids = {}
         self.recent_meshtastic_outbound_texts = {}
         self.relay_text_messages = as_bool(self.cfg.get("relay_text_messages", True))
+        self.relay_text_from_ports = {
+            port.upper() for port in _config_ports_to_list(self.cfg.get("relay_text_from_ports"))
+        }
+        self.relay_text_to_ports = {
+            port.upper() for port in _config_ports_to_list(self.cfg.get("relay_text_to_ports"))
+        }
 
         # Knoten-Datenbank (SQLite) – persistente GPS-Koordinaten über Neustarts hinweg
         db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nodes.db")
@@ -1464,6 +1530,47 @@ class TAKMeshtasticGateway:
             raise last_error
         return sent_interfaces
 
+    def _get_relay_targets(self, source_interface):
+        source_label = self._get_interface_label(source_interface).upper()
+        if self.relay_text_from_ports and source_label not in self.relay_text_from_ports:
+            return []
+        relay_targets = []
+        for iface in self.interfaces:
+            if iface is source_interface:
+                continue
+            target_label = self._get_interface_label(iface).upper()
+            if self.relay_text_to_ports and target_label not in self.relay_text_to_ports:
+                continue
+            relay_targets.append(iface)
+        return relay_targets
+
+    def _prepare_meshtastic_text_chunks(self, message):
+        raw_message = str(message or "").replace("\r\n", "\n").replace("\r", "\n")
+        lines = [line.strip() for line in raw_message.split("\n") if line.strip()]
+        normalized = " / ".join(lines) if lines else raw_message.strip()
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        if not normalized:
+            return []
+
+        chunks = []
+        current = ""
+        for word in normalized.split(" "):
+            candidate = f"{current} {word}".strip()
+            if current and len(candidate.encode("utf-8")) > MESHTASTIC_TEXT_CHUNK_MAX_BYTES:
+                chunks.append(current)
+                current = ""
+                candidate = word
+            while len(candidate.encode("utf-8")) > MESHTASTIC_TEXT_CHUNK_MAX_BYTES:
+                split_at = len(candidate)
+                while split_at > 1 and len(candidate[:split_at].encode("utf-8")) > MESHTASTIC_TEXT_CHUNK_MAX_BYTES:
+                    split_at -= 1
+                chunks.append(candidate[:split_at])
+                candidate = candidate[split_at:].lstrip()
+            current = candidate
+        if current:
+            chunks.append(current)
+        return chunks
+
     def send_chat_to_tak(self, sender_uid, callsign, message, lat, lon, alt=0.0, chatroom=DEFAULT_CHATROOM_NAME):
         try:
             packet_xml = self._build_chat_cot_xml(sender_uid, callsign, message, lat, lon, alt, chatroom=chatroom)
@@ -1492,7 +1599,7 @@ class TAKMeshtasticGateway:
         self._remember_recent_chat(self.recent_meshtastic_chat_ids, dedupe_key)
 
         if self.relay_text_messages and len(self.interfaces) > 1:
-            relay_targets = [iface for iface in self.interfaces if iface is not source_interface]
+            relay_targets = self._get_relay_targets(source_interface)
             if relay_targets:
                 sent_interfaces = self._send_text_to_interfaces(message, relay_targets)
                 if sent_interfaces:
@@ -1524,31 +1631,47 @@ class TAKMeshtasticGateway:
         if detail is None:
             return None
 
-        chat = _find_child_by_local_name(detail, "__chat")
-        remarks = _find_child_by_local_name(detail, "remarks")
-        chat_note = _find_child_by_local_name(detail, "_chat")
-        chatgrp = _find_child_by_local_name(detail, "chatgrp")
-        if chat is None and chatgrp is None:
+        chat = _find_descendant_by_local_name(detail, "__chat")
+        remarks = _find_descendant_by_local_name(detail, "remarks")
+        chat_note = _find_descendant_by_local_name(detail, "_chat")
+        chatgrp = _find_descendant_by_local_name(detail, "chatgrp")
+        event_uid = root.get("uid") or ""
+        event_type = str(root.get("type") or "").lower()
+        if chat is None and chatgrp is None and not event_uid.startswith("GeoChat.") and not event_type.startswith("b-t-f"):
             return None
 
         message = ""
         if remarks is not None and remarks.text:
             message = remarks.text.strip()
-        if not message and chat_note is not None:
-            note = _find_child_by_local_name(chat_note, "note")
-            if note is not None and note.text:
-                message = note.text.strip()
+        note = _find_descendant_by_local_name(detail, "note")
+        if not message and note is not None and note.text:
+            message = note.text.strip()
+        if not message:
+            for element in (note, chat_note, chat, remarks, chatgrp):
+                if element is None:
+                    continue
+                for attr in ("message", "text", "note", "remarks"):
+                    attr_value = element.get(attr)
+                    if attr_value and attr_value.strip():
+                        message = attr_value.strip()
+                        break
+                if message:
+                    break
         if not message:
             return None
 
-        link = _find_child_by_local_name(detail, "link")
-        contact = _find_child_by_local_name(detail, "contact")
-        sender_uid = root.get("uid")
+        link = _find_descendant_by_local_name(detail, "link")
+        contact = _find_descendant_by_local_name(detail, "contact")
+        sender_uid = event_uid
         if link is not None and link.get("uid"):
             sender_uid = link.get("uid")
+        if not sender_uid and chatgrp is not None:
+            sender_uid = chatgrp.get("uid0") or chatgrp.get("uid")
         sender_callsign = chat.get("senderCallsign") if chat is not None else None
         if not sender_callsign and contact is not None:
             sender_callsign = contact.get("callsign")
+        if not sender_callsign and chat is not None:
+            sender_callsign = chat.get("sender") or chat.get("callsign")
         if not sender_callsign and chatgrp is not None:
             sender_callsign = chatgrp.get("uid0") or chatgrp.get("name")
         if not sender_callsign:
@@ -1574,8 +1697,14 @@ class TAKMeshtasticGateway:
             "message": message,
         }
 
-    def _send_text_to_meshtastic(self, message):
-        return len(self._send_text_to_interfaces(message, self.interfaces))
+    def _send_text_to_meshtastic(self, message, prepared_chunks=None):
+        chunks = prepared_chunks if prepared_chunks is not None else self._prepare_meshtastic_text_chunks(message)
+        if not chunks:
+            raise ValueError("Leere TAK-Chatnachricht kann nicht ins Mesh gesendet werden.")
+        total_sent = 0
+        for chunk in chunks:
+            total_sent += len(self._send_text_to_interfaces(chunk, self.interfaces))
+        return total_sent
 
     def handle_tak_chat_message(self, packet_xml, source_addr=None):
         chat_payload = self._extract_tak_chat_payload(packet_xml)
@@ -1594,11 +1723,23 @@ class TAKMeshtasticGateway:
         if self._was_seen_recently(self.recent_tak_chat_ids, dedupe_key):
             return
 
-        self._send_text_to_meshtastic(chat_payload["message"])
+        try:
+            sent_chunks = self._prepare_meshtastic_text_chunks(chat_payload["message"])
+            self._send_text_to_meshtastic(chat_payload["message"], prepared_chunks=sent_chunks)
+        except Exception as exc:
+            self.logger.warning(f"TAK-Chat konnte nicht ins Mesh gesendet werden: {exc}")
+            self.logger.debug("Fehler beim Senden von TAK-Chat ins Mesh:\n" + traceback.format_exc())
+            return
         self._remember_recent_chat(self.recent_tak_chat_ids, dedupe_key)
-        self._remember_recent_chat(self.recent_meshtastic_outbound_texts, chat_payload["message"])
+        for chunk in sent_chunks:
+            self._remember_recent_chat(self.recent_meshtastic_outbound_texts, chunk)
         src = chat_payload["sender_callsign"]
-        self.logger.info(f"TAK-Chat ins Mesh gesendet: {src}: {chat_payload['message']}")
+        if len(sent_chunks) > 1:
+            self.logger.info(
+                f"TAK-Chat wurde in {len(sent_chunks)} Mesh-Nachrichten aufgeteilt: {src}: {chat_payload['message']}"
+            )
+        else:
+            self.logger.info(f"TAK-Chat ins Mesh gesendet: {src}: {chat_payload['message']}")
 
     def listen_for_tak_chat(self):
         try:
