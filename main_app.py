@@ -1860,12 +1860,12 @@ class TAKMeshtasticGateway:
         except (ValueError, TypeError) as e:
             raise ValueError(f"Invalid local_tak_port in config: {e}")
 
-        chat_listen_port_fallback = self.tak_port
+        default_chat_listen_port = self.tak_port
         try:
             chat_listen_port = int(
                 self.cfg.get(
                     "local_tak_chat_listen_port",
-                    chat_listen_port_fallback,
+                    default_chat_listen_port,
                 )
             )
             if not (1 <= chat_listen_port <= 65535):
