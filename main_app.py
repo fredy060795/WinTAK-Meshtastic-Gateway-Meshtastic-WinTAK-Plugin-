@@ -2067,7 +2067,7 @@ class TAKMeshtasticGateway:
         return kwargs
 
     def _send_text_to_interfaces(self, message, interfaces, allow_reconnect=True):
-        interfaces = [iface for iface in list(interfaces or []) if iface is not None]
+        interfaces = [iface for iface in (interfaces or []) if iface is not None]
         if not interfaces:
             if allow_reconnect:
                 interfaces = self._ensure_meshtastic_interfaces(raise_on_empty=True)
@@ -2089,7 +2089,14 @@ class TAKMeshtasticGateway:
         if not sent_interfaces and last_error is not None and allow_reconnect:
             retry_interfaces = self._ensure_meshtastic_interfaces(reconnect=True, reason=str(last_error))
             if retry_interfaces:
-                return self._send_text_to_interfaces(message, retry_interfaces, allow_reconnect=False)
+                try:
+                    return self._send_text_to_interfaces(message, retry_interfaces, allow_reconnect=False)
+                except Exception as retry_exc:
+                    self.logger.warning(
+                        "Meshtastic-Senden ist auch nach COM-Neuverbindung fehlgeschlagen: "
+                        f"erst '{last_error}', dann '{retry_exc}'"
+                    )
+                    raise retry_exc from last_error
         if not sent_interfaces and last_error is not None:
             raise last_error
         return sent_interfaces
@@ -2185,9 +2192,8 @@ class TAKMeshtasticGateway:
         if not cot_chunks:
             raise ValueError("Leere CoT-Nachricht kann nicht ins Mesh gesendet werden.")
         for chunk in cot_chunks:
-            sent_interfaces = self._send_text_to_interfaces(chunk, interfaces)
-            if sent_interfaces:
-                interfaces = sent_interfaces
+            self._send_text_to_interfaces(chunk, interfaces)
+            interfaces = self._get_interfaces_snapshot()
             self._remember_recent_chat(self.recent_meshtastic_outbound_texts, chunk)
         return cot_chunks
 
@@ -2405,8 +2411,7 @@ class TAKMeshtasticGateway:
         for chunk in chunks:
             sent_interfaces = self._send_text_to_interfaces(chunk, interfaces)
             total_sent += len(sent_interfaces)
-            if sent_interfaces:
-                interfaces = sent_interfaces
+            interfaces = self._get_interfaces_snapshot()
         if total_sent <= 0:
             raise RuntimeError("TAK-Chat konnte an kein Meshtastic-Interface gesendet werden.")
         return total_sent
