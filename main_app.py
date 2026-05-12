@@ -73,6 +73,7 @@ TCP_LISTENER_BACKLOG = 5
 TCP_RECV_BUFFER_SIZE = 4096
 MAX_TCP_STREAM_BUFFER_BYTES = 262144
 TCP_STREAM_BUFFER_TAIL_BYTES = 64
+UTF8_BOM_CHAR = "\ufeff"
 RECENT_CHAT_CACHE_TTL_SECONDS = 30
 RECENT_CHAT_CACHE_MAX_ENTRIES = 256
 MESHTASTIC_TEXT_CHUNK_MAX_BYTES = 180
@@ -317,7 +318,7 @@ def _ensure_bytes(value):
 
 
 def _is_xml_text(text):
-    stripped = str(text or "").lstrip("\ufeff").strip()
+    stripped = str(text or "").lstrip(UTF8_BOM_CHAR).strip()
     return stripped.startswith("<") and ">" in stripped
 
 
@@ -2794,7 +2795,7 @@ class TAKMeshtasticGateway:
                 if not normalized_packet:
                     continue
                 self.handle_inbound_tak_packet(normalized_packet, source_addr=addr, source_protocol="TCP")
-        except Exception:
+        except (OSError, UnicodeError, ValueError):
             self.logger.debug("Fehler beim Lesen einer TAK-TCP-Verbindung:\n" + traceback.format_exc())
         finally:
             try:
