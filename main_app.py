@@ -98,6 +98,9 @@ TAK_PONG_TYPE_PATTERN = re.compile(r'\btype=["\']t-x-c-t-r["\']')
 WINTAK_TCP_INBOX_MAX_MESSAGES = 20
 MIN_NULL_BYTES_FOR_UTF16 = 2
 UTF16_NULL_BYTE_RATIO_THRESHOLD = 4
+MIN_UPPER_CONTENT_PANE_HEIGHT = 220
+MIN_LOG_PANE_HEIGHT = 180
+INITIAL_UPPER_CONTENT_PANE_RATIO = 0.58
 _WINTAK_CHAT_TRANSCRIPT_LINE_PATTERN = re.compile(
     r"^\((?P<time>\d{1,2}:\d{2}(?::\d{2})?)\)\s+(?P<sender>.+):(?:\s*(?P<message>.*))?$"
 )
@@ -1387,8 +1390,8 @@ class GatewayApp:
         self._log_text.tag_configure("CRITICAL", foreground="#ff7b72", font=("Consolas", 9, "bold"))
         self._log_text.tag_configure("CMD",      foreground="#79c0ff")
 
-        content_pane.add(upper_content, minsize=220, stretch="always")
-        content_pane.add(log_frame, minsize=180, stretch="always")
+        content_pane.add(upper_content, minsize=MIN_UPPER_CONTENT_PANE_HEIGHT, stretch="always")
+        content_pane.add(log_frame, minsize=MIN_LOG_PANE_HEIGHT, stretch="always")
         root.after_idle(self._set_initial_content_layout)
 
         # ── Statusleiste unten ──
@@ -1409,9 +1412,12 @@ class GatewayApp:
             if total_height <= 1:
                 self._root.after(50, self._set_initial_content_layout)
                 return
-            min_top = 220
-            min_bottom = 180
-            top_height = max(min_top, min(int(total_height * 0.58), total_height - min_bottom))
+            min_top = MIN_UPPER_CONTENT_PANE_HEIGHT
+            min_bottom = MIN_LOG_PANE_HEIGHT
+            top_height = max(
+                min_top,
+                min(int(total_height * INITIAL_UPPER_CONTENT_PANE_RATIO), total_height - min_bottom),
+            )
             self._content_pane.sash_place(0, 0, top_height)
         except (AttributeError, tk.TclError):
             return
