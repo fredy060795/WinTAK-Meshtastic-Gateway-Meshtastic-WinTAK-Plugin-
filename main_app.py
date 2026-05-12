@@ -72,8 +72,8 @@ MESHTASTIC_COT_FRAGMENT_PREFIX = "COTM"
 MESHTASTIC_COT_FRAGMENT_PAYLOAD_BYTES = 140
 MESHTASTIC_COT_FRAGMENT_TTL_SECONDS = 120
 DEFAULT_MESHTASTIC_CHANNEL_INDEX = 0
-WINTAK_CHAT_TRANSCRIPT_LINE_PATTERN = re.compile(
-    r"^\((?P<time>\d{1,2}:\d{2}(?::\d{2})?)\)\s+(?P<sender>.+?):(?:\s*(?P<message>.*))?$"
+_WINTAK_CHAT_TRANSCRIPT_LINE_PATTERN = re.compile(
+    r"^\((?P<time>\d{1,2}:\d{2}(?::\d{2})?)\)\s+(?P<sender>.+):(?:\s*(?P<message>.*))?$"
 )
 
 
@@ -223,7 +223,7 @@ def _extract_latest_wintak_chat_message(text):
                 current_block.append("")
             continue
 
-        match = WINTAK_CHAT_TRANSCRIPT_LINE_PATTERN.match(line)
+        match = _WINTAK_CHAT_TRANSCRIPT_LINE_PATTERN.match(line)
         if match:
             saw_transcript_header = True
             inline_message = (match.group("message") or "").strip()
