@@ -1244,7 +1244,7 @@ class GatewayApp:
             row=9, column=3, sticky="ew", pady=(0, 4))
         ttk.Label(
             cfg_frame,
-            text="Leave Relay From blank for any selected port, and Relay To blank for all other selected ports.",
+            text="Leave Relay From blank to relay from any selected port, and leave Relay To blank to relay to all other selected ports.",
             style="Sub.TLabel",
         ).grid(row=9, column=0, columnspan=2, sticky="w", pady=(0, 4))
 
