@@ -997,7 +997,7 @@ class GatewayApp:
             variable=self._set_gateway_position_var,
         ).grid(row=11, column=2, columnspan=3, sticky="w", padx=(8, 0), pady=(0, 4))
 
-        # ── Zeile 10: park_lat / park_lon ──
+        # ── Zeile 12: park_lat / park_lon ──
         cfg_label("Fallback Lat (park_lat):", row=12, col=0, pady=(0, 4))
         raw_park_lat = self.cfg.get("park_lat")
         park_lat_val = "" if raw_park_lat is None else f"{float(raw_park_lat):.6f}".rstrip("0").rstrip(".")
@@ -2237,7 +2237,10 @@ class TAKMeshtasticGateway:
         remaining_buffer = buffer_text[last_end:]
         if len(remaining_buffer) > MAX_TCP_STREAM_BUFFER_BYTES:
             event_start = remaining_buffer.rfind("<event")
-            remaining_buffer = remaining_buffer[event_start:] if event_start >= 0 else ""
+            if event_start >= 0:
+                remaining_buffer = remaining_buffer[event_start:]
+            else:
+                remaining_buffer = remaining_buffer[-(len("<event") - 1):]
         return events, remaining_buffer
 
     def _iter_tak_listener_ports(self):
@@ -2363,7 +2366,7 @@ class TAKMeshtasticGateway:
             raise last_error
         raise OSError("Kein TCP-Listener-Socket konnte erstellt werden.")
 
-    def handle_inbound_tak_packet(self, packet_xml, source_addr=None):
+    def handle_inbound_tak_packet(self, packet_xml, source_addr=None, source_protocol=None):
         metadata = self._extract_cot_event_metadata(packet_xml)
         cot_dedupe_key = None
         if metadata is not None:
@@ -2401,8 +2404,9 @@ class TAKMeshtasticGateway:
             return
 
         if metadata is None:
+            protocol_label = str(source_protocol or "UDP/TCP").upper()
             self.logger.debug(
-                "Paket am TAK-Listener empfangen, aber nicht als CoT erkannt"
+                f"{protocol_label}-Paket am TAK-Listener empfangen, aber nicht als CoT erkannt"
                 + (f" ({source_addr[0]}:{source_addr[1]})" if source_addr else "")
             )
             return
@@ -2420,9 +2424,9 @@ class TAKMeshtasticGateway:
             f"({len(sent_chunks)} Fragment{'e' if len(sent_chunks) != 1 else ''})"
         )
 
-    def handle_tak_chat_message(self, packet_xml, source_addr=None):
+    def handle_tak_chat_message(self, packet_xml, source_addr=None, source_protocol=None):
         """Backward-compatible alias for existing callers of the TAK listener packet handler."""
-        self.handle_inbound_tak_packet(packet_xml, source_addr=source_addr)
+        self.handle_inbound_tak_packet(packet_xml, source_addr=source_addr, source_protocol=source_protocol)
 
     def listen_for_tak_chat(self, listen_port=None):
         if listen_port is None:
@@ -2457,7 +2461,7 @@ class TAKMeshtasticGateway:
             normalized_packet = self._normalize_inbound_tak_packet(packet_xml)
             if not normalized_packet:
                 continue
-            self.handle_inbound_tak_packet(normalized_packet, source_addr=addr)
+            self.handle_inbound_tak_packet(normalized_packet, source_addr=addr, source_protocol="UDP")
 
     def _handle_tak_tcp_client(self, conn, addr):
         buffer_text = ""
@@ -2474,7 +2478,7 @@ class TAKMeshtasticGateway:
                         normalized_packet = self._normalize_inbound_tak_packet(packet_xml)
                         if not normalized_packet:
                             continue
-                        self.handle_inbound_tak_packet(normalized_packet, source_addr=addr)
+                        self.handle_inbound_tak_packet(normalized_packet, source_addr=addr, source_protocol="TCP")
                 except socket.timeout:
                     continue
         except OSError:
