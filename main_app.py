@@ -2434,6 +2434,15 @@ class TAKMeshtasticGateway:
         with self.interface_lock:
             return list(self.interfaces)
 
+    def _get_missing_configured_ports(self, interfaces=None):
+        configured_ports = {str(port).strip().upper() for port in self.ports if str(port).strip()}
+        connected_ports = set()
+        for iface in interfaces or []:
+            label = self._get_interface_label(iface).strip().upper()
+            if label:
+                connected_ports.add(label)
+        return sorted(configured_ports - connected_ports)
+
     def _ensure_meshtastic_subscription(self):
         if self._meshtastic_pubsub_registered:
             return
@@ -2488,11 +2497,16 @@ class TAKMeshtasticGateway:
 
     def _ensure_meshtastic_interfaces(self, reconnect=False, raise_on_empty=False, reason=None):
         interfaces = self._get_interfaces_snapshot()
-        if reconnect or not interfaces:
+        missing_ports = self._get_missing_configured_ports(interfaces)
+        if reconnect or not interfaces or missing_ports:
             if reconnect:
                 self.logger.warning(
                     "Meshtastic-COM-Verbindung für ausgehende Nachrichten wird neu aufgebaut."
                     + (f" Grund: {reason}" if reason else "")
+                )
+            elif missing_ports:
+                self.logger.info(
+                    "Verbinde fehlende Meshtastic-COM-Ports neu: " + ", ".join(missing_ports)
                 )
             interfaces = self._connect_meshtastic_interfaces(force_reconnect=reconnect)
         if raise_on_empty and not interfaces:
@@ -2646,15 +2660,15 @@ class TAKMeshtasticGateway:
             raise last_error
         return sent_interfaces
 
-    def _get_relay_targets(self, source_interface):
+    def _get_relay_targets(self, source_interface, interfaces=None):
         source_label = self._get_interface_label(source_interface).upper()
         if self.relay_text_from_ports and source_label not in self.relay_text_from_ports:
             return []
         relay_targets = []
-        for iface in self._get_interfaces_snapshot():
-            if iface is source_interface:
-                continue
+        for iface in (interfaces or self._ensure_meshtastic_interfaces()):
             target_label = self._get_interface_label(iface).upper()
+            if iface is source_interface or (source_label != "UNBEKANNT" and target_label == source_label):
+                continue
             if self.relay_text_to_ports and target_label not in self.relay_text_to_ports:
                 continue
             relay_targets.append(iface)
@@ -2873,8 +2887,9 @@ class TAKMeshtasticGateway:
         if self._handle_meshtastic_cot_chunk(message, from_id or "MESH-UNKNOWN"):
             return
 
-        if self.relay_text_messages and len(self.interfaces) > 1:
-            relay_targets = self._get_relay_targets(source_interface)
+        available_interfaces = self._ensure_meshtastic_interfaces()
+        if self.relay_text_messages and len(available_interfaces) > 1:
+            relay_targets = self._get_relay_targets(source_interface, interfaces=available_interfaces)
             if relay_targets:
                 sent_interfaces = self._send_text_to_interfaces(message, relay_targets)
                 if sent_interfaces:
