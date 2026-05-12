@@ -98,6 +98,11 @@ TAK_PONG_TYPE_PATTERN = re.compile(r'\btype=["\']t-x-c-t-r["\']')
 WINTAK_TCP_INBOX_MAX_MESSAGES = 20
 MIN_NULL_BYTES_FOR_UTF16 = 2
 UTF16_NULL_BYTE_RATIO_THRESHOLD = 4
+MIN_UPPER_CONTENT_PANE_HEIGHT = 220
+MIN_LOG_PANE_HEIGHT = 180
+INITIAL_UPPER_CONTENT_PANE_RATIO = 0.58
+MIN_VALID_LAYOUT_PANE_HEIGHT = 1
+LAYOUT_INIT_RETRY_DELAY_MS = 50
 _WINTAK_CHAT_TRANSCRIPT_LINE_PATTERN = re.compile(
     r"^\((?P<time>\d{1,2}:\d{2}(?::\d{2})?)\)\s+(?P<sender>.+):(?:\s*(?P<message>.*))?$"
 )
@@ -1043,8 +1048,51 @@ class GatewayApp:
 
         ttk.Separator(root, orient="horizontal").pack(fill="x")
 
+        content_pane = tk.PanedWindow(
+            root,
+            orient="vertical",
+            sashwidth=8,
+            showhandle=False,
+            bd=0,
+            relief="flat",
+            bg=C["bg"],
+            highlightthickness=0,
+        )
+        content_pane.pack(fill="both", expand=True)
+        self._content_pane = content_pane
+
+        upper_content = tk.Frame(content_pane, bg=C["bg"])
+        upper_canvas = tk.Canvas(
+            upper_content,
+            bg=C["bg"],
+            bd=0,
+            highlightthickness=0,
+            relief="flat",
+        )
+        upper_scrollbar = ttk.Scrollbar(
+            upper_content, orient="vertical", command=upper_canvas.yview
+        )
+        upper_canvas.configure(yscrollcommand=upper_scrollbar.set)
+        upper_scrollbar.pack(side="right", fill="y")
+        upper_canvas.pack(side="left", fill="both", expand=True)
+
+        form_container = tk.Frame(upper_canvas, bg=C["bg"])
+        self._upper_canvas_window = upper_canvas.create_window(
+            (0, 0), window=form_container, anchor="nw"
+        )
+        form_container.bind(
+            "<Configure>",
+            lambda _event: upper_canvas.configure(scrollregion=upper_canvas.bbox("all")),
+        )
+        upper_canvas.bind(
+            "<Configure>",
+            lambda event: upper_canvas.itemconfigure(
+                self._upper_canvas_window, width=event.width
+            ),
+        )
+
         # ── Einstellungen ──
-        cfg_frame = ttk.LabelFrame(root, text=" ⚙  Einstellungen ", padding=(12, 8))
+        cfg_frame = ttk.LabelFrame(form_container, text=" ⚙  Einstellungen ", padding=(12, 8))
         cfg_frame.pack(fill="x", padx=10, pady=(10, 4))
 
         # Hilfsfunktion für einheitliche Labels in cfg_frame
@@ -1229,7 +1277,7 @@ class GatewayApp:
         cfg_frame.columnconfigure(3, weight=1)
 
         # ── Toolbar / Steuerleiste ──
-        toolbar = tk.Frame(root, bg=C["panel"], pady=6)
+        toolbar = tk.Frame(form_container, bg=C["panel"], pady=6)
         toolbar.pack(fill="x", padx=0)
 
         self._start_btn = ttk.Button(
@@ -1250,7 +1298,7 @@ class GatewayApp:
         ).pack(side="left", padx=(16, 0))
 
         # ── Manuelles Mesh-Test-Senden ──
-        mesh_test_frame = ttk.LabelFrame(root, text=" 🧪  Mesh-Testnachricht ", padding=6)
+        mesh_test_frame = ttk.LabelFrame(form_container, text=" 🧪  Mesh-Testnachricht ", padding=6)
         mesh_test_frame.pack(fill="x", padx=10, pady=(6, 0))
 
         self._mesh_test_message_var = tk.StringVar()
@@ -1276,7 +1324,7 @@ class GatewayApp:
 
         # ── WinTAK TCP Monitor ──
         tak_monitor_frame = ttk.LabelFrame(
-            root, text=" 📡  WinTAK-Nachrichten (TCP 127.0.0.1:8087) ", padding=6
+            form_container, text=" 📡  WinTAK-Nachrichten (TCP 127.0.0.1:8087) ", padding=6
         )
         tak_monitor_frame.pack(fill="x", padx=10, pady=(6, 0))
 
@@ -1310,7 +1358,7 @@ class GatewayApp:
         self._wintak_forward_btn.pack(side="right")
 
         # ── Eingabe / Befehlszeile ──
-        input_frame = ttk.LabelFrame(root, text=" ⌨  Befehlseingabe ", padding=6)
+        input_frame = ttk.LabelFrame(form_container, text=" ⌨  Befehlseingabe ", padding=6)
         input_frame.pack(fill="x", padx=10, pady=(6, 0))
 
         self._input_var = tk.StringVar()
@@ -1321,8 +1369,7 @@ class GatewayApp:
                    style="Accent.TButton").pack(side="left")
 
         # ── Log-Ausgabebereich ──
-        log_frame = ttk.LabelFrame(root, text=" 📋  Log-Ausgabe ", padding=4)
-        log_frame.pack(fill="both", expand=True, padx=10, pady=(6, 0))
+        log_frame = ttk.LabelFrame(content_pane, text=" 📋  Log-Ausgabe ", padding=4)
 
         self._log_text = tk.Text(
             log_frame, wrap="word", state="disabled",
@@ -1345,6 +1392,10 @@ class GatewayApp:
         self._log_text.tag_configure("CRITICAL", foreground="#ff7b72", font=("Consolas", 9, "bold"))
         self._log_text.tag_configure("CMD",      foreground="#79c0ff")
 
+        content_pane.add(upper_content, minsize=MIN_UPPER_CONTENT_PANE_HEIGHT, stretch="always")
+        content_pane.add(log_frame, minsize=MIN_LOG_PANE_HEIGHT, stretch="always")
+        root.after_idle(self._set_initial_content_layout)
+
         # ── Statusleiste unten ──
         status_bar = tk.Frame(root, bg=C["panel"], height=22)
         status_bar.pack(fill="x", side="bottom")
@@ -1356,6 +1407,22 @@ class GatewayApp:
             font=("Segoe UI", 8),
             anchor="w",
         ).pack(side="left", padx=10, fill="y")
+
+    def _set_initial_content_layout(self):
+        try:
+            total_height = self._content_pane.winfo_height()
+            if total_height <= MIN_VALID_LAYOUT_PANE_HEIGHT:
+                self._root.after(LAYOUT_INIT_RETRY_DELAY_MS, self._set_initial_content_layout)
+                return
+            min_top = MIN_UPPER_CONTENT_PANE_HEIGHT
+            min_bottom = MIN_LOG_PANE_HEIGHT
+            top_height = max(
+                min_top,
+                min(int(total_height * INITIAL_UPPER_CONTENT_PANE_RATIO), total_height - min_bottom),
+            )
+            self._content_pane.sash_place(0, 0, top_height)
+        except (AttributeError, tk.TclError):
+            return
 
     def _apply_selected_ports_from_list(self):
         if not self._detected_ports:
