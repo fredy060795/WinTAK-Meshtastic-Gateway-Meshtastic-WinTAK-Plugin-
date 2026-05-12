@@ -1991,6 +1991,63 @@ class TAKMeshtasticGateway:
             total_sent += len(self._send_text_to_interfaces(chunk, self.interfaces))
         return total_sent
 
+    def _normalize_inbound_tak_packet(self, packet_xml):
+        packet_bytes = _ensure_bytes(packet_xml)
+        if packet_bytes.startswith(b"\xef\xbb\xbf"):
+            packet_bytes = packet_bytes[3:]
+        packet_bytes = packet_bytes.replace(b"\x00", b"").strip()
+        return packet_bytes
+
+    def _create_chat_listener_socket(self):
+        requested_ip = self.chat_listen_ip
+        bind_attempts = []
+        if requested_ip in ("0.0.0.0", "", "*"):
+            bind_attempts.append((socket.AF_INET6, "::", True))
+            bind_attempts.append((socket.AF_INET, "0.0.0.0", False))
+        else:
+            try:
+                addr_info = socket.getaddrinfo(
+                    requested_ip,
+                    self.chat_listen_port,
+                    socket.AF_UNSPEC,
+                    socket.SOCK_DGRAM,
+                    0,
+                    socket.AI_PASSIVE,
+                )
+            except socket.gaierror as exc:
+                raise OSError(f"Ungültige Chat-Listener-IP '{requested_ip}': {exc}") from exc
+
+            seen = set()
+            for family, _, _, _, sockaddr in addr_info:
+                host = sockaddr[0]
+                if (family, host) in seen:
+                    continue
+                seen.add((family, host))
+                bind_attempts.append((family, host, family == socket.AF_INET6 and host in ("::", requested_ip)))
+
+        last_error = None
+        for family, bind_ip, want_dual_stack in bind_attempts:
+            try:
+                sock = socket.socket(family, socket.SOCK_DGRAM)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                if family == socket.AF_INET6:
+                    try:
+                        sock.setsockopt(
+                            socket.IPPROTO_IPV6,
+                            socket.IPV6_V6ONLY,
+                            0 if want_dual_stack else 1,
+                        )
+                    except (AttributeError, OSError):
+                        pass
+                sock.settimeout(1.0)
+                sock.bind((bind_ip, self.chat_listen_port))
+                return sock, bind_ip
+            except Exception as exc:
+                last_error = exc
+        if last_error is not None:
+            raise last_error
+        raise OSError("Kein Chat-Listener-Socket konnte erstellt werden.")
+
     def handle_inbound_tak_packet(self, packet_xml, source_addr=None):
         chat_payload = self._extract_tak_chat_payload(packet_xml)
         if chat_payload:
@@ -2052,13 +2109,10 @@ class TAKMeshtasticGateway:
 
     def listen_for_tak_chat(self):
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.settimeout(1.0)
-            sock.bind((self.chat_listen_ip, self.chat_listen_port))
+            sock, bind_ip = self._create_chat_listener_socket()
             self.sock_chat_listener = sock
             self.logger.info(
-                f"TAK-CoT-Listener aktiv auf {self.chat_listen_ip}:{self.chat_listen_port} "
+                f"TAK-CoT-Listener aktiv auf {bind_ip}:{self.chat_listen_port} "
                 f"(WinTAK-Ausgang hierhin senden, damit Chat und CoT ins Mesh gehen)."
             )
         except Exception as e:
@@ -2076,7 +2130,10 @@ class TAKMeshtasticGateway:
             except Exception:
                 self.logger.debug("Fehler beim Empfangen von TAK-Chat:\n" + traceback.format_exc())
                 continue
-            self.handle_inbound_tak_packet(packet_xml.strip(), source_addr=addr)
+            normalized_packet = self._normalize_inbound_tak_packet(packet_xml)
+            if not normalized_packet:
+                continue
+            self.handle_inbound_tak_packet(normalized_packet, source_addr=addr)
 
     def maintain_server(self):
         """
