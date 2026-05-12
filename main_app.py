@@ -678,7 +678,7 @@ class GatewayApp:
             variable=self._set_gateway_position_var,
         ).grid(row=9, column=2, columnspan=3, sticky="w", padx=(8, 0), pady=(0, 4))
 
-        # ── Zeile 9: park_lat / park_lon ──
+        # ── Zeile 10: park_lat / park_lon ──
         cfg_label("Fallback Lat (park_lat):", row=10, col=0, pady=(0, 4))
         raw_park_lat = self.cfg.get("park_lat")
         park_lat_val = "" if raw_park_lat is None else f"{float(raw_park_lat):.6f}".rstrip("0").rstrip(".")
@@ -694,7 +694,7 @@ class GatewayApp:
         self._park_lat_var.trace_add("write", lambda *_: self._update_no_gps_hint())
         self._park_lon_var.trace_add("write", lambda *_: self._update_no_gps_hint())
 
-        # ── Zeile 10: Hinweis ──
+        # ── Zeile 11: Hinweis ──
         self._no_gps_hint_var = tk.StringVar()
         ttk.Label(cfg_frame, textvariable=self._no_gps_hint_var, style="Hint.TLabel").grid(
             row=11, column=0, columnspan=6, sticky="w", pady=(0, 2))
@@ -834,6 +834,8 @@ class GatewayApp:
         self.cfg["local_tak_chat_listen_port"] = self._parse_int_field(
             self._local_tak_chat_listen_port_var.get(), "Local TAK Chat Listen Port"
         )
+        if self.cfg["local_tak_chat_listen_port"] == self.cfg["local_tak_port"]:
+            raise ValueError("Local TAK Chat Listen Port muss sich von Local TAK Port unterscheiden.")
         self.cfg["sync_interval_seconds"] = self._parse_int_field(
             self._sync_interval_var.get(), "Sync-Intervall", min_value=1, max_value=86400
         )
@@ -1101,6 +1103,8 @@ class TAKMeshtasticGateway:
             )
             if not (1 <= chat_listen_port <= 65535):
                 raise ValueError(f"Invalid local TAK chat listen port: {chat_listen_port}")
+            if chat_listen_port == self.tak_port:
+                raise ValueError("local_tak_chat_listen_port must differ from local_tak_port")
             self.chat_listen_port = chat_listen_port
         except (ValueError, TypeError) as e:
             raise ValueError(f"Invalid local_tak_chat_listen_port in config: {e}")
@@ -1472,7 +1476,8 @@ class TAKMeshtasticGateway:
         last_error = None
         for iface in self.interfaces:
             try:
-                # Broadcast chat to the mesh; ACKs are intentionally disabled for broadcast delivery.
+                # Broadcast chat to the mesh; ACKs stay disabled here because broadcast ACK traffic
+                # would create noise without providing a reliable per-recipient delivery guarantee.
                 iface.sendText(message, wantAck=False)
                 sent_count += 1
             except Exception as exc:
