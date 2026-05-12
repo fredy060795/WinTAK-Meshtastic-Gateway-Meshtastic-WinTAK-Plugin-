@@ -138,6 +138,17 @@ def format_meshtastic_node_ids(node_num):
     return f"!{node_num:08x}", f"ID-{node_num:08x}"
 
 
+def normalize_meshtastic_uid(raw_uid):
+    """Normalize Meshtastic IDs like !4ef117fc to the TAK-friendly ID-4ef117fc form."""
+    raw_uid = str(raw_uid)
+    if raw_uid.startswith("!") and len(raw_uid) == 9:
+        try:
+            return format_meshtastic_node_ids(int(raw_uid[1:], 16))[1]
+        except ValueError:
+            pass
+    return raw_uid.replace("!", "ID-", 1)
+
+
 def load_config():
     """
     Lädt config.yaml aus dem selben Verzeichnis wie dieses Skript (falls vorhanden).
@@ -1424,7 +1435,7 @@ class TAKMeshtasticGateway:
 
         user = node.get('user', {}) if node else {}
         raw_uid = user.get('id') or (str(from_id) if from_id else "MESH-UNKNOWN")
-        sender_uid = raw_uid.replace('!', 'ID-')
+        sender_uid = normalize_meshtastic_uid(raw_uid)
         callsign = user.get('longName') or user.get('shortName') or sender_uid
         lat, lon, alt = self._resolve_chat_position(sender_uid, node=node)
         self.send_chat_to_tak(sender_uid, callsign, message, lat, lon, alt)
@@ -1476,8 +1487,8 @@ class TAKMeshtasticGateway:
         last_error = None
         for iface in self.interfaces:
             try:
-                # Broadcast chat to the mesh; ACKs stay disabled here because broadcast ACK traffic
-                # would create noise without providing a reliable per-recipient delivery guarantee.
+                # Broadcast chat to the mesh; ACKs stay disabled because this is a broadcast operation
+                # and ACK traffic would add noise without giving a reliable per-recipient guarantee.
                 iface.sendText(message, wantAck=False)
                 sent_count += 1
             except Exception as exc:
@@ -1690,7 +1701,7 @@ class TAKMeshtasticGateway:
             pos = node.get('position', {})
 
             raw_uid = user.get('id') or f"!{node.get('num'):08x}"
-            uid = raw_uid.replace('!', 'ID-')
+            uid = normalize_meshtastic_uid(raw_uid)
             callsign = user.get('longName') or user.get('shortName') or uid
 
             lat_i, lon_i = pos.get('latitude_i'), pos.get('longitude_i')
