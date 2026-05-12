@@ -67,6 +67,7 @@ MAX_PORT_NUMBER = 65535
 DEFAULT_CHATROOM_NAME = "All Chat Rooms"
 DEFAULT_CHAT_LISTEN_PORT = 4242
 TCP_LISTENER_DEFAULT_PORT = 8088
+WINTAK_REQUIRED_HOST = "127.0.0.1"
 DEFAULT_TAK_MULTICAST_GROUPS = (
     "224.10.10.1:17012",
     "239.2.3.1:6969",
@@ -1111,7 +1112,7 @@ class GatewayApp:
         ).pack(fill="x", pady=(4, 0))
 
         # ── Einstellungen ──
-        cfg_frame = ttk.LabelFrame(body, text=" ⚙  Schnellstart ", padding=(12, 8))
+        cfg_frame = ttk.LabelFrame(body, text=" ⚙  Basis-Einstellungen ", padding=(12, 8))
         cfg_frame.pack(fill="x", padx=10, pady=(10, 4))
 
         # Hilfsfunktion für einheitliche Labels in cfg_frame
@@ -1188,7 +1189,7 @@ class GatewayApp:
             state="readonly", values=["TCP", "UDP"], width=10
         ).grid(row=5, column=1, sticky="w", padx=(6, 12), pady=(0, 4))
         cfg_label("WinTAK UDP IP:", row=5, col=2, padx=(8, 6), pady=(0, 4))
-        self._local_tak_ip_var = tk.StringVar(value=str(self.cfg.get("local_tak_ip", "127.0.0.1")))
+        self._local_tak_ip_var = tk.StringVar(value=str(self.cfg.get("local_tak_ip", WINTAK_REQUIRED_HOST)))
         ttk.Entry(cfg_frame, textvariable=self._local_tak_ip_var, width=16).grid(
             row=5, column=3, sticky="w", pady=(0, 4))
 
@@ -1270,7 +1271,7 @@ class GatewayApp:
         self._park_lon_var.trace_add("write", lambda *_: self._update_no_gps_hint())
         self._no_gps_hint_var = tk.StringVar()
         ttk.Label(cfg_frame, textvariable=self._no_gps_hint_var, style="Hint.TLabel").grid(
-            row=10, column=0, columnspan=4, sticky="w", pady=(0, 2))
+            row=10, column=0, columnspan=6, sticky="w", pady=(0, 2))
         self._update_no_gps_hint()
 
         cfg_frame.columnconfigure(1, weight=1)
@@ -1435,12 +1436,12 @@ class GatewayApp:
 
     def _update_wintak_setup_hint(self):
         tcp_port = self._get_wintak_tcp_port_text()
-        banner_text = f"In WinTAK muss ein lokaler Server angelegt sein: 127.0.0.1  |  Port {tcp_port}  |  TCP"
+        banner_text = f"In WinTAK muss ein lokaler Server angelegt sein: {WINTAK_REQUIRED_HOST}  |  Port {tcp_port}  |  TCP"
         self._wintak_banner_var.set(banner_text)
         self._wintak_setup_var.set(
-            f"WinTAK: lokalen Server auf 127.0.0.1:{tcp_port} / TCP anlegen."
+            f"WinTAK: lokalen Server auf {WINTAK_REQUIRED_HOST}:{tcp_port} / TCP anlegen."
         )
-        self._bottom_wintak_hint_var.set(f"WinTAK lokal: 127.0.0.1  |  TCP  |  Port {tcp_port}")
+        self._bottom_wintak_hint_var.set(f"WinTAK lokal: {WINTAK_REQUIRED_HOST}  |  TCP  |  Port {tcp_port}")
 
     def _update_no_gps_hint(self):
         send_without_gps = bool(self._send_nodes_without_gps_var.get())
@@ -1466,7 +1467,7 @@ class GatewayApp:
         self.cfg["meshtastic_port"] = ports[0] if len(ports) == 1 else ports
         self.cfg["tak_server_host"] = self._server_host_var.get().strip()
         self.cfg["tak_server_protocol"] = self._server_protocol_var.get().strip().upper() or "TCP"
-        self.cfg["local_tak_ip"] = self._local_tak_ip_var.get().strip() or "127.0.0.1"
+        self.cfg["local_tak_ip"] = self._local_tak_ip_var.get().strip() or WINTAK_REQUIRED_HOST
 
         self.cfg["tak_server_port"] = self._parse_int_field(self._server_port_var.get(), "Remote Port")
         self.cfg["local_tak_port"] = self._parse_int_field(self._local_tak_port_var.get(), "Local TAK Port")
@@ -1844,7 +1845,7 @@ class TAKMeshtasticGateway:
         self.server_protocol = str(self.cfg.get("tak_server_protocol", "TCP")).upper()
 
         # lokaler WinTAK / TAK-Client (Standard)
-        self.tak_ip = self.cfg.get("local_tak_ip", "127.0.0.1")
+        self.tak_ip = self.cfg.get("local_tak_ip", WINTAK_REQUIRED_HOST)
         try:
             tak_port = int(self.cfg.get("local_tak_port", 4242))
             if not (1 <= tak_port <= 65535):
