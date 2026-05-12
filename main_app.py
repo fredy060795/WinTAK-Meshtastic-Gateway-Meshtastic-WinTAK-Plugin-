@@ -68,6 +68,7 @@ DEFAULT_CHAT_LISTEN_PORT = 4243
 DEFAULT_CHAT_TCP_LISTEN_PORT = 8087
 TCP_RECV_BUFFER_SIZE = 4096
 MAX_TCP_STREAM_BUFFER_BYTES = 262144
+TCP_STREAM_BUFFER_TAIL_BYTES = 64
 RECENT_CHAT_CACHE_TTL_SECONDS = 30
 RECENT_CHAT_CACHE_MAX_ENTRIES = 256
 MESHTASTIC_TEXT_CHUNK_MAX_BYTES = 180
@@ -947,7 +948,7 @@ class GatewayApp:
         )
         ttk.Entry(cfg_frame, textvariable=self._local_tak_chat_listen_port_var, width=10).grid(
             row=7, column=1, sticky="w", padx=(6, 12), pady=(0, 4))
-        cfg_label("TCP Chat Listen Port:", row=7, col=2, padx=(8, 6), pady=(0, 4))
+        cfg_label("WinTAK TCP Port:", row=7, col=2, padx=(8, 6), pady=(0, 4))
         self._local_tak_tcp_listen_port_var = tk.StringVar(
             value=str(self.cfg.get("local_tak_tcp_listen_port", DEFAULT_CHAT_TCP_LISTEN_PORT))
         )
@@ -2240,7 +2241,7 @@ class TAKMeshtasticGateway:
             if event_start >= 0:
                 remaining_buffer = remaining_buffer[event_start:]
             else:
-                remaining_buffer = remaining_buffer[-(len("<event") - 1):]
+                remaining_buffer = remaining_buffer[-TCP_STREAM_BUFFER_TAIL_BYTES:]
         return events, remaining_buffer
 
     def _iter_tak_listener_ports(self):
@@ -2404,7 +2405,7 @@ class TAKMeshtasticGateway:
             return
 
         if metadata is None:
-            protocol_label = str(source_protocol or "UDP/TCP").upper()
+            protocol_label = str(source_protocol or "UNKNOWN").upper()
             self.logger.debug(
                 f"{protocol_label}-Paket am TAK-Listener empfangen, aber nicht als CoT erkannt"
                 + (f" ({source_addr[0]}:{source_addr[1]})" if source_addr else "")
@@ -2473,6 +2474,8 @@ class TAKMeshtasticGateway:
                     if not data:
                         break
                     buffer_text += data.decode("utf-8", errors="replace")
+                    if len(buffer_text) > MAX_TCP_STREAM_BUFFER_BYTES and "<event" not in buffer_text:
+                        buffer_text = buffer_text[-TCP_STREAM_BUFFER_TAIL_BYTES:]
                     events, buffer_text = self._extract_tak_events_from_stream_buffer(buffer_text)
                     for packet_xml in events:
                         normalized_packet = self._normalize_inbound_tak_packet(packet_xml)
