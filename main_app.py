@@ -1249,7 +1249,7 @@ class GatewayApp:
         self._park_lon_var = tk.StringVar(value=park_lon_val)
         ttk.Entry(cfg_frame, textvariable=self._park_lon_var, width=16).grid(
             row=9, column=3, sticky="w", pady=(0, 4))
-        self._local_tak_tcp_listen_port_var.trace_add("write", lambda *_: self._update_wintak_setup_hint())
+        self._local_tak_tcp_listen_port_var.trace_add("write", self._update_wintak_setup_hint)
 
         # ── Versteckte/fortgeführte Optionen für bestehendes Config-Verhalten ──
         self._local_tak_chat_listen_port_var = tk.StringVar(
@@ -1434,7 +1434,7 @@ class GatewayApp:
     def _get_wintak_tcp_port_text(self):
         return self._local_tak_tcp_listen_port_var.get().strip() or str(TCP_LISTENER_DEFAULT_PORT)
 
-    def _update_wintak_setup_hint(self):
+    def _update_wintak_setup_hint(self, *_):
         tcp_port = self._get_wintak_tcp_port_text()
         banner_text = f"In WinTAK muss ein lokaler Server angelegt sein: {WINTAK_REQUIRED_HOST}  |  Port {tcp_port}  |  TCP"
         self._wintak_banner_var.set(banner_text)
