@@ -1436,12 +1436,12 @@ class GatewayApp:
 
     def _update_wintak_setup_hint(self, *_):
         tcp_port = self._get_wintak_tcp_port_text()
-        banner_text = f"In WinTAK muss ein lokaler Server angelegt sein: {WINTAK_REQUIRED_HOST}  |  Port {tcp_port}  |  TCP"
+        banner_text = f"In WinTAK muss ein lokaler Server angelegt sein: {WINTAK_REQUIRED_HOST} | Port {tcp_port} | TCP"
         self._wintak_banner_var.set(banner_text)
         self._wintak_setup_var.set(
             f"WinTAK: lokalen Server auf {WINTAK_REQUIRED_HOST}:{tcp_port} / TCP anlegen."
         )
-        self._bottom_wintak_hint_var.set(f"WinTAK lokal: {WINTAK_REQUIRED_HOST}  |  TCP  |  Port {tcp_port}")
+        self._bottom_wintak_hint_var.set(f"WinTAK lokal: {WINTAK_REQUIRED_HOST} | TCP | Port {tcp_port}")
 
     def _update_no_gps_hint(self):
         send_without_gps = bool(self._send_nodes_without_gps_var.get())
