@@ -1396,8 +1396,9 @@ class GatewayApp:
         self._scroll_canvas.configure(scrollregion=self._scroll_canvas.bbox("all"))
         self._sync_scrollable_body_width()
 
-    def _on_scrollable_canvas_configure(self, event):
-        self._sync_scrollable_body_width(event.width)
+    def _on_scrollable_canvas_configure(self, event=None):
+        canvas_width = getattr(event, "width", None)
+        self._sync_scrollable_body_width(canvas_width)
 
     def _sync_scrollable_body_width(self, canvas_width=None):
         if self._scroll_canvas is None or self._scroll_window_id is None:
