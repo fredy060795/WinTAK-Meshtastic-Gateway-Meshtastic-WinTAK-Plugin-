@@ -8,6 +8,12 @@ meshtastic_port: COM7
 #   - COM3
 # Optionaler Relay-Betrieb: empfangenen Mesh-Text automatisch an alle anderen ausgewählten COM-Ports senden
 relay_text_messages: true
+# Optional nur von diesen COM-Ports relayen (einzelner Wert oder Liste)
+# relay_text_from_ports: COM7
+# Optional nur an diese COM-Ports relayen (einzelner Wert oder Liste)
+# relay_text_to_ports:
+#   - COM3
+#   - COM9
 # Hier die IP deines Ubuntu-Servers eintragen "123.12.12.12"
 tak_server_host: 123.12.12.12
 # WICHTIG: Port 8088 nutzen (das ist der Eingang unserer Bridge)
