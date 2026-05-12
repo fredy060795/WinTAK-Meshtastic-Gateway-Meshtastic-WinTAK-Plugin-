@@ -13,6 +13,7 @@ import os
 import sys
 import argparse
 import datetime
+import hashlib
 import math
 import re
 import socket
@@ -21,7 +22,8 @@ import time
 import logging
 import threading
 import traceback
-from xml.etree.ElementTree import Element, SubElement, tostring
+import uuid
+from xml.etree.ElementTree import Element, SubElement, tostring, fromstring
 try:
     import tkinter as tk
     from tkinter import ttk
@@ -49,14 +51,20 @@ except Exception:
 try:
     import meshtastic.serial_interface
     from pubsub import pub
+    from meshtastic.protobuf import portnums_pb2
 except Exception:
     meshtastic = None
     pub = None
+    portnums_pb2 = None
 
 CFG_FILENAME = "config.yaml"
 MAX_DETECTED_PORTS_DISPLAY = 6
 MIN_PORT_NUMBER = 1
 MAX_PORT_NUMBER = 65535
+DEFAULT_CHATROOM_NAME = "All Chat Rooms"
+DEFAULT_CHAT_LISTEN_PORT = 4243
+RECENT_CHAT_CACHE_TTL_SECONDS = 30
+RECENT_CHAT_CACHE_MAX_ENTRIES = 256
 
 
 def get_tak_timestamp():
@@ -124,6 +132,22 @@ def to_float_or_none(value):
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def format_meshtastic_node_ids(node_num):
+    """Return common string representations for a Meshtastic node number."""
+    return f"!{node_num:08x}", f"ID-{node_num:08x}"
+
+
+def normalize_meshtastic_uid(raw_uid):
+    """Normalize Meshtastic IDs like !4ef117fc to the TAK-friendly ID-4ef117fc form."""
+    raw_uid = str(raw_uid)
+    if raw_uid.startswith("!") and len(raw_uid) == 9:
+        try:
+            return format_meshtastic_node_ids(int(raw_uid[1:], 16))[1]
+        except ValueError:
+            pass
+    return raw_uid.replace("!", "ID-", 1)
 
 
 def load_config():
@@ -637,8 +661,15 @@ class GatewayApp:
         ttk.Entry(cfg_frame, textvariable=self._sync_interval_var, width=10).grid(
             row=6, column=3, sticky="w", pady=(0, 4))
 
+        cfg_label("Chat Listen Port:", row=7, col=0, pady=(0, 4))
+        self._local_tak_chat_listen_port_var = tk.StringVar(
+            value=str(self.cfg.get("local_tak_chat_listen_port", DEFAULT_CHAT_LISTEN_PORT))
+        )
+        ttk.Entry(cfg_frame, textvariable=self._local_tak_chat_listen_port_var, width=10).grid(
+            row=7, column=1, sticky="w", padx=(6, 12), pady=(0, 4))
+
         ttk.Separator(cfg_frame, orient="horizontal").grid(
-            row=7, column=0, columnspan=6, sticky="ew", pady=(2, 8))
+            row=8, column=0, columnspan=6, sticky="ew", pady=(2, 8))
 
         # ── Zeile 8: GPS-Optionen ──
         self._send_nodes_without_gps_var = tk.BooleanVar(
@@ -652,33 +683,33 @@ class GatewayApp:
             text="Nodes ohne GPS-Fix senden",
             variable=self._send_nodes_without_gps_var,
             command=self._update_no_gps_hint,
-        ).grid(row=8, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        ).grid(row=9, column=0, columnspan=2, sticky="w", pady=(0, 4))
         ttk.Checkbutton(
             cfg_frame,
             text="Gateway-Position beim Start setzen",
             variable=self._set_gateway_position_var,
-        ).grid(row=8, column=2, columnspan=3, sticky="w", padx=(8, 0), pady=(0, 4))
+        ).grid(row=9, column=2, columnspan=3, sticky="w", padx=(8, 0), pady=(0, 4))
 
-        # ── Zeile 9: park_lat / park_lon ──
-        cfg_label("Fallback Lat (park_lat):", row=9, col=0, pady=(0, 4))
+        # ── Zeile 10: park_lat / park_lon ──
+        cfg_label("Fallback Lat (park_lat):", row=10, col=0, pady=(0, 4))
         raw_park_lat = self.cfg.get("park_lat")
         park_lat_val = "" if raw_park_lat is None else f"{float(raw_park_lat):.6f}".rstrip("0").rstrip(".")
         self._park_lat_var = tk.StringVar(value=park_lat_val)
         ttk.Entry(cfg_frame, textvariable=self._park_lat_var, width=16).grid(
-            row=9, column=1, sticky="w", padx=(6, 12), pady=(0, 4))
-        cfg_label("Fallback Lon (park_lon):", row=9, col=2, padx=(8, 6), pady=(0, 4))
+            row=10, column=1, sticky="w", padx=(6, 12), pady=(0, 4))
+        cfg_label("Fallback Lon (park_lon):", row=10, col=2, padx=(8, 6), pady=(0, 4))
         raw_park_lon = self.cfg.get("park_lon")
         park_lon_val = "" if raw_park_lon is None else f"{float(raw_park_lon):.6f}".rstrip("0").rstrip(".")
         self._park_lon_var = tk.StringVar(value=park_lon_val)
         ttk.Entry(cfg_frame, textvariable=self._park_lon_var, width=16).grid(
-            row=9, column=3, sticky="w", pady=(0, 4))
+            row=10, column=3, sticky="w", pady=(0, 4))
         self._park_lat_var.trace_add("write", lambda *_: self._update_no_gps_hint())
         self._park_lon_var.trace_add("write", lambda *_: self._update_no_gps_hint())
 
-        # ── Zeile 10: Hinweis ──
+        # ── Zeile 11: Hinweis ──
         self._no_gps_hint_var = tk.StringVar()
         ttk.Label(cfg_frame, textvariable=self._no_gps_hint_var, style="Hint.TLabel").grid(
-            row=10, column=0, columnspan=6, sticky="w", pady=(0, 2))
+            row=11, column=0, columnspan=6, sticky="w", pady=(0, 2))
         self._update_no_gps_hint()
 
         cfg_frame.columnconfigure(1, weight=1)
@@ -812,6 +843,14 @@ class GatewayApp:
 
         self.cfg["tak_server_port"] = self._parse_int_field(self._server_port_var.get(), "Remote Port")
         self.cfg["local_tak_port"] = self._parse_int_field(self._local_tak_port_var.get(), "Local TAK Port")
+        self.cfg["local_tak_chat_listen_port"] = self._parse_int_field(
+            self._local_tak_chat_listen_port_var.get(), "Local TAK Chat Listen Port"
+        )
+        if self.cfg["local_tak_chat_listen_port"] == self.cfg["local_tak_port"]:
+            raise ValueError(
+                f"Local TAK Chat Listen Port ({self.cfg['local_tak_chat_listen_port']}) "
+                f"must differ from Local TAK Port ({self.cfg['local_tak_port']})."
+            )
         self.cfg["sync_interval_seconds"] = self._parse_int_field(
             self._sync_interval_var.get(), "Sync-Intervall", min_value=1, max_value=86400
         )
@@ -1043,6 +1082,8 @@ class TAKMeshtasticGateway:
     def __init__(self, ports, cfg=None):
         self.ports = ports if isinstance(ports, list) else [ports]
         self.cfg = cfg or {}
+        self.gateway_callsign = str(self.cfg.get("gateway_callsign", "MSHT-GW")).strip() or "MSHT-GW"
+        self.gateway_uid = str(self.cfg.get("gateway_uid", "GW-01")).strip() or "GW-01"
         self.server_ip = self.cfg.get("tak_server_host", "82.165.11.84")
         # Validate port numbers
         try:
@@ -1064,9 +1105,27 @@ class TAKMeshtasticGateway:
             self.tak_port = tak_port
         except (ValueError, TypeError) as e:
             raise ValueError(f"Invalid local_tak_port in config: {e}")
+
+        default_chat_listen_port = self.tak_port + 1 if self.tak_port < MAX_PORT_NUMBER else DEFAULT_CHAT_LISTEN_PORT
+        try:
+            chat_listen_port = int(
+                self.cfg.get(
+                    "local_tak_chat_listen_port",
+                    default_chat_listen_port,
+                )
+            )
+            if not (1 <= chat_listen_port <= 65535):
+                raise ValueError(f"Invalid local TAK chat listen port: {chat_listen_port}")
+            if chat_listen_port == self.tak_port:
+                raise ValueError("local_tak_chat_listen_port must differ from local_tak_port")
+            self.chat_listen_port = chat_listen_port
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Invalid local_tak_chat_listen_port in config: {e}")
+        self.chat_listen_ip = str(self.cfg.get("local_tak_chat_listen_ip", "127.0.0.1")).strip() or "127.0.0.1"
         
         self.sock_udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock_udp.settimeout(self.SOCKET_TIMEOUT)  # Add timeout to prevent hanging
+        self.sock_chat_listener = None
 
         # Remote server socket(s)
         self.sock_remote = None  # für TCP: persistent socket; für UDP: socket used for sendto
@@ -1077,6 +1136,12 @@ class TAKMeshtasticGateway:
         self.server_lock = threading.Lock()
         self.shutdown_flag = threading.Event()  # For graceful shutdown
         self.last_known_positions = {}
+        self.local_node_numbers = set()
+        self.local_node_ids = set()
+        self.chat_cache_lock = threading.Lock()
+        self.recent_tak_chat_ids = {}
+        self.recent_meshtastic_chat_ids = {}
+        self.recent_meshtastic_outbound_texts = {}
 
         # Knoten-Datenbank (SQLite) – persistente GPS-Koordinaten über Neustarts hinweg
         db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nodes.db")
@@ -1137,6 +1202,8 @@ class TAKMeshtasticGateway:
                 self.logger.warning("pypubsub nicht gefunden: Live-Empfangs-Callbacks möglicherweise nicht aktiv.")
             # Start maintenance thread
             threading.Thread(target=self.maintain_server, daemon=True).start()
+            self._register_local_nodes()
+            threading.Thread(target=self.listen_for_tak_chat, daemon=True).start()
             self.apply_gateway_fixed_position()
             self.logger.info("Gateway gestartet. Führe initiale Vollsynchronisation aus.")
             self.full_sync()
@@ -1159,6 +1226,326 @@ class TAKMeshtasticGateway:
                 handler.setFormatter(logging.Formatter('[%(asctime)s] %(levelname)s: %(message)s', datefmt="%H:%M:%S"))
             logger.addHandler(handler)
         return logger
+
+    def _remember_recent_chat(self, cache, key):
+        if not key:
+            return
+        now = time.time()
+        with self.chat_cache_lock:
+            expired = [item for item, ts in cache.items() if now - ts > RECENT_CHAT_CACHE_TTL_SECONDS]
+            for item in expired:
+                cache.pop(item, None)
+            cache[key] = now
+            while len(cache) > RECENT_CHAT_CACHE_MAX_ENTRIES:
+                oldest = min(cache, key=cache.get)
+                cache.pop(oldest, None)
+
+    def _was_seen_recently(self, cache, key):
+        if not key:
+            return False
+        now = time.time()
+        with self.chat_cache_lock:
+            ts = cache.get(key)
+            if ts is None:
+                return False
+            if now - ts > RECENT_CHAT_CACHE_TTL_SECONDS:
+                cache.pop(key, None)
+                return False
+            return True
+
+    def _register_local_nodes(self):
+        for iface in self.interfaces:
+            try:
+                my_info = getattr(iface, "myInfo", None)
+                node_num = getattr(my_info, "my_node_num", None)
+                if node_num is None:
+                    continue
+                node_num = int(node_num)
+                self.local_node_numbers.add(node_num)
+                self.local_node_ids.update(format_meshtastic_node_ids(node_num))
+            except Exception:
+                self.logger.debug("Lokale Node-ID konnte nicht registriert werden:\n" + traceback.format_exc())
+
+    def _find_node_for_packet(self, interface, from_id):
+        if not from_id:
+            return None
+        for iface in ([interface] + [i for i in self.interfaces if i is not interface]):
+            if hasattr(iface, 'nodes') and iface.nodes:
+                node = iface.nodes.get(from_id)
+                if node:
+                    return node
+        return None
+
+    def _is_text_message_packet(self, packet):
+        decoded = packet.get("decoded") or {}
+        if not isinstance(decoded, dict):
+            return False
+        portnum = decoded.get("portnum")
+        if portnum is None:
+            return False
+        if str(portnum).upper() == "TEXT_MESSAGE_APP":
+            return True
+        if portnums_pb2 is not None:
+            try:
+                return int(portnum) == int(portnums_pb2.PortNum.TEXT_MESSAGE_APP)
+            except (TypeError, ValueError):
+                return False
+        return False
+
+    def _extract_meshtastic_text(self, packet):
+        decoded = packet.get("decoded") or {}
+        if not isinstance(decoded, dict):
+            return None
+        text = decoded.get("text")
+        if not text:
+            payload = decoded.get("payload")
+            if isinstance(payload, (bytes, bytearray)):
+                text = payload.decode("utf-8", errors="ignore")
+        if text is None:
+            return None
+        text = str(text).strip()
+        return text or None
+
+    def _resolve_chat_position(self, uid, node=None):
+        alt = 0.0
+        if node:
+            pos = node.get("position", {}) or {}
+            lat_i, lon_i = pos.get("latitude_i"), pos.get("longitude_i")
+            lat_f, lon_f = pos.get("latitude"), pos.get("longitude")
+            alt = pos.get("altitude", 0) or 0
+            if lat_i is not None and lon_i is not None:
+                normalized = normalize_coordinates(lat_i * 1e-7, lon_i * 1e-7)
+                if normalized:
+                    return normalized[0], normalized[1], alt
+            if lat_f is not None and lon_f is not None:
+                normalized = normalize_coordinates(lat_f, lon_f)
+                if normalized:
+                    return normalized[0], normalized[1], alt
+        last_known = self.last_known_positions.get(uid)
+        if last_known:
+            return last_known
+        db_row = self.node_db.get_node(uid)
+        if db_row:
+            return db_row[0], db_row[1], db_row[2] if db_row[2] is not None else 0
+        if self.park_coords is not None:
+            return self.park_coords[0], self.park_coords[1], 0
+        return 0.0, 0.0, 0.0
+
+    def _send_packet_to_tak(self, packet_xml, label):
+        try:
+            self.sock_udp.sendto(packet_xml, (self.tak_ip, self.tak_port))
+            self.logger.debug(f"Lokales UDP gesendet an {self.tak_ip}:{self.tak_port} ({label})")
+        except Exception as e:
+            self.logger.warning(f"Fehler beim Senden an lokales TAK (UDP): {e}")
+
+        if self.server_protocol == "UDP":
+            with self.server_lock:
+                sock = self.sock_remote
+                if sock:
+                    try:
+                        sock.sendto(packet_xml, (self.server_ip, self.server_port))
+                        self.logger.info(f"Remote-UDP gesendet an {self.server_ip}:{self.server_port} ({label})")
+                    except (socket.timeout, socket.error, OSError) as e:
+                        self.logger.warning(f"Fehler beim Senden an Remote-UDP-Server ({type(e).__name__}): {e}")
+        else:
+            with self.server_lock:
+                s = self.sock_remote
+                if s:
+                    try:
+                        s.sendall(packet_xml + b"\n")
+                        self.logger.info(f"Remote-TCP gesendet an {self.server_ip}:{self.server_port} ({label})")
+                    except (socket.timeout, socket.error, OSError) as e:
+                        self.logger.warning(f"Fehler beim Senden an Remote-TCP-Server ({type(e).__name__}), Socket wird zurückgesetzt: {e}")
+                        try:
+                            s.close()
+                        except Exception:
+                            pass
+                        self.sock_remote = None
+
+    def _build_chat_cot_xml(self, sender_uid, callsign, message, lat, lon, alt=0.0, chatroom=DEFAULT_CHATROOM_NAME):
+        t = get_tak_timestamp()
+        stale = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=10)).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+        destination_id = chatroom or DEFAULT_CHATROOM_NAME
+        event = Element('event', {
+            'version': '2.0',
+            'uid': f"GeoChat.{sender_uid}.{uuid.uuid4()}",
+            'type': 'b-t-f',
+            'how': 'h-g-i-g-o',
+            'start': t,
+            'time': t,
+            'stale': stale,
+        })
+        SubElement(event, 'point', {
+            'lat': f"{lat:.6f}",
+            'lon': f"{lon:.6f}",
+            'hae': str(alt or 0),
+            'ce': '9999999.0',
+            'le': '9999999.0',
+        })
+        detail = SubElement(event, 'detail')
+        chat = SubElement(detail, '__chat', {
+            'parent': 'RootContactGroup',
+            'groupOwner': 'false',
+            'chatroom': destination_id,
+            'id': destination_id,
+            'senderCallsign': callsign,
+        })
+        SubElement(chat, 'chatgrp', {
+            'uid0': sender_uid,
+            'uid1': destination_id,
+            'id': destination_id,
+        })
+        SubElement(detail, 'link', {
+            'uid': sender_uid,
+            'relation': 'p-p',
+            'type': 'a-f-G-U-C',
+        })
+        remarks = SubElement(detail, 'remarks', {
+            'source': f"BAO.F.ATAK.{sender_uid}",
+            'to': destination_id,
+            'time': t,
+        })
+        remarks.text = message
+        return tostring(event, encoding='utf-8')
+
+    def send_chat_to_tak(self, sender_uid, callsign, message, lat, lon, alt=0.0, chatroom=DEFAULT_CHATROOM_NAME):
+        try:
+            packet_xml = self._build_chat_cot_xml(sender_uid, callsign, message, lat, lon, alt, chatroom=chatroom)
+            self._send_packet_to_tak(packet_xml, f"Chat {callsign}")
+        except Exception:
+            self.logger.error("Fehler in send_chat_to_tak:\n" + traceback.format_exc())
+
+    def process_meshtastic_text_message(self, packet, node=None):
+        message = self._extract_meshtastic_text(packet)
+        if not message:
+            return
+
+        from_id = packet.get('fromId') or packet.get('from')
+        from_num = packet.get('from')
+        if (from_id in self.local_node_ids or from_num in self.local_node_numbers) and self._was_seen_recently(
+            self.recent_meshtastic_outbound_texts, message
+        ):
+            self.logger.debug("Echo einer gerade aus TAK gesendeten Chatnachricht ignoriert.")
+            return
+
+        message_id = packet.get('id')
+        message_hash = hashlib.sha256(message.encode("utf-8", errors="ignore")).hexdigest()
+        dedupe_key = f"mesh:{message_id}" if message_id is not None else f"mesh:{from_id}:{message_hash}"
+        if self._was_seen_recently(self.recent_meshtastic_chat_ids, dedupe_key):
+            return
+        self._remember_recent_chat(self.recent_meshtastic_chat_ids, dedupe_key)
+
+        user = node.get('user', {}) if node else {}
+        raw_uid = user.get('id') or (str(from_id) if from_id else "MESH-UNKNOWN")
+        sender_uid = normalize_meshtastic_uid(raw_uid)
+        callsign = user.get('longName') or user.get('shortName') or sender_uid
+        lat, lon, alt = self._resolve_chat_position(sender_uid, node=node)
+        self.send_chat_to_tak(sender_uid, callsign, message, lat, lon, alt)
+        self.logger.info(f"Meshtastic-Chat nach TAK weitergeleitet: {callsign}: {message}")
+
+    def _extract_tak_chat_payload(self, packet_xml):
+        try:
+            root = fromstring(packet_xml)
+        except Exception:
+            return None
+
+        if root.tag != "event":
+            return None
+
+        detail = root.find("detail")
+        if detail is None:
+            return None
+
+        chat = detail.find("__chat")
+        remarks = detail.find("remarks")
+        if chat is None or remarks is None:
+            return None
+
+        message = (remarks.text or "").strip()
+        if not message:
+            return None
+
+        link = detail.find("link")
+        contact = detail.find("contact")
+        sender_uid = root.get("uid")
+        if link is not None and link.get("uid"):
+            sender_uid = link.get("uid")
+        sender_callsign = chat.get("senderCallsign")
+        if not sender_callsign and contact is not None:
+            sender_callsign = contact.get("callsign")
+        if not sender_callsign:
+            sender_callsign = "UNKNOWN-SENDER"
+
+        return {
+            "event_uid": root.get("uid"),
+            "sender_uid": sender_uid,
+            "sender_callsign": sender_callsign,
+            "chatroom": chat.get("chatroom") or DEFAULT_CHATROOM_NAME,
+            "message": message,
+        }
+
+    def _send_text_to_meshtastic(self, message):
+        sent_count = 0
+        last_error = None
+        for iface in self.interfaces:
+            try:
+                # Broadcast chat to the mesh; broadcast messages cannot be acknowledged per recipient
+                # at the protocol level, so enabling ACKs would not provide meaningful delivery feedback.
+                iface.sendText(message, wantAck=False)
+                sent_count += 1
+            except Exception as exc:
+                last_error = exc
+                self.logger.warning(f"Fehler beim Senden einer Meshtastic-Chatnachricht auf {getattr(iface, 'devPath', 'unknown')}: {exc}")
+        if sent_count == 0 and last_error is not None:
+            raise last_error
+        return sent_count
+
+    def handle_tak_chat_message(self, packet_xml, source_addr=None):
+        chat_payload = self._extract_tak_chat_payload(packet_xml)
+        if not chat_payload:
+            return
+
+        sender_uid = chat_payload["sender_uid"] or self.gateway_uid
+        if sender_uid in self.local_node_ids:
+            return
+
+        dedupe_key = chat_payload["event_uid"] or f"tak:{sender_uid}:{chat_payload['message']}"
+        if self._was_seen_recently(self.recent_tak_chat_ids, dedupe_key):
+            return
+
+        self._send_text_to_meshtastic(chat_payload["message"])
+        self._remember_recent_chat(self.recent_tak_chat_ids, dedupe_key)
+        self._remember_recent_chat(self.recent_meshtastic_outbound_texts, chat_payload["message"])
+        src = chat_payload["sender_callsign"]
+        self.logger.info(f"TAK-Chat ins Mesh gesendet: {src}: {chat_payload['message']}")
+
+    def listen_for_tak_chat(self):
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.settimeout(1.0)
+            sock.bind((self.chat_listen_ip, self.chat_listen_port))
+            self.sock_chat_listener = sock
+            self.logger.info(
+                f"TAK-Chat-Listener aktiv auf {self.chat_listen_ip}:{self.chat_listen_port} "
+                f"(WinTAK-Ausgang hierhin senden, damit Chats ins Mesh gehen)."
+            )
+        except Exception as e:
+            self.logger.warning(f"TAK-Chat-Listener konnte nicht gestartet werden: {e}")
+            self.sock_chat_listener = None
+            return
+
+        while not self.shutdown_flag.is_set():
+            try:
+                packet_xml, addr = sock.recvfrom(65535)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            except Exception:
+                self.logger.debug("Fehler beim Empfangen von TAK-Chat:\n" + traceback.format_exc())
+                continue
+            self.handle_tak_chat_message(packet_xml.strip(), source_addr=addr)
 
     def maintain_server(self):
         """
@@ -1210,17 +1597,12 @@ class TAKMeshtasticGateway:
         try:
             self.logger.debug(f"RAW Paket empfangen: {packet}")
             from_id = packet.get('fromId') or packet.get('from')
-            if from_id:
-                node = None
-                # Suche zuerst im sendenden Interface, dann in allen anderen
-                for iface in ([interface] + [i for i in self.interfaces if i is not interface]):
-                    if hasattr(iface, 'nodes') and iface.nodes:
-                        node = iface.nodes.get(from_id)
-                        if node:
-                            break
-                if node:
-                    # Force update für Live-Events
-                    self.process_node(node, 0, force_update=True)
+            node = self._find_node_for_packet(interface, from_id)
+            if self._is_text_message_packet(packet):
+                self.process_meshtastic_text_message(packet, node=node)
+            if from_id and node:
+                # Force update für Live-Events
+                self.process_node(node, 0, force_update=True)
         except Exception:
             self.logger.debug("Fehler im on_any_packet:\n" + traceback.format_exc())
 
@@ -1321,7 +1703,7 @@ class TAKMeshtasticGateway:
             pos = node.get('position', {})
 
             raw_uid = user.get('id') or f"!{node.get('num'):08x}"
-            uid = raw_uid.replace('!', 'ID-')
+            uid = normalize_meshtastic_uid(raw_uid)
             callsign = user.get('longName') or user.get('shortName') or uid
 
             lat_i, lon_i = pos.get('latitude_i'), pos.get('longitude_i')
@@ -1423,39 +1805,7 @@ class TAKMeshtasticGateway:
 
             # ElementTree.tostring mit UTF-8 ergibt bytes
             packet_xml = tostring(event, encoding='utf-8')
-
-            # Sende lokal an WinTAK (UDP)
-            try:
-                self.sock_udp.sendto(packet_xml, (self.tak_ip, self.tak_port))
-                self.logger.debug(f"Lokales UDP gesendet an {self.tak_ip}:{self.tak_port} ({callsign})")
-            except Exception as e:
-                self.logger.warning(f"Fehler beim Senden an lokales TAK (UDP): {e}")
-
-            # Sende an entfernten TAK-Server (abhängig von server_protocol)
-            if self.server_protocol == "UDP":
-                with self.server_lock:
-                    sock = self.sock_remote
-                    if sock:
-                        try:
-                            sock.sendto(packet_xml, (self.server_ip, self.server_port))
-                            self.logger.info(f"Remote-UDP gesendet an {self.server_ip}:{self.server_port} ({callsign})")
-                        except (socket.timeout, socket.error, OSError) as e:
-                            self.logger.warning(f"Fehler beim Senden an Remote-UDP-Server ({type(e).__name__}): {e}")
-            else:  # TCP
-                with self.server_lock:
-                    s = self.sock_remote
-                    if s:
-                        try:
-                            # TCP erwartet evtl. newline-terminierte Pakete
-                            s.sendall(packet_xml + b"\n")
-                            self.logger.info(f"Remote-TCP gesendet an {self.server_ip}:{self.server_port} ({callsign})")
-                        except (socket.timeout, socket.error, OSError) as e:
-                            self.logger.warning(f"Fehler beim Senden an Remote-TCP-Server ({type(e).__name__}), Socket wird zurückgesetzt: {e}")
-                            try:
-                                s.close()
-                            except Exception:
-                                pass
-                            self.sock_remote = None
+            self._send_packet_to_tak(packet_xml, callsign)
         except Exception:
             self.logger.error("Fehler in send_broadcast:\n" + traceback.format_exc())
 
@@ -1481,6 +1831,12 @@ class TAKMeshtasticGateway:
         # Close UDP socket
         try:
             self.sock_udp.close()
+        except Exception:
+            pass
+
+        try:
+            if self.sock_chat_listener:
+                self.sock_chat_listener.close()
         except Exception:
             pass
         

@@ -13,6 +13,14 @@ tak_server_port: 8088
 
 tak_server_protocol: TCP                               
 
+# Lokales WinTAK-Ziel für Positions- und Chat-CoT
+local_tak_ip: 127.0.0.1
+local_tak_port: 4242
+
+# UDP-Port, auf den WinTAK seine GeoChat-/Chat-CoT-Nachrichten an dieses Gateway senden soll,
+# damit sie ins Meshtastic-Mesh ausgestrahlt werden.
+local_tak_chat_listen_port: 4243
+
 # true  = alle Nodes anzeigen – Nodes ohne GPS-Fix werden bei park_lat/park_lon platziert (empfohlen)
 # false = nur Nodes mit gültigen GPS-Koordinaten senden
 send_nodes_without_gps: true
