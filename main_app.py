@@ -1220,7 +1220,7 @@ class GatewayApp:
         ttk.Entry(cfg_frame, textvariable=self._sync_interval_var, width=10).grid(
             row=7, column=3, sticky="w", pady=(0, 4))
 
-        # ── Rows 8-9: Relay mode ──
+        # ── Rows 8-10: Relay mode ──
         self._relay_text_messages_var = tk.BooleanVar(
             value=as_bool(self.cfg.get("relay_text_messages", True))
         )
@@ -1246,9 +1246,9 @@ class GatewayApp:
             cfg_frame,
             text="Leave Relay From blank to relay from any selected port, and leave Relay To blank to relay to all other selected ports.",
             style="Sub.TLabel",
-        ).grid(row=9, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        ).grid(row=10, column=0, columnspan=4, sticky="w", pady=(0, 4))
 
-        # ── Row 10: GPS fallback ──
+        # ── Row 11: GPS fallback ──
         self._send_nodes_without_gps_var = tk.BooleanVar(
             value=as_bool(self.cfg.get("send_nodes_without_gps", True))
         )
@@ -1257,24 +1257,24 @@ class GatewayApp:
             text="Send nodes without GPS fix",
             variable=self._send_nodes_without_gps_var,
             command=self._update_no_gps_hint,
-        ).grid(row=10, column=0, columnspan=2, sticky="w", pady=(0, 4))
-        cfg_label("Fallback Lat:", row=10, col=2, padx=(8, 6), pady=(0, 4))
+        ).grid(row=11, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        cfg_label("Fallback Lat:", row=11, col=2, padx=(8, 6), pady=(0, 4))
         raw_park_lat = self.cfg.get("park_lat")
         park_lat_val = "" if raw_park_lat is None else f"{float(raw_park_lat):.6f}".rstrip("0").rstrip(".")
         self._park_lat_var = tk.StringVar(value=park_lat_val)
         ttk.Entry(cfg_frame, textvariable=self._park_lat_var, width=16).grid(
-            row=10, column=3, sticky="w", pady=(0, 4))
+            row=11, column=3, sticky="w", pady=(0, 4))
 
-        # ── Row 11: WinTAK hint + fallback lon ──
+        # ── Row 12: WinTAK hint + fallback lon ──
         self._wintak_setup_var = tk.StringVar()
         ttk.Label(cfg_frame, textvariable=self._wintak_setup_var, style="Hint.TLabel").grid(
-            row=11, column=0, columnspan=2, sticky="w", pady=(0, 4))
-        cfg_label("Fallback Lon:", row=11, col=2, padx=(8, 6), pady=(0, 4))
+            row=12, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        cfg_label("Fallback Lon:", row=12, col=2, padx=(8, 6), pady=(0, 4))
         raw_park_lon = self.cfg.get("park_lon")
         park_lon_val = "" if raw_park_lon is None else f"{float(raw_park_lon):.6f}".rstrip("0").rstrip(".")
         self._park_lon_var = tk.StringVar(value=park_lon_val)
         ttk.Entry(cfg_frame, textvariable=self._park_lon_var, width=16).grid(
-            row=11, column=3, sticky="w", pady=(0, 4))
+            row=12, column=3, sticky="w", pady=(0, 4))
         self._local_tak_tcp_listen_port_var.trace_add("write", self._update_wintak_setup_hint)
 
         # ── Hidden/legacy options kept for existing config behavior ──
@@ -1288,7 +1288,7 @@ class GatewayApp:
         self._park_lon_var.trace_add("write", lambda *_: self._update_no_gps_hint())
         self._no_gps_hint_var = tk.StringVar()
         ttk.Label(cfg_frame, textvariable=self._no_gps_hint_var, style="Hint.TLabel").grid(
-            row=12, column=0, columnspan=6, sticky="w", pady=(0, 2))
+            row=13, column=0, columnspan=6, sticky="w", pady=(0, 2))
         self._update_no_gps_hint()
 
         cfg_frame.columnconfigure(1, weight=1)
@@ -1553,7 +1553,7 @@ class GatewayApp:
         try:
             gw = TAKMeshtasticGateway(ports, self.cfg)
             self._gateway = gw
-            # Forward WinTAK TCP listener events into the GUI log.
+            # Log WinTAK TCP listener events in the GUI.
             gw.wintak_tcp_chat_callback = self._on_wintak_tcp_chat
             self._root.after(0, lambda: self._status_var.set(f"🟢 Running  –  {', '.join(ports)}"))
             self._root.after(0, lambda: self._send_mesh_test_btn.configure(state="normal"))
