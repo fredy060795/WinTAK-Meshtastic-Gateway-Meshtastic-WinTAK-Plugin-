@@ -1126,31 +1126,6 @@ class GatewayApp:
             font=("Segoe UI", 9, "bold"),
         ).pack(side="left", padx=(16, 0))
 
-        # ── Log-Ausgabebereich ──
-        log_frame = ttk.LabelFrame(root, text=" 📋  Log-Ausgabe ", padding=4)
-        log_frame.pack(fill="both", expand=True, padx=10, pady=(6, 0))
-
-        self._log_text = tk.Text(
-            log_frame, wrap="word", state="disabled",
-            bg="#0d1117", fg="#c9d1d9",
-            font=self._log_font,
-            relief="flat", bd=0,
-            insertbackground="#c9d1d9",
-            selectbackground="#264f78",
-        )
-        scrollbar = ttk.Scrollbar(log_frame, command=self._log_text.yview)
-        self._log_text.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side="right", fill="y")
-        self._log_text.pack(fill="both", expand=True, padx=2, pady=2)
-
-        # Farb-Tags je Log-Level
-        self._log_text.tag_configure("DEBUG",    foreground="#6e7681")
-        self._log_text.tag_configure("INFO",     foreground="#c9d1d9")
-        self._log_text.tag_configure("WARNING",  foreground="#d29922")
-        self._log_text.tag_configure("ERROR",    foreground="#f85149")
-        self._log_text.tag_configure("CRITICAL", foreground="#ff7b72", font=("Consolas", 9, "bold"))
-        self._log_text.tag_configure("CMD",      foreground="#79c0ff")
-
         # ── Manuelles Mesh-Test-Senden ──
         mesh_test_frame = ttk.LabelFrame(root, text=" 🧪  Mesh-Testnachricht ", padding=6)
         mesh_test_frame.pack(fill="x", padx=10, pady=(6, 0))
@@ -1186,6 +1161,31 @@ class GatewayApp:
         input_entry.bind("<Return>", lambda _e: self._on_send_command())
         ttk.Button(input_frame, text="Senden", command=self._on_send_command,
                    style="Accent.TButton").pack(side="left")
+
+        # ── Log-Ausgabebereich ──
+        log_frame = ttk.LabelFrame(root, text=" 📋  Log-Ausgabe ", padding=4)
+        log_frame.pack(fill="both", expand=True, padx=10, pady=(6, 0))
+
+        self._log_text = tk.Text(
+            log_frame, wrap="word", state="disabled",
+            bg="#0d1117", fg="#c9d1d9",
+            font=self._log_font,
+            relief="flat", bd=0,
+            insertbackground="#c9d1d9",
+            selectbackground="#264f78",
+        )
+        scrollbar = ttk.Scrollbar(log_frame, command=self._log_text.yview)
+        self._log_text.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        self._log_text.pack(fill="both", expand=True, padx=2, pady=2)
+
+        # Farb-Tags je Log-Level
+        self._log_text.tag_configure("DEBUG",    foreground="#6e7681")
+        self._log_text.tag_configure("INFO",     foreground="#c9d1d9")
+        self._log_text.tag_configure("WARNING",  foreground="#d29922")
+        self._log_text.tag_configure("ERROR",    foreground="#f85149")
+        self._log_text.tag_configure("CRITICAL", foreground="#ff7b72", font=("Consolas", 9, "bold"))
+        self._log_text.tag_configure("CMD",      foreground="#79c0ff")
 
         # ── Statusleiste unten ──
         status_bar = tk.Frame(root, bg=C["panel"], height=22)
