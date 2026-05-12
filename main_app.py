@@ -13,6 +13,7 @@ import os
 import sys
 import argparse
 import base64
+import codecs
 import datetime
 import hashlib
 import inspect
@@ -65,6 +66,13 @@ MIN_PORT_NUMBER = 1
 MAX_PORT_NUMBER = 65535
 DEFAULT_CHATROOM_NAME = "All Chat Rooms"
 DEFAULT_CHAT_LISTEN_PORT = 4243
+TCP_LISTENER_DEFAULT_PORT = 8087
+DEFAULT_SOURCE_PROTOCOL = "UNKNOWN"
+TCP_SOCKET_TIMEOUT_SECONDS = 1.0
+TCP_LISTENER_BACKLOG = 5
+TCP_RECV_BUFFER_SIZE = 4096
+MAX_TCP_STREAM_BUFFER_BYTES = 262144
+TCP_STREAM_BUFFER_TAIL_BYTES = 64
 RECENT_CHAT_CACHE_TTL_SECONDS = 30
 RECENT_CHAT_CACHE_MAX_ENTRIES = 256
 MESHTASTIC_TEXT_CHUNK_MAX_BYTES = 180
@@ -72,6 +80,7 @@ MESHTASTIC_COT_FRAGMENT_PREFIX = "COTM"
 MESHTASTIC_COT_FRAGMENT_PAYLOAD_BYTES = 140
 MESHTASTIC_COT_FRAGMENT_TTL_SECONDS = 120
 DEFAULT_MESHTASTIC_CHANNEL_INDEX = 0
+TAK_EVENT_PATTERN = re.compile(r"<event\b[^>]*>.*?</event>", re.DOTALL)
 MIN_NULL_BYTES_FOR_UTF16 = 2
 UTF16_NULL_BYTE_RATIO_THRESHOLD = 4
 _WINTAK_CHAT_TRANSCRIPT_LINE_PATTERN = re.compile(
@@ -980,6 +989,12 @@ class GatewayApp:
         )
         ttk.Entry(cfg_frame, textvariable=self._local_tak_chat_listen_port_var, width=10).grid(
             row=7, column=1, sticky="w", padx=(6, 12), pady=(0, 4))
+        cfg_label("WinTAK TCP Port:", row=7, col=2, padx=(8, 6), pady=(0, 4))
+        self._local_tak_tcp_listen_port_var = tk.StringVar(
+            value=str(self.cfg.get("local_tak_tcp_listen_port", TCP_LISTENER_DEFAULT_PORT))
+        )
+        ttk.Entry(cfg_frame, textvariable=self._local_tak_tcp_listen_port_var, width=10).grid(
+            row=7, column=3, sticky="w", pady=(0, 4))
         self._relay_text_messages_var = tk.BooleanVar(
             value=as_bool(self.cfg.get("relay_text_messages", True))
         )
@@ -987,23 +1002,23 @@ class GatewayApp:
             cfg_frame,
             text="Mesh-Text zwischen ausgewählten COM-Ports weiterleiten",
             variable=self._relay_text_messages_var,
-        ).grid(row=7, column=2, columnspan=4, sticky="w", padx=(8, 0), pady=(0, 4))
+        ).grid(row=8, column=0, columnspan=6, sticky="w", pady=(0, 4))
 
-        cfg_label("Relay von COM:", row=8, col=0, pady=(0, 4))
+        cfg_label("Relay von COM:", row=9, col=0, pady=(0, 4))
         self._relay_text_from_ports_var = tk.StringVar(
             value=_format_ports_for_entry(self.cfg.get("relay_text_from_ports"))
         )
         ttk.Entry(cfg_frame, textvariable=self._relay_text_from_ports_var, width=28).grid(
-            row=8, column=1, sticky="ew", padx=(6, 12), pady=(0, 4))
-        cfg_label("Relay nach COM:", row=8, col=2, padx=(8, 6), pady=(0, 4))
+            row=9, column=1, sticky="ew", padx=(6, 12), pady=(0, 4))
+        cfg_label("Relay nach COM:", row=9, col=2, padx=(8, 6), pady=(0, 4))
         self._relay_text_to_ports_var = tk.StringVar(
             value=_format_ports_for_entry(self.cfg.get("relay_text_to_ports"))
         )
         ttk.Entry(cfg_frame, textvariable=self._relay_text_to_ports_var, width=16).grid(
-            row=8, column=3, sticky="w", pady=(0, 4))
+            row=9, column=3, sticky="w", pady=(0, 4))
 
         ttk.Separator(cfg_frame, orient="horizontal").grid(
-            row=9, column=0, columnspan=6, sticky="ew", pady=(2, 8))
+            row=10, column=0, columnspan=6, sticky="ew", pady=(2, 8))
 
         # ── GPS-Optionen ──
         self._send_nodes_without_gps_var = tk.BooleanVar(
@@ -1017,33 +1032,33 @@ class GatewayApp:
             text="Nodes ohne GPS-Fix senden",
             variable=self._send_nodes_without_gps_var,
             command=self._update_no_gps_hint,
-        ).grid(row=10, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        ).grid(row=11, column=0, columnspan=2, sticky="w", pady=(0, 4))
         ttk.Checkbutton(
             cfg_frame,
             text="Gateway-Position beim Start setzen",
             variable=self._set_gateway_position_var,
-        ).grid(row=10, column=2, columnspan=3, sticky="w", padx=(8, 0), pady=(0, 4))
+        ).grid(row=11, column=2, columnspan=3, sticky="w", padx=(8, 0), pady=(0, 4))
 
-        # ── Zeile 10: park_lat / park_lon ──
-        cfg_label("Fallback Lat (park_lat):", row=11, col=0, pady=(0, 4))
+        # ── Zeile 13: park_lat / park_lon ──
+        cfg_label("Fallback Lat (park_lat):", row=12, col=0, pady=(0, 4))
         raw_park_lat = self.cfg.get("park_lat")
         park_lat_val = "" if raw_park_lat is None else f"{float(raw_park_lat):.6f}".rstrip("0").rstrip(".")
         self._park_lat_var = tk.StringVar(value=park_lat_val)
         ttk.Entry(cfg_frame, textvariable=self._park_lat_var, width=16).grid(
-            row=11, column=1, sticky="w", padx=(6, 12), pady=(0, 4))
-        cfg_label("Fallback Lon (park_lon):", row=11, col=2, padx=(8, 6), pady=(0, 4))
+            row=12, column=1, sticky="w", padx=(6, 12), pady=(0, 4))
+        cfg_label("Fallback Lon (park_lon):", row=12, col=2, padx=(8, 6), pady=(0, 4))
         raw_park_lon = self.cfg.get("park_lon")
         park_lon_val = "" if raw_park_lon is None else f"{float(raw_park_lon):.6f}".rstrip("0").rstrip(".")
         self._park_lon_var = tk.StringVar(value=park_lon_val)
         ttk.Entry(cfg_frame, textvariable=self._park_lon_var, width=16).grid(
-            row=11, column=3, sticky="w", pady=(0, 4))
+            row=12, column=3, sticky="w", pady=(0, 4))
         self._park_lat_var.trace_add("write", lambda *_: self._update_no_gps_hint())
         self._park_lon_var.trace_add("write", lambda *_: self._update_no_gps_hint())
 
-        # ── Zeile 11: Hinweis ──
+        # ── Zeile 14: Hinweis ──
         self._no_gps_hint_var = tk.StringVar()
         ttk.Label(cfg_frame, textvariable=self._no_gps_hint_var, style="Hint.TLabel").grid(
-            row=12, column=0, columnspan=6, sticky="w", pady=(0, 2))
+            row=13, column=0, columnspan=6, sticky="w", pady=(0, 2))
         self._update_no_gps_hint()
 
         cfg_frame.columnconfigure(1, weight=1)
@@ -1179,6 +1194,9 @@ class GatewayApp:
         self.cfg["local_tak_port"] = self._parse_int_field(self._local_tak_port_var.get(), "Local TAK Port")
         self.cfg["local_tak_chat_listen_port"] = self._parse_int_field(
             self._local_tak_chat_listen_port_var.get(), "Local TAK Chat Listen Port"
+        )
+        self.cfg["local_tak_tcp_listen_port"] = self._parse_int_field(
+            self._local_tak_tcp_listen_port_var.get(), "Local TAK TCP Listen Port"
         )
         if self.cfg["local_tak_chat_listen_port"] == self.cfg["local_tak_port"]:
             raise ValueError(
@@ -1472,6 +1490,16 @@ class TAKMeshtasticGateway:
         except (ValueError, TypeError) as e:
             raise ValueError(f"Invalid local_tak_chat_listen_port in config: {e}")
         self.chat_listen_ip = str(self.cfg.get("local_tak_chat_listen_ip", "0.0.0.0")).strip() or "0.0.0.0"
+        try:
+            tcp_chat_listen_port = int(
+                self.cfg.get("local_tak_tcp_listen_port", TCP_LISTENER_DEFAULT_PORT)
+            )
+            if not (1 <= tcp_chat_listen_port <= 65535):
+                raise ValueError(f"Invalid local TAK TCP listen port: {tcp_chat_listen_port}")
+            self.tcp_chat_listen_port = tcp_chat_listen_port
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Invalid local_tak_tcp_listen_port in config: {e}")
+        self.tcp_chat_listen_ip = str(self.cfg.get("local_tak_tcp_listen_ip", "127.0.0.1")).strip() or "127.0.0.1"
         
         self.sock_udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock_udp.settimeout(self.SOCKET_TIMEOUT)  # Add timeout to prevent hanging
@@ -1568,6 +1596,11 @@ class TAKMeshtasticGateway:
                     args=(listen_port,),
                     daemon=True,
                 ).start()
+            threading.Thread(
+                target=self.listen_for_tak_chat_tcp,
+                args=(self.tcp_chat_listen_port,),
+                daemon=True,
+            ).start()
             self.apply_gateway_fixed_position()
             self.logger.info("Gateway gestartet. Führe initiale Vollsynchronisation aus.")
             self.full_sync()
@@ -2236,6 +2269,25 @@ class TAKMeshtasticGateway:
             packet_bytes = packet_bytes[3:]
         return _decode_tak_packet_bytes(packet_bytes)
 
+    def _extract_tak_events_from_stream_buffer(self, buffer_text):
+        events = []
+        last_end = 0
+        for match in TAK_EVENT_PATTERN.finditer(buffer_text):
+            events.append(match.group(0))
+            last_end = match.end()
+        remaining_buffer = buffer_text[last_end:]
+        if len(remaining_buffer) > MAX_TCP_STREAM_BUFFER_BYTES:
+            event_start = remaining_buffer.rfind("<event")
+            if event_start >= 0:
+                remaining_buffer = remaining_buffer[event_start:]
+            else:
+                partial_tag_start = remaining_buffer.rfind("<")
+                if partial_tag_start >= 0:
+                    remaining_buffer = remaining_buffer[partial_tag_start:]
+                else:
+                    remaining_buffer = remaining_buffer[-TCP_STREAM_BUFFER_TAIL_BYTES:]
+        return events, remaining_buffer
+
     def _iter_tak_listener_ports(self):
         seen = set()
         for port in (self.chat_listen_port, self.tak_port):
@@ -2301,7 +2353,65 @@ class TAKMeshtasticGateway:
             raise last_error
         raise OSError("Kein Chat-Listener-Socket konnte erstellt werden.")
 
-    def handle_inbound_tak_packet(self, packet_xml, source_addr=None):
+    def _create_chat_tcp_listener_socket(self, listen_port):
+        requested_ip = self.tcp_chat_listen_ip
+        bind_attempts = []
+        if requested_ip in ("0.0.0.0", "", "*"):
+            bind_attempts.append((socket.AF_INET, "0.0.0.0", False))
+            bind_attempts.append((socket.AF_INET6, "::", True))
+        else:
+            try:
+                addr_info = socket.getaddrinfo(
+                    requested_ip,
+                    listen_port,
+                    socket.AF_UNSPEC,
+                    socket.SOCK_STREAM,
+                    0,
+                    socket.AI_PASSIVE,
+                )
+            except socket.gaierror as exc:
+                raise OSError(f"Ungültige TCP-Listener-IP '{requested_ip}': {exc}") from exc
+
+            seen = set()
+            for family, _, _, _, sockaddr in addr_info:
+                host = sockaddr[0]
+                if (family, host) in seen:
+                    continue
+                seen.add((family, host))
+                should_enable_dual_stack = family == socket.AF_INET6 and host == "::"
+                bind_attempts.append((family, host, should_enable_dual_stack))
+
+        last_error = None
+        for family, bind_ip, want_dual_stack in bind_attempts:
+            try:
+                sock = socket.socket(family, socket.SOCK_STREAM)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                if family == socket.AF_INET6:
+                    try:
+                        sock.setsockopt(
+                            socket.IPPROTO_IPV6,
+                            socket.IPV6_V6ONLY,
+                            0 if want_dual_stack else 1,
+                        )
+                    except (AttributeError, OSError):
+                        pass
+                sock.settimeout(TCP_SOCKET_TIMEOUT_SECONDS)
+                sock.bind((bind_ip, listen_port))
+                sock.listen(TCP_LISTENER_BACKLOG)
+                return sock, bind_ip
+            except OSError as exc:
+                logger = getattr(self, "logger", None)
+                if logger is not None:
+                    logger.debug(
+                        f"TAK-TCP-Listener Bind fehlgeschlagen auf {bind_ip}:{listen_port} "
+                        f"(family={family}): {exc}"
+                    )
+                last_error = exc
+        if last_error is not None:
+            raise last_error
+        raise OSError("Kein TCP-Listener-Socket konnte erstellt werden.")
+
+    def handle_inbound_tak_packet(self, packet_xml, source_addr=None, source_protocol=None):
         metadata = self._extract_cot_event_metadata(packet_xml)
         cot_dedupe_key = None
         if metadata is not None:
@@ -2339,8 +2449,9 @@ class TAKMeshtasticGateway:
             return
 
         if metadata is None:
+            protocol_label = str(source_protocol or DEFAULT_SOURCE_PROTOCOL).upper()
             self.logger.debug(
-                "UDP-Paket am TAK-Listener empfangen, aber nicht als CoT erkannt"
+                f"{protocol_label}-Paket am TAK-Listener empfangen, aber nicht als CoT erkannt"
                 + (f" ({source_addr[0]}:{source_addr[1]})" if source_addr else "")
             )
             return
@@ -2358,9 +2469,9 @@ class TAKMeshtasticGateway:
             f"({len(sent_chunks)} Fragment{'e' if len(sent_chunks) != 1 else ''})"
         )
 
-    def handle_tak_chat_message(self, packet_xml, source_addr=None):
+    def handle_tak_chat_message(self, packet_xml, source_addr=None, source_protocol=None):
         """Backward-compatible alias for existing callers of the TAK listener packet handler."""
-        self.handle_inbound_tak_packet(packet_xml, source_addr=source_addr)
+        self.handle_inbound_tak_packet(packet_xml, source_addr=source_addr, source_protocol=source_protocol)
 
     def listen_for_tak_chat(self, listen_port=None):
         if listen_port is None:
@@ -2395,7 +2506,71 @@ class TAKMeshtasticGateway:
             normalized_packet = self._normalize_inbound_tak_packet(packet_xml)
             if not normalized_packet:
                 continue
-            self.handle_inbound_tak_packet(normalized_packet, source_addr=addr)
+            self.handle_inbound_tak_packet(normalized_packet, source_addr=addr, source_protocol="UDP")
+
+    def _handle_tak_tcp_client(self, conn, addr):
+        buffer_text = ""
+        decoder = codecs.getincrementaldecoder("utf-8")()
+        conn.settimeout(TCP_SOCKET_TIMEOUT_SECONDS)
+        try:
+            while not self.shutdown_flag.is_set():
+                try:
+                    data = conn.recv(TCP_RECV_BUFFER_SIZE)
+                    if not data:
+                        break
+                    buffer_text += decoder.decode(data)
+                    events, buffer_text = self._extract_tak_events_from_stream_buffer(buffer_text)
+                    for packet_xml in events:
+                        normalized_packet = self._normalize_inbound_tak_packet(packet_xml)
+                        if not normalized_packet:
+                            continue
+                        self.handle_inbound_tak_packet(normalized_packet, source_addr=addr, source_protocol="TCP")
+                except socket.timeout:
+                    continue
+            buffer_text += decoder.decode(b"", final=True)
+            events, buffer_text = self._extract_tak_events_from_stream_buffer(buffer_text)
+            for packet_xml in events:
+                normalized_packet = self._normalize_inbound_tak_packet(packet_xml)
+                if not normalized_packet:
+                    continue
+                self.handle_inbound_tak_packet(normalized_packet, source_addr=addr, source_protocol="TCP")
+        except OSError:
+            self.logger.debug("Fehler beim Lesen einer TAK-TCP-Verbindung:\n" + traceback.format_exc())
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def listen_for_tak_chat_tcp(self, listen_port=None):
+        if listen_port is None:
+            listen_port = self.tcp_chat_listen_port
+        try:
+            sock, bind_ip = self._create_chat_tcp_listener_socket(listen_port)
+            self.sock_chat_listeners.append(sock)
+            self.logger.info(
+                f"TAK-TCP-Listener aktiv auf {bind_ip}:{listen_port} "
+                "(WinTAK/admin_map TCP-Kompatibilität)."
+            )
+        except Exception as e:
+            self.logger.warning(f"TAK-TCP-Listener auf Port {listen_port} konnte nicht gestartet werden: {e}")
+            return
+
+        while not self.shutdown_flag.is_set():
+            try:
+                conn, addr = sock.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            except Exception:
+                self.logger.debug("Fehler beim Annehmen einer TAK-TCP-Verbindung:\n" + traceback.format_exc())
+                continue
+            threading.Thread(
+                target=self._handle_tak_tcp_client,
+                args=(conn, addr),
+                daemon=True,
+            ).start()
 
     def maintain_server(self):
         """
