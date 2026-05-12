@@ -331,7 +331,7 @@ def _should_attempt_utf16_decode(raw_bytes):
 
 def _detect_tak_stream_encoding(packet_bytes):
     """Best-effort encoding detection for inbound TAK XML packets/streams."""
-    packet_bytes = _ensure_bytes(packet_bytes).strip(b"\x00 \t\r\n")
+    packet_bytes = _ensure_bytes(packet_bytes).strip(b" \t\r\n")
     if not packet_bytes:
         return None
 
@@ -356,7 +356,7 @@ def _detect_tak_stream_encoding(packet_bytes):
 def _decode_tak_packet_bytes(packet_bytes):
     """Normalize common TAK UDP packet encodings to UTF-8 XML bytes."""
     packet_bytes = _ensure_bytes(packet_bytes)
-    packet_bytes = packet_bytes.strip(b"\x00 \t\r\n")
+    packet_bytes = packet_bytes.strip(b" \t\r\n")
     if not packet_bytes:
         return b""
 
