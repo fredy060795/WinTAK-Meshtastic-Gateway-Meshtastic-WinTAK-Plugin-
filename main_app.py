@@ -285,6 +285,30 @@ def _ensure_bytes(value):
     return str(value or "").encode("utf-8")
 
 
+def _decode_tak_packet_bytes(packet_bytes):
+    """Normalize common TAK UDP packet encodings to UTF-8 XML bytes."""
+    packet_bytes = _ensure_bytes(packet_bytes)
+    packet_bytes = packet_bytes.lstrip(b"\x00").rstrip(b"\x00").strip()
+    if not packet_bytes:
+        return b""
+
+    if packet_bytes.startswith((b"\xff\xfe", b"\xfe\xff")):
+        try:
+            return packet_bytes.decode("utf-16").encode("utf-8")
+        except UnicodeDecodeError:
+            return packet_bytes
+
+    if packet_bytes.count(b"\x00") >= max(2, len(packet_bytes) // 4):
+        for encoding in ("utf-16-le", "utf-16-be"):
+            try:
+                decoded_text = packet_bytes.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+            if "<event" in decoded_text or "<?xml" in decoded_text:
+                return decoded_text.encode("utf-8")
+    return packet_bytes
+
+
 def _read_protobuf_varint(buffer, offset):
     """Read a protobuf varint from buffer starting at offset."""
     result = 0
@@ -2197,8 +2221,7 @@ class TAKMeshtasticGateway:
         packet_bytes = _ensure_bytes(packet_xml)
         if packet_bytes.startswith(b"\xef\xbb\xbf"):
             packet_bytes = packet_bytes[3:]
-        packet_bytes = packet_bytes.replace(b"\x00", b"").strip()
-        return packet_bytes
+        return _decode_tak_packet_bytes(packet_bytes)
 
     def _iter_tak_listener_ports(self):
         seen = set()
