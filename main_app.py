@@ -72,7 +72,8 @@ MESHTASTIC_COT_FRAGMENT_PREFIX = "COTM"
 MESHTASTIC_COT_FRAGMENT_PAYLOAD_BYTES = 140
 MESHTASTIC_COT_FRAGMENT_TTL_SECONDS = 120
 DEFAULT_MESHTASTIC_CHANNEL_INDEX = 0
-UTF16_NULL_BYTE_TRIGGER_RATIO = 4
+MIN_NULL_BYTES_FOR_UTF16 = 2
+UTF16_NULL_BYTE_RATIO_THRESHOLD = 4
 _WINTAK_CHAT_TRANSCRIPT_LINE_PATTERN = re.compile(
     r"^\((?P<time>\d{1,2}:\d{2}(?::\d{2})?)\)\s+(?P<sender>.+):(?:\s*(?P<message>.*))?$"
 )
@@ -299,7 +300,10 @@ def _decode_tak_packet_bytes(packet_bytes):
 
     def _should_attempt_utf16_decode(raw_bytes):
         null_bytes = raw_bytes.count(b"\x00")
-        return null_bytes >= 2 and null_bytes >= len(raw_bytes) // UTF16_NULL_BYTE_TRIGGER_RATIO
+        return (
+            null_bytes >= MIN_NULL_BYTES_FOR_UTF16
+            and null_bytes >= len(raw_bytes) // UTF16_NULL_BYTE_RATIO_THRESHOLD
+        )
 
     if packet_bytes.startswith((b"\xff\xfe", b"\xfe\xff")):
         try:
