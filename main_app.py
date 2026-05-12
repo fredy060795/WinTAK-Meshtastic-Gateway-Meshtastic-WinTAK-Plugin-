@@ -2242,12 +2242,12 @@ class TAKMeshtasticGateway:
         contact = _find_descendant_by_local_name(detail, "contact")
         uid_parts = [part for part in event_uid.split(".") if part]
         sender_uid = ""
-        if event_uid.startswith("GeoChat.") and len(uid_parts) >= 2:
-            sender_uid = uid_parts[1]
         if link is not None and link.get("uid"):
             sender_uid = link.get("uid")
         if not sender_uid and remarks is not None:
             sender_uid = remarks.get("sourceID") or remarks.get("source") or sender_uid
+        if not sender_uid and event_uid.startswith("GeoChat.") and len(uid_parts) >= 2:
+            sender_uid = uid_parts[1]
         if not sender_uid and chatgrp is not None:
             sender_uid = chatgrp.get("uid0") or chatgrp.get("uid")
         if not sender_uid:
