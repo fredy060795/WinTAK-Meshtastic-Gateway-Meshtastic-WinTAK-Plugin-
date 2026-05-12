@@ -81,6 +81,8 @@ MESHTASTIC_COT_FRAGMENT_PAYLOAD_BYTES = 140
 MESHTASTIC_COT_FRAGMENT_TTL_SECONDS = 120
 DEFAULT_MESHTASTIC_CHANNEL_INDEX = 0
 TAK_EVENT_PATTERN = re.compile(r"<event\b[^>]*>.*?</event>", re.DOTALL)
+MIN_NULL_BYTES_FOR_UTF16 = 2
+UTF16_NULL_BYTE_RATIO_THRESHOLD = 4
 _WINTAK_CHAT_TRANSCRIPT_LINE_PATTERN = re.compile(
     r"^\((?P<time>\d{1,2}:\d{2}(?::\d{2})?)\)\s+(?P<sender>.+):(?:\s*(?P<message>.*))?$"
 )
@@ -292,6 +294,41 @@ def _ensure_bytes(value):
     if isinstance(value, bytearray):
         return bytes(value)
     return str(value or "").encode("utf-8")
+
+
+def _decode_tak_packet_bytes(packet_bytes):
+    """Normalize common TAK UDP packet encodings to UTF-8 XML bytes."""
+    packet_bytes = _ensure_bytes(packet_bytes)
+    packet_bytes = packet_bytes.strip(b"\x00 \t\r\n")
+    if not packet_bytes:
+        return b""
+
+    def _is_xml_text(text):
+        stripped = str(text or "").strip()
+        return stripped.startswith("<") and ">" in stripped
+
+    def _should_attempt_utf16_decode(raw_bytes):
+        null_bytes = raw_bytes.count(b"\x00")
+        return (
+            null_bytes >= MIN_NULL_BYTES_FOR_UTF16
+            and null_bytes >= len(raw_bytes) // UTF16_NULL_BYTE_RATIO_THRESHOLD
+        )
+
+    if packet_bytes.startswith((b"\xff\xfe", b"\xfe\xff")):
+        try:
+            return packet_bytes.decode("utf-16").encode("utf-8")
+        except UnicodeDecodeError:
+            return packet_bytes
+
+    if _should_attempt_utf16_decode(packet_bytes):
+        for encoding in ("utf-16-le", "utf-16-be"):
+            try:
+                decoded_text = packet_bytes.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+            if _is_xml_text(decoded_text):
+                return decoded_text.encode("utf-8")
+    return packet_bytes
 
 
 def _read_protobuf_varint(buffer, offset):
@@ -2230,8 +2267,7 @@ class TAKMeshtasticGateway:
         packet_bytes = _ensure_bytes(packet_xml)
         if packet_bytes.startswith(b"\xef\xbb\xbf"):
             packet_bytes = packet_bytes[3:]
-        packet_bytes = packet_bytes.replace(b"\x00", b"").strip()
-        return packet_bytes
+        return _decode_tak_packet_bytes(packet_bytes)
 
     def _extract_tak_events_from_stream_buffer(self, buffer_text):
         events = []
