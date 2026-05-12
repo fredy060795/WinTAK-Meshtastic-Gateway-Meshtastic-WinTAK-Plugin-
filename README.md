@@ -68,7 +68,9 @@ meshtastic_port: COM7               # Serial port of the Meshtastic radio
 local_tak_ip: 127.0.0.1             # Local WinTAK IP
 local_tak_port: 4242                # Local WinTAK UDP input for positions/chat
 local_tak_chat_listen_port: 4243    # UDP input on this gateway for outgoing WinTAK GeoChat + other CoT
+local_tak_tcp_listen_port: 8087     # Local TCP input for WinTAK/admin_map chat/CoT compatibility
 # local_tak_chat_listen_ip: 0.0.0.0 # Optional bind IP for outgoing WinTAK CoT (default: all local interfaces)
+# local_tak_tcp_listen_ip: 127.0.0.1 # Optional bind IP for local TCP chat/CoT input
 
 tak_server_host: 123.123.123.123    # Remote TAK Server IP
 tak_server_port: 8088               # Remote TAK Server port (8088 is the default bridge input port)
@@ -101,7 +103,7 @@ send_nodes_without_gps: true
 ### WinTAK Chat / CoT Relay
 
 - **Meshtastic → WinTAK:** incoming `TEXT_MESSAGE_APP` packets and direct Meshtastic `ATAK_PLUGIN` GeoChat packets (for example from ATAK/iTAK clients over mesh) are converted into TAK GeoChat events and sent to local WinTAK and the optional remote TAK target.
-- **WinTAK → Meshtastic (GeoChat):** configure WinTAK to send outgoing GeoChat CoT via UDP to `local_tak_chat_listen_port` (default `4243`) on the gateway host. By default the listener binds to `0.0.0.0`, so WinTAK can target either `127.0.0.1` or the gateway PC's LAN IP. As a compatibility fallback, the gateway also listens on the normal `local_tak_port`, so outgoing WinTAK packets are still recognized if they are sent to the standard local TAK UDP port instead of the dedicated chat port. The gateway accepts common WinTAK GeoChat CoT variants including `<chat>` / `<__chat>` payloads with nested numbered message elements, normalizes multiline messages, collapses WinTAK transcript/history exports down to the newest typed message, and splits oversized TAK chat text into multiple mesh-safe messages when needed.
+- **WinTAK → Meshtastic (GeoChat):** configure WinTAK to send outgoing GeoChat CoT via UDP to `local_tak_chat_listen_port` (default `4243`) on the gateway host. By default the UDP listener binds to `0.0.0.0`, so WinTAK can target either `127.0.0.1` or the gateway PC's LAN IP. For local WinTAK/admin_map integrations that send CoT/chat over TCP, the gateway also listens on `local_tak_tcp_listen_port` (default `8087`, bind IP `127.0.0.1`). As a UDP compatibility fallback, the gateway also listens on the normal `local_tak_port`, so outgoing WinTAK packets are still recognized if they are sent to the standard local TAK UDP port instead of the dedicated chat port. The gateway accepts common WinTAK GeoChat CoT variants including `<chat>` / `<__chat>` payloads with nested numbered message elements, normalizes multiline messages, collapses WinTAK transcript/history exports down to the newest typed message, and splits oversized TAK chat text into multiple mesh-safe messages when needed.
 - **WinTAK → Meshtastic (generic CoT):** any other CoT event received on the same UDP listener is encoded into mesh-safe fragments, broadcast on Meshtastic main channel `0`, then reassembled and injected back into TAK on the receiving gateway.
 
 ---
