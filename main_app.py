@@ -66,6 +66,8 @@ MAX_PORT_NUMBER = 65535
 DEFAULT_CHATROOM_NAME = "All Chat Rooms"
 DEFAULT_CHAT_LISTEN_PORT = 4243
 DEFAULT_CHAT_TCP_LISTEN_PORT = 8087
+TCP_RECV_BUFFER_SIZE = 4096
+MAX_TCP_STREAM_BUFFER_BYTES = 262144
 RECENT_CHAT_CACHE_TTL_SECONDS = 30
 RECENT_CHAT_CACHE_MAX_ENTRIES = 256
 MESHTASTIC_TEXT_CHUNK_MAX_BYTES = 180
@@ -945,7 +947,7 @@ class GatewayApp:
         )
         ttk.Entry(cfg_frame, textvariable=self._local_tak_chat_listen_port_var, width=10).grid(
             row=7, column=1, sticky="w", padx=(6, 12), pady=(0, 4))
-        cfg_label("TCP Listen Port:", row=7, col=2, padx=(8, 6), pady=(0, 4))
+        cfg_label("TCP Chat Listen Port:", row=7, col=2, padx=(8, 6), pady=(0, 4))
         self._local_tak_tcp_listen_port_var = tk.StringVar(
             value=str(self.cfg.get("local_tak_tcp_listen_port", DEFAULT_CHAT_TCP_LISTEN_PORT))
         )
@@ -2233,7 +2235,7 @@ class TAKMeshtasticGateway:
             events.append(match.group(0))
             last_end = match.end()
         remaining_buffer = buffer_text[last_end:]
-        if len(remaining_buffer) > 262144:
+        if len(remaining_buffer) > MAX_TCP_STREAM_BUFFER_BYTES:
             event_start = remaining_buffer.rfind("<event")
             remaining_buffer = remaining_buffer[event_start:] if event_start >= 0 else ""
         return events, remaining_buffer
@@ -2463,7 +2465,7 @@ class TAKMeshtasticGateway:
         try:
             while not self.shutdown_flag.is_set():
                 try:
-                    data = conn.recv(4096)
+                    data = conn.recv(TCP_RECV_BUFFER_SIZE)
                     if not data:
                         break
                     buffer_text += data.decode("utf-8", errors="replace")
