@@ -1394,7 +1394,6 @@ class TAKMeshtasticGateway:
             return None
         return {
             "uid": (root.get("uid") or "").strip(),
-            "type": str(root.get("type") or "").strip().lower(),
         }
 
     def _build_cot_dedupe_key(self, packet_xml):
@@ -1612,7 +1611,7 @@ class TAKMeshtasticGateway:
         last_error = None
         for iface in interfaces:
             try:
-                # Broadcast chat/CoT always on the primary Meshtastic channel 0.
+                # Broadcast Chat/CoT always on the primary Meshtastic channel 0.
                 kwargs = self._build_meshtastic_send_kwargs(iface)
                 iface.sendText(message, **kwargs)
                 sent_interfaces.append(iface)
@@ -1740,6 +1739,9 @@ class TAKMeshtasticGateway:
             entry["updated_at"] = now
             entry["parts"][chunk["part_index"]] = chunk["payload"]
             if len(entry["parts"]) < entry["total_parts"]:
+                return True
+            expected_part_indices = range(1, entry["total_parts"] + 1)
+            if any(index not in entry["parts"] for index in expected_part_indices):
                 return True
             encoded_packet = "".join(entry["parts"][index] for index in range(1, entry["total_parts"] + 1))
             self.partial_meshtastic_cot_messages.pop(cache_key, None)
@@ -1968,7 +1970,7 @@ class TAKMeshtasticGateway:
         )
 
     def handle_tak_chat_message(self, packet_xml, source_addr=None):
-        """Backward-compatible alias for inbound packets received on the TAK listener."""
+        """Backward-compatible alias for existing callers of the TAK listener packet handler."""
         self.handle_inbound_tak_packet(packet_xml, source_addr=source_addr)
 
     def listen_for_tak_chat(self):
