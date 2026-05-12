@@ -686,6 +686,14 @@ class GatewayApp:
         )
         ttk.Entry(cfg_frame, textvariable=self._local_tak_chat_listen_port_var, width=10).grid(
             row=7, column=1, sticky="w", padx=(6, 12), pady=(0, 4))
+        self._relay_text_messages_var = tk.BooleanVar(
+            value=as_bool(self.cfg.get("relay_text_messages", True))
+        )
+        ttk.Checkbutton(
+            cfg_frame,
+            text="Mesh-Text zwischen ausgewählten COM-Ports weiterleiten",
+            variable=self._relay_text_messages_var,
+        ).grid(row=7, column=2, columnspan=4, sticky="w", padx=(8, 0), pady=(0, 4))
 
         ttk.Separator(cfg_frame, orient="horizontal").grid(
             row=8, column=0, columnspan=6, sticky="ew", pady=(2, 8))
@@ -873,6 +881,7 @@ class GatewayApp:
         self.cfg["sync_interval_seconds"] = self._parse_int_field(
             self._sync_interval_var.get(), "Sync-Intervall", min_value=1, max_value=86400
         )
+        self.cfg["relay_text_messages"] = bool(self._relay_text_messages_var.get())
 
         self.cfg["send_nodes_without_gps"] = bool(self._send_nodes_without_gps_var.get())
         self.cfg["set_gateway_position_on_start"] = bool(self._set_gateway_position_var.get())
@@ -1161,6 +1170,7 @@ class TAKMeshtasticGateway:
         self.recent_tak_chat_ids = {}
         self.recent_meshtastic_chat_ids = {}
         self.recent_meshtastic_outbound_texts = {}
+        self.relay_text_messages = as_bool(self.cfg.get("relay_text_messages", True))
 
         # Knoten-Datenbank (SQLite) – persistente GPS-Koordinaten über Neustarts hinweg
         db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nodes.db")
@@ -1427,6 +1437,33 @@ class TAKMeshtasticGateway:
         remarks.text = message
         return tostring(event, encoding='utf-8')
 
+    def _get_interface_label(self, interface):
+        if interface is None:
+            return "unbekannt"
+        for attr in ("devPath", "_port", "port", "portName"):
+            value = getattr(interface, attr, None)
+            if value:
+                return str(value)
+        return "unbekannt"
+
+    def _send_text_to_interfaces(self, message, interfaces):
+        sent_interfaces = []
+        last_error = None
+        for iface in interfaces:
+            try:
+                # Broadcast chat to the mesh; broadcast messages cannot be acknowledged per recipient
+                # at the protocol level, so enabling ACKs would not provide meaningful delivery feedback.
+                iface.sendText(message, wantAck=False)
+                sent_interfaces.append(iface)
+            except Exception as exc:
+                last_error = exc
+                self.logger.warning(
+                    f"Fehler beim Senden einer Meshtastic-Chatnachricht auf {self._get_interface_label(iface)}: {exc}"
+                )
+        if not sent_interfaces and last_error is not None:
+            raise last_error
+        return sent_interfaces
+
     def send_chat_to_tak(self, sender_uid, callsign, message, lat, lon, alt=0.0, chatroom=DEFAULT_CHATROOM_NAME):
         try:
             packet_xml = self._build_chat_cot_xml(sender_uid, callsign, message, lat, lon, alt, chatroom=chatroom)
@@ -1434,7 +1471,7 @@ class TAKMeshtasticGateway:
         except Exception:
             self.logger.error("Fehler in send_chat_to_tak:\n" + traceback.format_exc())
 
-    def process_meshtastic_text_message(self, packet, node=None):
+    def process_meshtastic_text_message(self, packet, node=None, source_interface=None):
         message = self._extract_meshtastic_text(packet)
         if not message:
             return
@@ -1444,7 +1481,7 @@ class TAKMeshtasticGateway:
         if (from_id in self.local_node_ids or from_num in self.local_node_numbers) and self._was_seen_recently(
             self.recent_meshtastic_outbound_texts, message
         ):
-            self.logger.debug("Echo einer gerade aus TAK gesendeten Chatnachricht ignoriert.")
+            self.logger.debug("Echo einer gerade vom Gateway gesendeten Chatnachricht ignoriert.")
             return
 
         message_id = packet.get('id')
@@ -1453,6 +1490,18 @@ class TAKMeshtasticGateway:
         if self._was_seen_recently(self.recent_meshtastic_chat_ids, dedupe_key):
             return
         self._remember_recent_chat(self.recent_meshtastic_chat_ids, dedupe_key)
+
+        if self.relay_text_messages and len(self.interfaces) > 1:
+            relay_targets = [iface for iface in self.interfaces if iface is not source_interface]
+            if relay_targets:
+                sent_interfaces = self._send_text_to_interfaces(message, relay_targets)
+                if sent_interfaces:
+                    self._remember_recent_chat(self.recent_meshtastic_outbound_texts, message)
+                    source_label = self._get_interface_label(source_interface)
+                    target_labels = ", ".join(self._get_interface_label(iface) for iface in sent_interfaces)
+                    self.logger.info(
+                        f"Relay aktiv: Mesh-Text von {source_label} an {target_labels} weitergeleitet."
+                    )
 
         user = node.get('user', {}) if node else {}
         raw_uid = user.get('id') or (str(from_id) if from_id else "MESH-UNKNOWN")
@@ -1526,20 +1575,7 @@ class TAKMeshtasticGateway:
         }
 
     def _send_text_to_meshtastic(self, message):
-        sent_count = 0
-        last_error = None
-        for iface in self.interfaces:
-            try:
-                # Broadcast chat to the mesh; broadcast messages cannot be acknowledged per recipient
-                # at the protocol level, so enabling ACKs would not provide meaningful delivery feedback.
-                iface.sendText(message, wantAck=False)
-                sent_count += 1
-            except Exception as exc:
-                last_error = exc
-                self.logger.warning(f"Fehler beim Senden einer Meshtastic-Chatnachricht auf {getattr(iface, 'devPath', 'unknown')}: {exc}")
-        if sent_count == 0 and last_error is not None:
-            raise last_error
-        return sent_count
+        return len(self._send_text_to_interfaces(message, self.interfaces))
 
     def handle_tak_chat_message(self, packet_xml, source_addr=None):
         chat_payload = self._extract_tak_chat_payload(packet_xml)
@@ -1644,7 +1680,7 @@ class TAKMeshtasticGateway:
             from_id = packet.get('fromId') or packet.get('from')
             node = self._find_node_for_packet(interface, from_id)
             if self._is_text_message_packet(packet):
-                self.process_meshtastic_text_message(packet, node=node)
+                self.process_meshtastic_text_message(packet, node=node, source_interface=interface)
             if from_id and node:
                 # Force update für Live-Events
                 self.process_node(node, 0, force_update=True)
