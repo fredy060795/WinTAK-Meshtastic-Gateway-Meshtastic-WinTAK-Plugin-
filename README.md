@@ -128,6 +128,7 @@ Das Programm öffnet automatisch ein **GUI-Fenster**, das das reine Terminal-Fen
 | **Einstellungen** | Alle zentralen Config-Werte im Fenster steuerbar (Port(s), Remote/Local TAK, Protokoll, Sync, Relay inkl. Relay von/nach COM, No-GPS inkl. park_lat/park_lon) |
 | **▶ Start / ■ Stop** | Gateway starten und stoppen ohne Neustart |
 | **Log-Ausgabe** | Alle Meldungen erscheinen live farbig im Fenster (DEBUG=grau, INFO=weiß, WARNING=gelb, ERROR=rot) |
+| **Mesh-Testnachricht** | Kurze Textnachricht direkt aus der GUI ins Meshtastic-Mesh senden (gleicher Sendepfad wie WinTAK-Chat) inkl. klarer Erfolgs-/Fehleranzeige |
 | **Eingabe / Befehl** | Direkteingabe von Befehlen während der Gateway läuft |
 
 #### Verfügbare Befehle im Eingabefeld

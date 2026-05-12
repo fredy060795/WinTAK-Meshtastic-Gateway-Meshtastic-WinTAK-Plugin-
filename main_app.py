@@ -1151,6 +1151,31 @@ class GatewayApp:
         self._log_text.tag_configure("CRITICAL", foreground="#ff7b72", font=("Consolas", 9, "bold"))
         self._log_text.tag_configure("CMD",      foreground="#79c0ff")
 
+        # ── Manuelles Mesh-Test-Senden ──
+        mesh_test_frame = ttk.LabelFrame(root, text=" 🧪  Mesh-Testnachricht ", padding=6)
+        mesh_test_frame.pack(fill="x", padx=10, pady=(6, 0))
+
+        self._mesh_test_message_var = tk.StringVar()
+        mesh_test_entry = ttk.Entry(mesh_test_frame, textvariable=self._mesh_test_message_var)
+        mesh_test_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
+        mesh_test_entry.bind("<Return>", lambda _e: self._on_send_mesh_test_message())
+
+        self._send_mesh_test_btn = ttk.Button(
+            mesh_test_frame,
+            text="Ins Mesh senden",
+            command=self._on_send_mesh_test_message,
+            state="disabled",
+            style="Accent.TButton",
+        )
+        self._send_mesh_test_btn.pack(side="left")
+
+        self._mesh_test_status_var = tk.StringVar(value="Gateway nicht gestartet.")
+        ttk.Label(
+            mesh_test_frame,
+            textvariable=self._mesh_test_status_var,
+            style="Sub.TLabel",
+        ).pack(side="left", padx=(10, 0))
+
         # ── Eingabe / Befehlszeile ──
         input_frame = ttk.LabelFrame(root, text=" ⌨  Befehlseingabe ", padding=6)
         input_frame.pack(fill="x", padx=10, pady=(6, 0))
@@ -1330,12 +1355,15 @@ class GatewayApp:
             target=self._run_gateway, args=(ports,), daemon=True
         )
         self._gateway_thread.start()
+        self._mesh_test_status_var.set("Gateway startet …")
 
     def _run_gateway(self, ports):
         try:
             gw = TAKMeshtasticGateway(ports, self.cfg)
             self._gateway = gw
             self._root.after(0, lambda: self._status_var.set(f"🟢 Läuft  –  {', '.join(ports)}"))
+            self._root.after(0, lambda: self._send_mesh_test_btn.configure(state="normal"))
+            self._root.after(0, lambda: self._mesh_test_status_var.set("Bereit für manuelles Mesh-Test-Senden."))
             gw.run()
         except Exception:
             err = traceback.format_exc()
@@ -1349,6 +1377,8 @@ class GatewayApp:
             gw.shutdown_flag.set()
         self._stop_btn.configure(state="disabled")
         self._status_var.set("🟡 Stoppt …")
+        self._send_mesh_test_btn.configure(state="disabled")
+        self._mesh_test_status_var.set("Gateway stoppt …")
 
     def _on_gateway_stopped(self):
         if self._gui_handler:
@@ -1358,6 +1388,8 @@ class GatewayApp:
         self._start_btn.configure(state="normal")
         self._stop_btn.configure(state="disabled")
         self._status_var.set("⬛ Gestoppt")
+        self._send_mesh_test_btn.configure(state="disabled")
+        self._mesh_test_status_var.set("Gateway nicht gestartet.")
 
     def _on_manual_sync(self):
         gw = self._gateway
@@ -1366,6 +1398,42 @@ class GatewayApp:
             self._append_log("Manuelle Vollsynchronisation ausgelöst.", "INFO")
         else:
             self._append_log("Gateway ist nicht gestartet.", "WARNING")
+
+    def _on_send_mesh_test_message(self):
+        message = self._mesh_test_message_var.get().strip()
+        if not message:
+            self._mesh_test_status_var.set("⚠ Bitte zuerst eine Testnachricht eingeben.")
+            self._append_log("Manuelles Mesh-Test-Senden abgebrochen: leere Nachricht.", "WARNING")
+            return
+
+        gw = self._gateway
+        if not gw:
+            self._mesh_test_status_var.set("⚠ Gateway ist nicht gestartet.")
+            self._append_log("Manuelles Mesh-Test-Senden nicht möglich: Gateway ist nicht gestartet.", "WARNING")
+            return
+
+        self._mesh_test_status_var.set("🟡 Testnachricht wird gesendet …")
+        threading.Thread(
+            target=self._send_mesh_test_message_worker,
+            args=(gw, message),
+            daemon=True,
+        ).start()
+
+    def _send_mesh_test_message_worker(self, gw, message):
+        try:
+            total_sent = gw._send_text_to_meshtastic(message)
+        except Exception as exc:
+            self._queue_log(f"Manuelles Senden ins Mesh fehlgeschlagen: {exc}", "ERROR")
+            self._queue_log("Fehlerdetails manuelles Senden ins Mesh:\n" + traceback.format_exc(), "DEBUG")
+            self._root.after(
+                0,
+                lambda: self._mesh_test_status_var.set(f"❌ Senden fehlgeschlagen: {exc}"),
+            )
+            return
+
+        self._queue_log(f"Testnachricht erfolgreich ins Mesh gesendet (Interfaces: {total_sent}).", "INFO")
+        self._root.after(0, lambda: self._mesh_test_status_var.set(f"✅ Gesendet (Interfaces: {total_sent})."))
+        self._root.after(0, lambda: self._mesh_test_message_var.set(""))
 
     def _on_log_level_change(self, _event=None):
         level_str = self._log_level_var.get()
