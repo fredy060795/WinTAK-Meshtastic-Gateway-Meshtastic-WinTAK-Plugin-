@@ -13,6 +13,7 @@ import os
 import sys
 import argparse
 import base64
+import codecs
 import datetime
 import hashlib
 import inspect
@@ -2244,7 +2245,11 @@ class TAKMeshtasticGateway:
             if event_start >= 0:
                 remaining_buffer = remaining_buffer[event_start:]
             else:
-                remaining_buffer = remaining_buffer[-TCP_STREAM_BUFFER_TAIL_BYTES:]
+                partial_tag_start = remaining_buffer.rfind("<")
+                if partial_tag_start >= 0:
+                    remaining_buffer = remaining_buffer[partial_tag_start:]
+                else:
+                    remaining_buffer = remaining_buffer[-TCP_STREAM_BUFFER_TAIL_BYTES:]
         return events, remaining_buffer
 
     def _iter_tak_listener_ports(self):
@@ -2469,6 +2474,7 @@ class TAKMeshtasticGateway:
 
     def _handle_tak_tcp_client(self, conn, addr):
         buffer_text = ""
+        decoder = codecs.getincrementaldecoder("utf-8")()
         conn.settimeout(TCP_SOCKET_TIMEOUT_SECONDS)
         try:
             while not self.shutdown_flag.is_set():
@@ -2476,7 +2482,7 @@ class TAKMeshtasticGateway:
                     data = conn.recv(TCP_RECV_BUFFER_SIZE)
                     if not data:
                         break
-                    buffer_text += data.decode("utf-8", errors="replace")
+                    buffer_text += decoder.decode(data)
                     events, buffer_text = self._extract_tak_events_from_stream_buffer(buffer_text)
                     for packet_xml in events:
                         normalized_packet = self._normalize_inbound_tak_packet(packet_xml)
@@ -2485,6 +2491,13 @@ class TAKMeshtasticGateway:
                         self.handle_inbound_tak_packet(normalized_packet, source_addr=addr, source_protocol="TCP")
                 except socket.timeout:
                     continue
+            buffer_text += decoder.decode(b"", final=True)
+            events, buffer_text = self._extract_tak_events_from_stream_buffer(buffer_text)
+            for packet_xml in events:
+                normalized_packet = self._normalize_inbound_tak_packet(packet_xml)
+                if not normalized_packet:
+                    continue
+                self.handle_inbound_tak_packet(normalized_packet, source_addr=addr, source_protocol="TCP")
         except OSError:
             self.logger.debug("Fehler beim Lesen einer TAK-TCP-Verbindung:\n" + traceback.format_exc())
         finally:
