@@ -1438,7 +1438,7 @@ class TAKMeshtasticGateway:
         
         self.sock_udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock_udp.settimeout(self.SOCKET_TIMEOUT)  # Add timeout to prevent hanging
-        self.sock_chat_listener = None
+        self.sock_chat_listeners = []
 
         # Remote server socket(s)
         self.sock_remote = None  # für TCP: persistent socket; für UDP: socket used for sendto
@@ -1525,7 +1525,12 @@ class TAKMeshtasticGateway:
             # Start maintenance thread
             threading.Thread(target=self.maintain_server, daemon=True).start()
             self._register_local_nodes()
-            threading.Thread(target=self.listen_for_tak_chat, daemon=True).start()
+            for listen_port in self._iter_tak_listener_ports():
+                threading.Thread(
+                    target=self.listen_for_tak_chat,
+                    args=(listen_port,),
+                    daemon=True,
+                ).start()
             self.apply_gateway_fixed_position()
             self.logger.info("Gateway gestartet. Führe initiale Vollsynchronisation aus.")
             self.full_sync()
@@ -2195,7 +2200,15 @@ class TAKMeshtasticGateway:
         packet_bytes = packet_bytes.replace(b"\x00", b"").strip()
         return packet_bytes
 
-    def _create_chat_listener_socket(self):
+    def _iter_tak_listener_ports(self):
+        seen = set()
+        for port in (self.chat_listen_port, self.tak_port):
+            if port in seen:
+                continue
+            seen.add(port)
+            yield port
+
+    def _create_chat_listener_socket(self, listen_port):
         requested_ip = self.chat_listen_ip
         bind_attempts = []
         if requested_ip in ("0.0.0.0", "", "*"):
@@ -2205,7 +2218,7 @@ class TAKMeshtasticGateway:
             try:
                 addr_info = socket.getaddrinfo(
                     requested_ip,
-                    self.chat_listen_port,
+                    listen_port,
                     socket.AF_UNSPEC,
                     socket.SOCK_DGRAM,
                     0,
@@ -2238,13 +2251,13 @@ class TAKMeshtasticGateway:
                     except (AttributeError, OSError):
                         pass
                 sock.settimeout(1.0)
-                sock.bind((bind_ip, self.chat_listen_port))
+                sock.bind((bind_ip, listen_port))
                 return sock, bind_ip
             except OSError as exc:
                 logger = getattr(self, "logger", None)
                 if logger is not None:
                     logger.debug(
-                        f"TAK-CoT-Listener Bind fehlgeschlagen auf {bind_ip}:{self.chat_listen_port} "
+                        f"TAK-CoT-Listener Bind fehlgeschlagen auf {bind_ip}:{listen_port} "
                         f"(family={family}): {exc}"
                     )
                 last_error = exc
@@ -2253,6 +2266,13 @@ class TAKMeshtasticGateway:
         raise OSError("Kein Chat-Listener-Socket konnte erstellt werden.")
 
     def handle_inbound_tak_packet(self, packet_xml, source_addr=None):
+        metadata = self._extract_cot_event_metadata(packet_xml)
+        cot_dedupe_key = None
+        if metadata is not None:
+            cot_dedupe_key = metadata["uid"] or self._build_cot_dedupe_key(packet_xml)
+            if cot_dedupe_key and self._was_seen_recently(self.recent_cot_ids, cot_dedupe_key):
+                return
+
         chat_payload = self._extract_tak_chat_payload(packet_xml)
         if chat_payload:
             sender_uid = chat_payload["sender_uid"] or self.gateway_uid
@@ -2282,16 +2302,11 @@ class TAKMeshtasticGateway:
                 self.logger.info(f"TAK-Chat ins Mesh gesendet: {src}: {chat_payload['message']}")
             return
 
-        metadata = self._extract_cot_event_metadata(packet_xml)
         if metadata is None:
             self.logger.debug(
                 "UDP-Paket am TAK-Listener empfangen, aber nicht als CoT erkannt"
                 + (f" ({source_addr[0]}:{source_addr[1]})" if source_addr else "")
             )
-            return
-
-        cot_dedupe_key = metadata["uid"] or self._build_cot_dedupe_key(packet_xml)
-        if cot_dedupe_key and self._was_seen_recently(self.recent_cot_ids, cot_dedupe_key):
             return
 
         try:
@@ -2311,17 +2326,24 @@ class TAKMeshtasticGateway:
         """Backward-compatible alias for existing callers of the TAK listener packet handler."""
         self.handle_inbound_tak_packet(packet_xml, source_addr=source_addr)
 
-    def listen_for_tak_chat(self):
+    def listen_for_tak_chat(self, listen_port=None):
+        if listen_port is None:
+            listen_port = self.chat_listen_port
         try:
-            sock, bind_ip = self._create_chat_listener_socket()
-            self.sock_chat_listener = sock
+            sock, bind_ip = self._create_chat_listener_socket(listen_port)
+            self.sock_chat_listeners.append(sock)
+            if listen_port == self.chat_listen_port:
+                listener_hint = "konfigurierter Chat/CoT-Eingang"
+            elif listen_port == self.tak_port:
+                listener_hint = "Fallback auf dem normalen Local-TAK-Port"
+            else:
+                listener_hint = "zusätzlicher TAK-CoT-Eingang"
             self.logger.info(
-                f"TAK-CoT-Listener aktiv auf {bind_ip}:{self.chat_listen_port} "
-                f"(WinTAK-Ausgang hierhin senden, damit Chat und CoT ins Mesh gehen)."
+                f"TAK-CoT-Listener aktiv auf {bind_ip}:{listen_port} "
+                f"({listener_hint})."
             )
         except Exception as e:
-            self.logger.warning(f"TAK-CoT-Listener konnte nicht gestartet werden: {e}")
-            self.sock_chat_listener = None
+            self.logger.warning(f"TAK-CoT-Listener auf Port {listen_port} konnte nicht gestartet werden: {e}")
             return
 
         while not self.shutdown_flag.is_set():
@@ -2627,10 +2649,11 @@ class TAKMeshtasticGateway:
             pass
 
         try:
-            if self.sock_chat_listener:
-                self.sock_chat_listener.close()
+            for sock in self.sock_chat_listeners:
+                sock.close()
         except Exception:
             pass
+        self.sock_chat_listeners = []
         
         # Close remote socket
         self._cleanup_server_socket()
