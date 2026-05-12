@@ -55,6 +55,6 @@ send_nodes_without_gps: true
 # set_gateway_position_on_start: true
 
 # Log-Level: INFO (Standard) zeigt nur wichtige Meldungen.
-# DEBUG aktiviert Rohdaten-Ausgabe aller empfangenen Meshtastic-Pakete.
+# DEBUG aktiviert zusätzliche Diagnosen für empfangene Meshtastic- sowie WinTAK/TAK-Pakete.
 # Mögliche Werte: DEBUG, INFO, WARNING, ERROR
 # log_level: DEBUG
