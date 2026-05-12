@@ -214,7 +214,7 @@ def _collect_xml_text(element):
 
 def _strip_tak_sender_prefix(value):
     """Normalize common TAK sender prefixes like BAO.F.ATAK./BAO.F.WinTAK."""
-    normalized = str(value or "")
+    normalized = "" if value is None else str(value)
     for prefix in ("BAO.F.ATAK.", "BAO.F.WinTAK."):
         if normalized.startswith(prefix):
             return normalized[len(prefix):]
