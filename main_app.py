@@ -229,6 +229,18 @@ def _collect_xml_text(element):
     return "\n".join(text_parts)
 
 
+def _get_tak_tcp_listener_endpoint_from_cfg(cfg, strict_port=False):
+    """Return configured TCP listener bind IP/port with shared defaults."""
+    listen_ip = str(cfg.get("local_tak_tcp_listen_ip", "0.0.0.0")).strip() or "0.0.0.0"
+    try:
+        listen_port = int(cfg.get("local_tak_tcp_listen_port", TCP_LISTENER_DEFAULT_PORT))
+    except (TypeError, ValueError):
+        if strict_port:
+            raise
+        listen_port = TCP_LISTENER_DEFAULT_PORT
+    return listen_ip, listen_port
+
+
 def _strip_tak_sender_prefix(value):
     """Normalize common TAK sender prefixes like BAO.F.ATAK./BAO.F.WinTAK."""
     normalized = "" if value is None else str(value)
@@ -1644,12 +1656,7 @@ class GatewayApp:
     # ─────────────────────────── WinTAK TCP Monitor ───────────────────────────
 
     def _get_wintak_tcp_listener_endpoint(self):
-        listen_ip = str(self.cfg.get("local_tak_tcp_listen_ip", "0.0.0.0")).strip() or "0.0.0.0"
-        try:
-            listen_port = int(self.cfg.get("local_tak_tcp_listen_port", TCP_LISTENER_DEFAULT_PORT))
-        except (TypeError, ValueError):
-            listen_port = TCP_LISTENER_DEFAULT_PORT
-        return listen_ip, listen_port
+        return _get_tak_tcp_listener_endpoint_from_cfg(self.cfg)
 
     def _refresh_wintak_monitor_listener_ui(self):
         listen_ip, listen_port = self._get_wintak_tcp_listener_endpoint()
@@ -1853,12 +1860,12 @@ class TAKMeshtasticGateway:
         except (ValueError, TypeError) as e:
             raise ValueError(f"Invalid local_tak_port in config: {e}")
 
-        default_chat_listen_port = self.tak_port
+        chat_listen_port_fallback = self.tak_port
         try:
             chat_listen_port = int(
                 self.cfg.get(
                     "local_tak_chat_listen_port",
-                    default_chat_listen_port,
+                    chat_listen_port_fallback,
                 )
             )
             if not (1 <= chat_listen_port <= 65535):
@@ -1883,15 +1890,16 @@ class TAKMeshtasticGateway:
         except ValueError as exc:
             raise ValueError(f"Invalid tak_multicast_groups in config: {exc}") from exc
         try:
-            tcp_chat_listen_port = int(
-                self.cfg.get("local_tak_tcp_listen_port", TCP_LISTENER_DEFAULT_PORT)
+            _, tcp_chat_listen_port = _get_tak_tcp_listener_endpoint_from_cfg(
+                self.cfg,
+                strict_port=True,
             )
             if not (1 <= tcp_chat_listen_port <= 65535):
                 raise ValueError(f"Invalid local TAK TCP listen port: {tcp_chat_listen_port}")
             self.tcp_chat_listen_port = tcp_chat_listen_port
         except (ValueError, TypeError) as e:
             raise ValueError(f"Invalid local_tak_tcp_listen_port in config: {e}")
-        self.tcp_chat_listen_ip = str(self.cfg.get("local_tak_tcp_listen_ip", "0.0.0.0")).strip() or "0.0.0.0"
+        self.tcp_chat_listen_ip, _ = _get_tak_tcp_listener_endpoint_from_cfg(self.cfg)
         
         self.sock_udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock_udp.settimeout(self.SOCKET_TIMEOUT)  # Add timeout to prevent hanging
