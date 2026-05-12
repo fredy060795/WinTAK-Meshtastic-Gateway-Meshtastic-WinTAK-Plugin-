@@ -1398,9 +1398,11 @@ class GatewayApp:
         if self._scroll_window_id is not None and canvas_width > 1:
             self._scroll_canvas.itemconfigure(self._scroll_window_id, width=canvas_width)
 
-    def _on_scrollable_canvas_configure(self, event):
-        if self._scroll_window_id is not None and event.width > 1:
-            self._scroll_canvas.itemconfigure(self._scroll_window_id, width=event.width)
+    def _on_scrollable_canvas_configure(self, _event):
+        if self._scroll_window_id is not None:
+            canvas_width = self._scroll_canvas.winfo_width()
+            if canvas_width > 1:
+                self._scroll_canvas.itemconfigure(self._scroll_window_id, width=canvas_width)
 
     def _apply_selected_ports_from_list(self):
         if not self._detected_ports:
