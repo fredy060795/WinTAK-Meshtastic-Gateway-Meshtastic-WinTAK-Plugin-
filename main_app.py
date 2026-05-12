@@ -2023,7 +2023,8 @@ class TAKMeshtasticGateway:
                 if (family, host) in seen:
                     continue
                 seen.add((family, host))
-                bind_attempts.append((family, host, family == socket.AF_INET6 and host in ("::", requested_ip)))
+                should_enable_dual_stack = family == socket.AF_INET6 and host in ("::", requested_ip)
+                bind_attempts.append((family, host, should_enable_dual_stack))
 
         last_error = None
         for family, bind_ip, want_dual_stack in bind_attempts:
@@ -2042,7 +2043,13 @@ class TAKMeshtasticGateway:
                 sock.settimeout(1.0)
                 sock.bind((bind_ip, self.chat_listen_port))
                 return sock, bind_ip
-            except Exception as exc:
+            except OSError as exc:
+                logger = getattr(self, "logger", None)
+                if logger is not None:
+                    logger.debug(
+                        f"TAK-CoT-Listener Bind fehlgeschlagen auf {bind_ip}:{self.chat_listen_port} "
+                        f"(family={family}): {exc}"
+                    )
                 last_error = exc
         if last_error is not None:
             raise last_error
