@@ -691,7 +691,7 @@ class GatewayApp:
         )
         ttk.Checkbutton(
             cfg_frame,
-            text="Mesh-Text zwischen ausgewählten COM-Ports relayn",
+            text="Mesh-Text zwischen ausgewählten COM-Ports weiterleiten",
             variable=self._relay_text_messages_var,
         ).grid(row=7, column=2, columnspan=4, sticky="w", padx=(8, 0), pady=(0, 4))
 
