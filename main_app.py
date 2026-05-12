@@ -1552,6 +1552,8 @@ class TAKMeshtasticGateway:
         # interne State
         self.logger = self.setup_logging()
         self.interfaces = []
+        self.interface_lock = threading.RLock()
+        self._meshtastic_pubsub_registered = False
         self.server_lock = threading.Lock()
         self.shutdown_flag = threading.Event()  # For graceful shutdown
         self.last_known_positions = {}
@@ -1618,16 +1620,12 @@ class TAKMeshtasticGateway:
         try:
             if meshtastic is None:
                 raise RuntimeError("meshtastic-Paket nicht installiert / importierbar.")
-            for port in self.ports:
-                self.logger.info(f"Versuche Verbindung zum Meshtastic-Hardware-Interface an {port} ...")
-                iface = meshtastic.serial_interface.SerialInterface(port)
-                self.interfaces.append(iface)
-                self.logger.info(f"Interface an {port} erfolgreich verbunden.")
-            # subscribe to receive events (one subscription handles all interfaces via pubsub)
-            if pub is not None:
-                pub.subscribe(self.on_any_packet, "meshtastic.receive")
-            else:
-                self.logger.warning("pypubsub nicht gefunden: Live-Empfangs-Callbacks möglicherweise nicht aktiv.")
+            connected_interfaces = self._connect_meshtastic_interfaces()
+            if not connected_interfaces:
+                self.logger.warning(
+                    "Beim Start konnte noch keine Meshtastic-COM-Verbindung aufgebaut werden. "
+                    "Weitere Verbindungsversuche erfolgen automatisch."
+                )
             # Start maintenance thread
             threading.Thread(target=self.maintain_server, daemon=True).start()
             self._register_local_nodes()
@@ -1725,7 +1723,7 @@ class TAKMeshtasticGateway:
         return hashlib.sha256(packet_bytes).hexdigest()
 
     def _register_local_nodes(self):
-        for iface in self.interfaces:
+        for iface in self._get_interfaces_snapshot():
             try:
                 my_info = getattr(iface, "myInfo", None)
                 node_num = getattr(my_info, "my_node_num", None)
@@ -1740,7 +1738,8 @@ class TAKMeshtasticGateway:
     def _find_node_for_packet(self, interface, from_id):
         if not from_id:
             return None
-        for iface in ([interface] + [i for i in self.interfaces if i is not interface]):
+        other_interfaces = [i for i in self._get_interfaces_snapshot() if i is not interface]
+        for iface in ([interface] + other_interfaces):
             if hasattr(iface, 'nodes') and iface.nodes:
                 node = iface.nodes.get(from_id)
                 if node:
@@ -1964,6 +1963,75 @@ class TAKMeshtasticGateway:
                 return str(value)
         return "unbekannt"
 
+    def _get_interfaces_snapshot(self):
+        with self.interface_lock:
+            return list(self.interfaces)
+
+    def _ensure_meshtastic_subscription(self):
+        if self._meshtastic_pubsub_registered:
+            return
+        if pub is None:
+            self.logger.warning("pypubsub nicht gefunden: Live-Empfangs-Callbacks möglicherweise nicht aktiv.")
+            return
+        pub.subscribe(self.on_any_packet, "meshtastic.receive")
+        self._meshtastic_pubsub_registered = True
+
+    def _close_meshtastic_interface(self, iface):
+        try:
+            iface.close()
+        except Exception:
+            pass
+
+    def _connect_meshtastic_interfaces(self, force_reconnect=False):
+        if meshtastic is None:
+            return self._get_interfaces_snapshot()
+
+        ports_to_connect = [str(port).strip() for port in self.ports if str(port).strip()]
+        stale_interfaces = []
+        with self.interface_lock:
+            if force_reconnect:
+                stale_interfaces = list(self.interfaces)
+                self.interfaces = []
+            connected_ports = {self._get_interface_label(iface).strip().upper() for iface in self.interfaces}
+
+        for iface in stale_interfaces:
+            self._close_meshtastic_interface(iface)
+
+        newly_connected = []
+        for port in ports_to_connect:
+            if port.upper() in connected_ports:
+                continue
+            try:
+                self.logger.info(f"Versuche Verbindung zum Meshtastic-Hardware-Interface an {port} ...")
+                iface = meshtastic.serial_interface.SerialInterface(port)
+                with self.interface_lock:
+                    self.interfaces.append(iface)
+                connected_ports.add(port.upper())
+                newly_connected.append(iface)
+                self.logger.info(f"Interface an {port} erfolgreich verbunden.")
+            except Exception as exc:
+                self.logger.warning(f"Meshtastic-Interface an {port} konnte nicht verbunden werden: {exc}")
+                self.logger.debug("Fehler beim Verbinden des Meshtastic-Interfaces:\n" + traceback.format_exc())
+
+        if newly_connected:
+            self._ensure_meshtastic_subscription()
+            self._register_local_nodes()
+
+        return self._get_interfaces_snapshot()
+
+    def _ensure_meshtastic_interfaces(self, reconnect=False, raise_on_empty=False, reason=None):
+        interfaces = self._get_interfaces_snapshot()
+        if reconnect or not interfaces:
+            if reconnect:
+                self.logger.warning(
+                    "Meshtastic-COM-Verbindung für ausgehende Nachrichten wird neu aufgebaut."
+                    + (f" Grund: {reason}" if reason else "")
+                )
+            interfaces = self._connect_meshtastic_interfaces(force_reconnect=reconnect)
+        if raise_on_empty and not interfaces:
+            raise RuntimeError("Keine verbundenen Meshtastic-Interfaces verfügbar.")
+        return interfaces
+
     def _build_meshtastic_send_kwargs(self, iface):
         try:
             parameters = inspect.signature(iface.sendText).parameters
@@ -1998,7 +2066,13 @@ class TAKMeshtasticGateway:
 
         return kwargs
 
-    def _send_text_to_interfaces(self, message, interfaces):
+    def _send_text_to_interfaces(self, message, interfaces, allow_reconnect=True):
+        interfaces = [iface for iface in (interfaces or []) if iface is not None]
+        if not interfaces:
+            if allow_reconnect:
+                interfaces = self._ensure_meshtastic_interfaces(raise_on_empty=True)
+            else:
+                raise RuntimeError("Keine verbundenen Meshtastic-Interfaces verfügbar.")
         sent_interfaces = []
         last_error = None
         for iface in interfaces:
@@ -2012,6 +2086,17 @@ class TAKMeshtasticGateway:
                 self.logger.warning(
                     f"Fehler beim Senden einer Meshtastic-Nachricht auf {self._get_interface_label(iface)}: {exc}"
                 )
+        if not sent_interfaces and last_error is not None and allow_reconnect:
+            retry_interfaces = self._ensure_meshtastic_interfaces(reconnect=True, reason=str(last_error))
+            if retry_interfaces:
+                try:
+                    return self._send_text_to_interfaces(message, retry_interfaces, allow_reconnect=False)
+                except Exception as retry_exc:
+                    self.logger.warning(
+                        "Meshtastic-Senden ist auch nach COM-Neuverbindung fehlgeschlagen: "
+                        f"erst '{last_error}', dann '{retry_exc}'"
+                    )
+                    raise retry_exc from last_error
         if not sent_interfaces and last_error is not None:
             raise last_error
         return sent_interfaces
@@ -2021,7 +2106,7 @@ class TAKMeshtasticGateway:
         if self.relay_text_from_ports and source_label not in self.relay_text_from_ports:
             return []
         relay_targets = []
-        for iface in self.interfaces:
+        for iface in self._get_interfaces_snapshot():
             if iface is source_interface:
                 continue
             target_label = self._get_interface_label(iface).upper()
@@ -2102,11 +2187,13 @@ class TAKMeshtasticGateway:
         }
 
     def _forward_cot_to_meshtastic(self, packet_xml):
+        interfaces = self._ensure_meshtastic_interfaces(raise_on_empty=True)
         cot_chunks = self._prepare_meshtastic_cot_chunks(packet_xml)
         if not cot_chunks:
             raise ValueError("Leere CoT-Nachricht kann nicht ins Mesh gesendet werden.")
         for chunk in cot_chunks:
-            self._send_text_to_interfaces(chunk, self.interfaces)
+            self._send_text_to_interfaces(chunk, interfaces)
+            interfaces = self._get_interfaces_snapshot()
             self._remember_recent_chat(self.recent_meshtastic_outbound_texts, chunk)
         return cot_chunks
 
@@ -2316,14 +2403,15 @@ class TAKMeshtasticGateway:
         }
 
     def _send_text_to_meshtastic(self, message, prepared_chunks=None):
-        if not self.interfaces:
-            raise RuntimeError("Keine verbundenen Meshtastic-Interfaces verfügbar.")
+        interfaces = self._ensure_meshtastic_interfaces(raise_on_empty=True)
         chunks = prepared_chunks if prepared_chunks is not None else self._prepare_meshtastic_text_chunks(message)
         if not chunks:
             raise ValueError("Leere TAK-Chatnachricht kann nicht ins Mesh gesendet werden.")
         total_sent = 0
         for chunk in chunks:
-            total_sent += len(self._send_text_to_interfaces(chunk, self.interfaces))
+            sent_interfaces = self._send_text_to_interfaces(chunk, interfaces)
+            total_sent += len(sent_interfaces)
+            interfaces = self._get_interfaces_snapshot()
         if total_sent <= 0:
             raise RuntimeError("TAK-Chat konnte an kein Meshtastic-Interface gesendet werden.")
         return total_sent
@@ -2705,7 +2793,11 @@ class TAKMeshtasticGateway:
         """
         Schickt eine Sync über alle bekannten Nodes aller verbundenen Interfaces.
         """
-        for iface in self.interfaces:
+        interfaces = self._ensure_meshtastic_interfaces()
+        if not interfaces:
+            self.logger.warning("Keine Meshtastic-Interfaces für Vollsynchronisation verbunden.")
+            return
+        for iface in interfaces:
             try:
                 nodes = []
                 if hasattr(iface, 'nodes') and iface.nodes:
@@ -2765,7 +2857,7 @@ class TAKMeshtasticGateway:
 
         lat, lon = self.park_coords
         updated_ports = []
-        for iface in self.interfaces:
+        for iface in self._get_interfaces_snapshot():
             try:
                 local_node = getattr(iface, "localNode", None)
                 # localNode first, then interface as fallback for older/newer API variants.
@@ -2940,11 +3032,11 @@ class TAKMeshtasticGateway:
         self._cleanup_server_socket()
         
         # Close all meshtastic interfaces
-        for iface in self.interfaces:
-            try:
-                iface.close()
-            except Exception:
-                pass
+        with self.interface_lock:
+            interfaces_to_close = list(self.interfaces)
+            self.interfaces = []
+        for iface in interfaces_to_close:
+            self._close_meshtastic_interface(iface)
 
     def run(self):
         """
