@@ -1220,7 +1220,7 @@ class GatewayApp:
         ttk.Entry(cfg_frame, textvariable=self._sync_interval_var, width=10).grid(
             row=7, column=3, sticky="w", pady=(0, 4))
 
-        # ── Row 8: Relay mode ──
+        # ── Rows 8-9: Relay mode ──
         self._relay_text_messages_var = tk.BooleanVar(
             value=as_bool(self.cfg.get("relay_text_messages", True))
         )
@@ -1524,7 +1524,6 @@ class GatewayApp:
         try:
             self._apply_form_to_cfg(ports)
             save_config(self.cfg)
-            self._refresh_wintak_monitor_listener_ui()
         except Exception as e:
             self._append_log(f"Invalid settings: {e}", "WARNING")
             return
@@ -1585,7 +1584,6 @@ class GatewayApp:
         self._status_var.set("⬛ Stopped")
         self._send_mesh_test_btn.configure(state="disabled")
         self._mesh_test_status_var.set("Gateway not started.")
-        self._refresh_wintak_monitor_listener_ui()
 
     def _on_manual_sync(self):
         gw = self._gateway
@@ -1635,9 +1633,6 @@ class GatewayApp:
 
     def _get_wintak_tcp_listener_endpoint(self):
         return _get_tak_tcp_listener_endpoint_from_cfg(self.cfg)
-
-    def _refresh_wintak_monitor_listener_ui(self):
-        return None
 
     def _on_wintak_tcp_chat(self, kind, sender, message, addr=None):
         """Thread-safe callback invoked by the gateway TCP listener for WinTAK events."""
