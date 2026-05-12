@@ -72,7 +72,7 @@ MESHTASTIC_COT_FRAGMENT_PREFIX = "COTM"
 MESHTASTIC_COT_FRAGMENT_PAYLOAD_BYTES = 140
 MESHTASTIC_COT_FRAGMENT_TTL_SECONDS = 120
 DEFAULT_MESHTASTIC_CHANNEL_INDEX = 0
-WINTAK_CHAT_TRANSCRIPT_LINE_RE = re.compile(
+WINTAK_CHAT_TRANSCRIPT_LINE_PATTERN = re.compile(
     r"^\((?P<time>\d{1,2}:\d{2}(?::\d{2})?)\)\s+(?P<sender>.+?):(?:\s*(?P<message>.*))?$"
 )
 
@@ -200,7 +200,15 @@ def _collect_xml_text(element):
 
 
 def _extract_latest_wintak_chat_message(text):
-    """Collapse WinTAK transcript exports to the newest message body."""
+    """Collapse WinTAK transcript exports to the newest message body.
+
+    Args:
+        text: Raw WinTAK chat text or transcript export. May be None.
+
+    Returns:
+        str: The newest extracted message body, the original text for non-transcript
+        payloads, or an empty string when only transcript headers are present.
+    """
     normalized_text = str(text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     if not normalized_text:
         return ""
@@ -215,7 +223,7 @@ def _extract_latest_wintak_chat_message(text):
                 current_block.append("")
             continue
 
-        match = WINTAK_CHAT_TRANSCRIPT_LINE_RE.match(line)
+        match = WINTAK_CHAT_TRANSCRIPT_LINE_PATTERN.match(line)
         if match:
             saw_transcript_header = True
             inline_message = (match.group("message") or "").strip()
