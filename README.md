@@ -1,7 +1,7 @@
 # WinTAK Meshtastic Gateway
 
 A stable bridge between **Meshtastic** mesh radios and the **TAK ecosystem** (WinTAK, ATAK, iTAK).  
-The gateway reads position data and text messages from Meshtastic nodes over a serial connection and forwards them as Cursor on Target (CoT) XML — both to a local WinTAK instance (UDP) and optionally to a remote TAK Server (TCP or UDP). It can also accept GeoChat messages from WinTAK and broadcast them into the Meshtastic mesh.
+The gateway reads position data and text messages from Meshtastic nodes over a serial connection and forwards them as Cursor on Target (CoT) XML — both to a local WinTAK instance (UDP) and optionally to a remote TAK Server (TCP or UDP). It can also accept outgoing WinTAK CoT packets and send them into the Meshtastic mesh.
 
 ---
 
@@ -11,6 +11,7 @@ The gateway reads position data and text messages from Meshtastic nodes over a s
 |---|---|
 | **Dual-Streaming** | Sends CoT data simultaneously to local WinTAK (UDP 4242) and a remote TAK Server (TCP/UDP). |
 | **Chat Bridging** | Forwards Meshtastic text messages to TAK GeoChat and can relay GeoChat messages from WinTAK back into the mesh. |
+| **CoT over Mesh** | Generic WinTAK CoT events are fragmented, sent on Meshtastic main channel `0`, reassembled on receipt, and forwarded back to TAK. |
 | **COM Relay Mode** | Incoming Meshtastic text from one selected COM port can be forwarded automatically to the other selected COM ports. |
 | **Automatic Reconnect** | Maintains the remote TAK Server connection with automatic retry on disconnect. |
 | **All-Nodes Visibility** | All nodes are forwarded to TAK by default. Nodes with valid GPS (including phone GPS shared over mesh) appear at their real position; nodes without current GPS use their last known position when available, otherwise configurable fallback coordinates. |
@@ -66,8 +67,8 @@ meshtastic_port: COM7               # Serial port of the Meshtastic radio
 
 local_tak_ip: 127.0.0.1             # Local WinTAK IP
 local_tak_port: 4242                # Local WinTAK UDP input for positions/chat
-local_tak_chat_listen_port: 4243    # UDP input on this gateway for outgoing WinTAK GeoChat
-# local_tak_chat_listen_ip: 0.0.0.0 # Optional bind IP for outgoing WinTAK GeoChat (default: all local interfaces)
+local_tak_chat_listen_port: 4243    # UDP input on this gateway for outgoing WinTAK GeoChat + other CoT
+# local_tak_chat_listen_ip: 0.0.0.0 # Optional bind IP for outgoing WinTAK CoT (default: all local interfaces)
 
 tak_server_host: 123.123.123.123    # Remote TAK Server IP
 tak_server_port: 8088               # Remote TAK Server port (8088 is the default bridge input port)
@@ -97,10 +98,11 @@ send_nodes_without_gps: true
 
 > **Tip:** If `meshtastic_port` is not set or the configured port is not found, the gateway will prompt you to choose a port interactively.
 
-### WinTAK Chat Relay
+### WinTAK Chat / CoT Relay
 
 - **Meshtastic → WinTAK:** incoming `TEXT_MESSAGE_APP` packets are converted into TAK GeoChat events and sent to local WinTAK and the optional remote TAK target.
-- **WinTAK → Meshtastic:** configure WinTAK to send outgoing GeoChat CoT via UDP to `local_tak_chat_listen_port` (default `4243`) on the gateway host. By default the listener binds to `0.0.0.0`, so WinTAK can target either `127.0.0.1` or the gateway PC's LAN IP. The gateway accepts common WinTAK GeoChat CoT variants including `<chat>` / `<__chat>` payloads with nested numbered message elements, normalizes multiline messages, and splits oversized TAK chat text into multiple mesh-safe messages when needed.
+- **WinTAK → Meshtastic (GeoChat):** configure WinTAK to send outgoing GeoChat CoT via UDP to `local_tak_chat_listen_port` (default `4243`) on the gateway host. By default the listener binds to `0.0.0.0`, so WinTAK can target either `127.0.0.1` or the gateway PC's LAN IP. The gateway accepts common WinTAK GeoChat CoT variants including `<chat>` / `<__chat>` payloads with nested numbered message elements, normalizes multiline messages, and splits oversized TAK chat text into multiple mesh-safe messages when needed.
+- **WinTAK → Meshtastic (generic CoT):** any other CoT event received on the same UDP listener is encoded into mesh-safe fragments, broadcast on Meshtastic main channel `0`, then reassembled and injected back into TAK on the receiving gateway.
 
 ---
 
