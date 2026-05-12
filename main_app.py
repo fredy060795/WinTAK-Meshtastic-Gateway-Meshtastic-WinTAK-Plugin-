@@ -2199,8 +2199,8 @@ class TAKMeshtasticGateway:
         requested_ip = self.chat_listen_ip
         bind_attempts = []
         if requested_ip in ("0.0.0.0", "", "*"):
-            bind_attempts.append((socket.AF_INET6, "::", True))
             bind_attempts.append((socket.AF_INET, "0.0.0.0", False))
+            bind_attempts.append((socket.AF_INET6, "::", True))
         else:
             try:
                 addr_info = socket.getaddrinfo(
