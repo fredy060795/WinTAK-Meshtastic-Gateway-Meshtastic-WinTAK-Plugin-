@@ -27,10 +27,11 @@ local_tak_port: 4242
 
 # UDP-Port, auf den WinTAK seine GeoChat-/Chat-CoT- und sonstigen CoT-Nachrichten
 # an dieses Gateway senden soll, damit sie ins Meshtastic-Mesh ausgestrahlt werden.
-local_tak_chat_listen_port: 4243
-# Optionaler lokaler TCP-Port für WinTAK/admin_map-Kompatibilität
-# (z. B. WinTAK → 127.0.0.1:8087 per TCP).
-local_tak_tcp_listen_port: 8087
+# LPU5-kompatibel standardmäßig auf dem normalen TAK-UDP-Port 4242.
+local_tak_chat_listen_port: 4242
+# Lokaler TCP-Port für den LPU5-/TAK-ähnlichen WinTAK-Stream
+# (z. B. WinTAK → <Gateway-IP>:8088 per TCP).
+local_tak_tcp_listen_port: 8088
 # Optional: zusätzliche TAK-Multicast-Gruppen für GeoChat / SA lauschen
 # (hilfreich wenn WinTAK/ATAK oder ein TAK-Server Chat/CoT per Multicast verteilt).
 tak_multicast_groups:
@@ -42,9 +43,9 @@ tak_multicast_groups:
 # Standard ist 0.0.0.0, damit WinTAK sowohl über 127.0.0.1 als auch über die LAN-IP
 # des Gateway-Rechners senden kann. Ausgehende Mesh-Nachrichten gehen immer auf Main-Channel 0.
 # local_tak_chat_listen_ip: 0.0.0.0
-# Optional: eigene Bind-IP für den TCP-Listener. Standard ist 127.0.0.1, damit
-# lokale WinTAK/admin_map-TCP-Verbindungen funktionieren ohne den Port im LAN zu öffnen.
-# local_tak_tcp_listen_ip: 127.0.0.1
+# Optional: eigene Bind-IP für den TCP-Listener. Standard ist 0.0.0.0,
+# damit WinTAK wie bei LPU5 auch von anderen Systemen per TCP 8088 verbinden kann.
+# local_tak_tcp_listen_ip: 0.0.0.0
 
 # true  = alle Nodes anzeigen – Nodes ohne GPS-Fix werden bei park_lat/park_lon platziert (empfohlen)
 # false = nur Nodes mit gültigen GPS-Koordinaten senden
