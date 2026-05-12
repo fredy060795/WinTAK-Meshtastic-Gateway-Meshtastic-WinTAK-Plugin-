@@ -86,6 +86,9 @@ GEOCHAT_UID_PREFIX = "GeoChat."
 TAK_EVENT_PATTERN = re.compile(r"<event\b[^>]*>.*?</event>", re.DOTALL)
 TAK_PING_EVENT_TYPE = "t-x-c-t"
 TAK_PONG_EVENT_TYPE = "t-x-c-t-r"
+# Matches the event type attribute in CoT XML; used to detect WinTAK keepalive pings.
+# Anchors around quotes to avoid false positives (e.g. t-x-c-t-r also contains t-x-c-t).
+_TAK_PING_TYPE_PATTERN = re.compile(r'\btype=["\']t-x-c-t["\']')
 WINTAK_TCP_INBOX_MAX_MESSAGES = 20
 MIN_NULL_BYTES_FOR_UTF16 = 2
 UTF16_NULL_BYTE_RATIO_THRESHOLD = 4
@@ -1548,6 +1551,10 @@ class GatewayApp:
             self._wintak_last_message = message
             self._wintak_monitor_text.configure(state="normal")
             self._wintak_monitor_text.insert("end", line + "\n")
+            # Trim the monitor to at most WINTAK_TCP_INBOX_MAX_MESSAGES lines.
+            line_count = int(self._wintak_monitor_text.index("end-1c").split(".")[0])
+            if line_count > WINTAK_TCP_INBOX_MAX_MESSAGES:
+                self._wintak_monitor_text.delete("1.0", f"{line_count - WINTAK_TCP_INBOX_MAX_MESSAGES + 1}.0")
             self._wintak_monitor_text.see("end")
             self._wintak_monitor_text.configure(state="disabled")
             self._wintak_monitor_status_var.set(f"📨 Zuletzt empfangen [{ts}] von {sender}")
@@ -1934,12 +1941,13 @@ class TAKMeshtasticGateway:
         """Build a minimal CoT t-x-c-t-r ping-ack reply for WinTAK/ATAK keepalive pings."""
         now = datetime.datetime.now(datetime.timezone.utc)
         stale = now + datetime.timedelta(seconds=30)
-        fmt = lambda dt: dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
+        def _fmt_ts(dt):
+            return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
         uid = self.gateway_uid or "GW-01"
         return (
             '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
             f'<event version="2.0" uid="{uid}" type="{TAK_PONG_EVENT_TYPE}" how="m-g"'
-            f' time="{fmt(now)}" start="{fmt(now)}" stale="{fmt(stale)}">'
+            f' time="{_fmt_ts(now)}" start="{_fmt_ts(now)}" stale="{_fmt_ts(stale)}">'
             '<point lat="0.0" lon="0.0" hae="0.0" ce="9999999.0" le="9999999.0"/>'
             '<detail/></event>'
         )
@@ -3021,10 +3029,7 @@ class TAKMeshtasticGateway:
                     for packet_xml in events:
                         # Respond to WinTAK/ATAK keepalive pings with a pong so the
                         # connection stays alive long enough to receive chat messages.
-                        if (
-                            f' type="{TAK_PING_EVENT_TYPE}"' in packet_xml
-                            or f" type='{TAK_PING_EVENT_TYPE}'" in packet_xml
-                        ) and TAK_PONG_EVENT_TYPE not in packet_xml:
+                        if _TAK_PING_TYPE_PATTERN.search(packet_xml) and TAK_PONG_EVENT_TYPE not in packet_xml:
                             try:
                                 conn.sendall(self._build_pong_xml().encode("utf-8"))
                                 self.logger.debug(
