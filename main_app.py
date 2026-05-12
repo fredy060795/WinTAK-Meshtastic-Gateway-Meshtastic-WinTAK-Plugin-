@@ -2852,9 +2852,10 @@ class TAKMeshtasticGateway:
             except Exception:
                 self.logger.debug("Fehler beim Empfangen von TAK-Chat:\n" + traceback.format_exc())
                 continue
-            packet_size = len(_ensure_bytes(packet_xml))
+            raw_packet_bytes = _ensure_bytes(packet_xml)
+            packet_size = len(raw_packet_bytes)
             normalized_packet = self._normalize_inbound_tak_packet(packet_xml)
-            was_normalized = bool(normalized_packet) and _ensure_bytes(normalized_packet) != _ensure_bytes(packet_xml)
+            was_normalized = bool(normalized_packet) and _ensure_bytes(normalized_packet) != raw_packet_bytes
             if not normalized_packet:
                 self._log_inbound_tak_diagnostics(
                     source_addr=addr,
@@ -2901,9 +2902,10 @@ class TAKMeshtasticGateway:
                     buffer_text += decoder.decode(data)
                     events, buffer_text = self._extract_tak_events_from_stream_buffer(buffer_text)
                     for packet_xml in events:
+                        raw_packet_bytes = _ensure_bytes(packet_xml)
                         normalized_packet = self._normalize_inbound_tak_packet(packet_xml)
-                        packet_size = len(_ensure_bytes(packet_xml))
-                        was_normalized = bool(normalized_packet) and _ensure_bytes(normalized_packet) != _ensure_bytes(packet_xml)
+                        packet_size = len(raw_packet_bytes)
+                        was_normalized = bool(normalized_packet) and _ensure_bytes(normalized_packet) != raw_packet_bytes
                         if not normalized_packet:
                             self._log_inbound_tak_diagnostics(
                                 source_addr=addr,
@@ -2930,6 +2932,7 @@ class TAKMeshtasticGateway:
             if decoder is not None:
                 buffer_text += decoder.decode(b"", final=True)
             elif probe_buffer:
+                probe_buffer_bytes = _ensure_bytes(probe_buffer)
                 normalized_packet = self._normalize_inbound_tak_packet(probe_buffer)
                 if normalized_packet:
                     self.handle_inbound_tak_packet(
@@ -2937,15 +2940,15 @@ class TAKMeshtasticGateway:
                         source_addr=addr,
                         source_protocol="TCP",
                         listener_port=self.tcp_chat_listen_port,
-                        packet_size=len(_ensure_bytes(probe_buffer)),
-                        was_normalized=_ensure_bytes(normalized_packet) != _ensure_bytes(probe_buffer),
+                        packet_size=len(probe_buffer_bytes),
+                        was_normalized=_ensure_bytes(normalized_packet) != probe_buffer_bytes,
                     )
                 else:
                     self._log_inbound_tak_diagnostics(
                         source_addr=addr,
                         source_protocol="TCP",
                         listener_port=self.tcp_chat_listen_port,
-                        packet_size=len(_ensure_bytes(probe_buffer)),
+                        packet_size=len(probe_buffer_bytes),
                         was_normalized=False,
                         is_cot_event=False,
                         is_chat_payload=False,
@@ -2954,9 +2957,10 @@ class TAKMeshtasticGateway:
                     )
             events, buffer_text = self._extract_tak_events_from_stream_buffer(buffer_text)
             for packet_xml in events:
+                raw_packet_bytes = _ensure_bytes(packet_xml)
                 normalized_packet = self._normalize_inbound_tak_packet(packet_xml)
-                packet_size = len(_ensure_bytes(packet_xml))
-                was_normalized = bool(normalized_packet) and _ensure_bytes(normalized_packet) != _ensure_bytes(packet_xml)
+                packet_size = len(raw_packet_bytes)
+                was_normalized = bool(normalized_packet) and _ensure_bytes(normalized_packet) != raw_packet_bytes
                 if not normalized_packet:
                     self._log_inbound_tak_diagnostics(
                         source_addr=addr,
