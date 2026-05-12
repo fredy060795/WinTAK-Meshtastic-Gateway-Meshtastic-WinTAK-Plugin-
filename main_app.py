@@ -811,6 +811,9 @@ class GatewayApp:
         self._gateway_thread = None
         self._gui_handler = None
         self._wintak_last_message = None  # last WinTAK TCP chat text for manual forwarding
+        self._scroll_canvas = None
+        self._scrollable_body = None
+        self._scroll_window_id = None
 
         try:
             self._root = tk.Tk()
@@ -1043,8 +1046,38 @@ class GatewayApp:
 
         ttk.Separator(root, orient="horizontal").pack(fill="x")
 
+        content_host = tk.Frame(root, bg=C["bg"])
+        content_host.pack(fill="both", expand=True)
+
+        self._scroll_canvas = tk.Canvas(
+            content_host,
+            bg=C["bg"],
+            highlightthickness=0,
+            bd=0,
+        )
+        self._scroll_canvas.pack(side="left", fill="both", expand=True)
+
+        content_scrollbar = ttk.Scrollbar(
+            content_host,
+            orient="vertical",
+            command=self._scroll_canvas.yview,
+        )
+        content_scrollbar.pack(side="right", fill="y")
+        self._scroll_canvas.configure(yscrollcommand=content_scrollbar.set)
+
+        self._scrollable_body = ttk.Frame(self._scroll_canvas)
+        self._scroll_window_id = self._scroll_canvas.create_window(
+            (0, 0),
+            window=self._scrollable_body,
+            anchor="nw",
+        )
+        self._scrollable_body.bind("<Configure>", self._on_scrollable_body_configure)
+        self._scroll_canvas.bind("<Configure>", self._on_scrollable_canvas_configure)
+
+        body = self._scrollable_body
+
         # ── Einstellungen ──
-        cfg_frame = ttk.LabelFrame(root, text=" ⚙  Einstellungen ", padding=(12, 8))
+        cfg_frame = ttk.LabelFrame(body, text=" ⚙  Einstellungen ", padding=(12, 8))
         cfg_frame.pack(fill="x", padx=10, pady=(10, 4))
 
         # Hilfsfunktion für einheitliche Labels in cfg_frame
@@ -1229,7 +1262,7 @@ class GatewayApp:
         cfg_frame.columnconfigure(3, weight=1)
 
         # ── Toolbar / Steuerleiste ──
-        toolbar = tk.Frame(root, bg=C["panel"], pady=6)
+        toolbar = tk.Frame(body, bg=C["panel"], pady=6)
         toolbar.pack(fill="x", padx=0)
 
         self._start_btn = ttk.Button(
@@ -1250,7 +1283,7 @@ class GatewayApp:
         ).pack(side="left", padx=(16, 0))
 
         # ── Manuelles Mesh-Test-Senden ──
-        mesh_test_frame = ttk.LabelFrame(root, text=" 🧪  Mesh-Testnachricht ", padding=6)
+        mesh_test_frame = ttk.LabelFrame(body, text=" 🧪  Mesh-Testnachricht ", padding=6)
         mesh_test_frame.pack(fill="x", padx=10, pady=(6, 0))
 
         self._mesh_test_message_var = tk.StringVar()
@@ -1276,7 +1309,7 @@ class GatewayApp:
 
         # ── WinTAK TCP Monitor ──
         tak_monitor_frame = ttk.LabelFrame(
-            root, text=" 📡  WinTAK-Nachrichten (TCP 127.0.0.1:8087) ", padding=6
+            body, text=" 📡  WinTAK-Nachrichten (TCP 127.0.0.1:8087) ", padding=6
         )
         tak_monitor_frame.pack(fill="x", padx=10, pady=(6, 0))
 
@@ -1310,7 +1343,7 @@ class GatewayApp:
         self._wintak_forward_btn.pack(side="right")
 
         # ── Eingabe / Befehlszeile ──
-        input_frame = ttk.LabelFrame(root, text=" ⌨  Befehlseingabe ", padding=6)
+        input_frame = ttk.LabelFrame(body, text=" ⌨  Befehlseingabe ", padding=6)
         input_frame.pack(fill="x", padx=10, pady=(6, 0))
 
         self._input_var = tk.StringVar()
@@ -1321,7 +1354,7 @@ class GatewayApp:
                    style="Accent.TButton").pack(side="left")
 
         # ── Log-Ausgabebereich ──
-        log_frame = ttk.LabelFrame(root, text=" 📋  Log-Ausgabe ", padding=4)
+        log_frame = ttk.LabelFrame(body, text=" 📋  Log-Ausgabe ", padding=4)
         log_frame.pack(fill="both", expand=True, padx=10, pady=(6, 0))
 
         self._log_text = tk.Text(
@@ -1356,6 +1389,24 @@ class GatewayApp:
             font=("Segoe UI", 8),
             anchor="w",
         ).pack(side="left", padx=10, fill="y")
+
+    def _on_scrollable_body_configure(self, _event=None):
+        if self._scroll_canvas is None:
+            return
+        self._scroll_canvas.configure(scrollregion=self._scroll_canvas.bbox("all"))
+        self._sync_scrollable_body_width()
+
+    def _on_scrollable_canvas_configure(self, event=None):
+        canvas_width = getattr(event, "width", None)
+        self._sync_scrollable_body_width(canvas_width)
+
+    def _sync_scrollable_body_width(self, canvas_width=None):
+        if self._scroll_canvas is None or self._scroll_window_id is None:
+            return
+        if canvas_width is None:
+            canvas_width = self._scroll_canvas.winfo_width()
+        if canvas_width > 1:
+            self._scroll_canvas.itemconfigure(self._scroll_window_id, width=canvas_width)
 
     def _apply_selected_ports_from_list(self):
         if not self._detected_ports:

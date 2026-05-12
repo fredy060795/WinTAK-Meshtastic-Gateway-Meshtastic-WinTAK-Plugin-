@@ -138,6 +138,8 @@ Das Programm öffnet automatisch ein **GUI-Fenster**, das das reine Terminal-Fen
 | **WinTAK-Nachrichten (TCP Monitor)** | Zeigt in Echtzeit jede über TCP 127.0.0.1:8087 empfangene WinTAK-Nachricht (Zeitstempel, Absender, Text) und den Verbindungsstatus. Schaltfläche „Letzte Nachricht → Mesh" leitet die zuletzt empfangene Nachricht manuell ins Mesh weiter. |
 | **Eingabe / Befehl** | Direkteingabe von Befehlen während der Gateway läuft |
 
+Bei kleinen Displays ist der mittlere Fensterinhalt jetzt vertikal scrollbar, damit die Log-Ausgabe und unteren Bedienfelder erreichbar bleiben.
+
 #### Verfügbare Befehle im Eingabefeld
 
 | Befehl | Wirkung |
