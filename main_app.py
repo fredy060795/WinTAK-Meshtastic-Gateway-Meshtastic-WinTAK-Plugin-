@@ -285,6 +285,128 @@ def _ensure_bytes(value):
     return str(value or "").encode("utf-8")
 
 
+def _read_protobuf_varint(buffer, offset):
+    """Read a protobuf varint from buffer starting at offset."""
+    result = 0
+    shift = 0
+    while offset < len(buffer):
+        byte = buffer[offset]
+        offset += 1
+        result |= (byte & 0x7F) << shift
+        if not (byte & 0x80):
+            return result, offset
+        shift += 7
+        if shift >= 64:
+            break
+    raise ValueError("Ungültige Protobuf-Varint-Daten")
+
+
+def _skip_protobuf_field(buffer, offset, wire_type):
+    """Skip a protobuf field payload and return the next offset."""
+    if wire_type == 0:  # varint
+        _, offset = _read_protobuf_varint(buffer, offset)
+        return offset
+    if wire_type == 1:  # fixed64
+        return offset + 8
+    if wire_type == 2:  # length-delimited
+        length, offset = _read_protobuf_varint(buffer, offset)
+        return offset + length
+    if wire_type == 5:  # fixed32
+        return offset + 4
+    raise ValueError(f"Nicht unterstützter Protobuf-Wire-Type: {wire_type}")
+
+
+def _decode_protobuf_string(value):
+    if not value:
+        return ""
+    return bytes(value).decode("utf-8", errors="ignore").strip()
+
+
+def _read_protobuf_length_delimited(buffer, offset):
+    """Read a protobuf length-delimited field and return its bytes and next offset."""
+    length, offset = _read_protobuf_varint(buffer, offset)
+    end_offset = offset + length
+    if length < 0 or end_offset > len(buffer):
+        raise ValueError("Protobuf-Feld überschreitet das Ende des Puffers")
+    return buffer[offset:end_offset], end_offset
+
+
+def _parse_meshtastic_atak_contact(payload):
+    """Extract the subset of ATAK contact fields needed for chat forwarding."""
+    contact = {}
+    offset = 0
+    payload = bytes(payload or b"")
+    while offset < len(payload):
+        key, offset = _read_protobuf_varint(payload, offset)
+        field_number = key >> 3
+        wire_type = key & 0x07
+        if wire_type != 2:
+            offset = _skip_protobuf_field(payload, offset, wire_type)
+            continue
+        field_bytes, offset = _read_protobuf_length_delimited(payload, offset)
+        if field_number == 1:
+            contact["callsign"] = _decode_protobuf_string(field_bytes)
+        elif field_number == 2:
+            contact["device_callsign"] = _decode_protobuf_string(field_bytes)
+    return contact
+
+
+def _parse_meshtastic_atak_chat(payload):
+    """Extract the subset of ATAK GeoChat fields needed for TAK chat forwarding."""
+    chat = {}
+    offset = 0
+    payload = bytes(payload or b"")
+    while offset < len(payload):
+        key, offset = _read_protobuf_varint(payload, offset)
+        field_number = key >> 3
+        wire_type = key & 0x07
+        if wire_type == 2:
+            field_bytes, offset = _read_protobuf_length_delimited(payload, offset)
+            if field_number == 1:
+                chat["message"] = _decode_protobuf_string(field_bytes)
+            elif field_number == 2:
+                chat["to"] = _decode_protobuf_string(field_bytes)
+            elif field_number == 3:
+                chat["to_callsign"] = _decode_protobuf_string(field_bytes)
+            elif field_number == 4:
+                chat["receipt_for_uid"] = _decode_protobuf_string(field_bytes)
+        elif wire_type == 0:
+            value, offset = _read_protobuf_varint(payload, offset)
+            if field_number == 5:
+                chat["receipt_type"] = value
+        else:
+            offset = _skip_protobuf_field(payload, offset, wire_type)
+    return chat
+
+
+def _parse_meshtastic_atak_payload(payload):
+    """Decode the chat-related subset of Meshtastic ATAK plugin payloads."""
+    decoded = {
+        "is_compressed": False,
+        "contact": {},
+        "chat": {},
+    }
+    offset = 0
+    payload = bytes(payload or b"")
+    while offset < len(payload):
+        key, offset = _read_protobuf_varint(payload, offset)
+        field_number = key >> 3
+        wire_type = key & 0x07
+        if field_number == 1 and wire_type == 0:
+            value, offset = _read_protobuf_varint(payload, offset)
+            decoded["is_compressed"] = bool(value)
+            continue
+        if wire_type != 2:
+            offset = _skip_protobuf_field(payload, offset, wire_type)
+            continue
+        field_bytes, offset = _read_protobuf_length_delimited(payload, offset)
+        if field_number == 2:
+            decoded["contact"] = _parse_meshtastic_atak_contact(field_bytes)
+        elif field_number == 6:
+            decoded["chat"] = _parse_meshtastic_atak_chat(field_bytes)
+    return decoded
+
+
 def load_config():
     """
     Lädt config.yaml aus dem selben Verzeichnis wie dieses Skript (falls vorhanden).
@@ -1525,19 +1647,92 @@ class TAKMeshtasticGateway:
                 return False
         return False
 
-    def _extract_meshtastic_text(self, packet):
+    def _is_atak_plugin_packet(self, packet):
+        decoded = packet.get("decoded") or {}
+        if not isinstance(decoded, dict):
+            return False
+        portnum = decoded.get("portnum")
+        if portnum is None:
+            return False
+        portnum_name = str(portnum).upper()
+        if portnum_name in {"ATAK_PLUGIN", "ATAK_PLUGIN_V2"}:
+            return True
+        if portnums_pb2 is not None:
+            try:
+                portnum_values = {int(portnums_pb2.PortNum.ATAK_PLUGIN)}
+                atak_plugin_v2 = getattr(portnums_pb2.PortNum, "ATAK_PLUGIN_V2", None)
+                if atak_plugin_v2 is not None:
+                    portnum_values.add(int(atak_plugin_v2))
+                return int(portnum) in portnum_values
+            except (AttributeError, TypeError, ValueError):
+                return False
+        return False
+
+    def _extract_meshtastic_chat_payload(self, packet, node=None):
         decoded = packet.get("decoded") or {}
         if not isinstance(decoded, dict):
             return None
-        text = decoded.get("text")
-        if not text:
-            payload = decoded.get("payload")
-            if isinstance(payload, (bytes, bytearray)):
-                text = payload.decode("utf-8", errors="ignore")
-        if text is None:
+        if self._is_text_message_packet(packet):
+            text = decoded.get("text")
+            if not text:
+                payload = decoded.get("payload")
+                if isinstance(payload, (bytes, bytearray)):
+                    text = payload.decode("utf-8", errors="ignore")
+            if text is None:
+                return None
+            text = str(text).strip()
+            if not text:
+                return None
+            return {
+                "message": text,
+                "callsign": None,
+                "sender_uid": None,
+                "chatroom": DEFAULT_CHATROOM_NAME,
+            }
+
+        if not self._is_atak_plugin_packet(packet):
             return None
-        text = str(text).strip()
-        return text or None
+
+        payload = decoded.get("payload")
+        if not isinstance(payload, (bytes, bytearray)):
+            return None
+        try:
+            atak_payload = _parse_meshtastic_atak_payload(payload)
+        except Exception:
+            self.logger.debug("ATAK-Plugin-Payload konnte nicht dekodiert werden:\n" + traceback.format_exc())
+            return None
+
+        chat = atak_payload.get("chat") or {}
+        message = str(chat.get("message") or "").strip()
+        if not message:
+            return None
+        if int(chat.get("receipt_type") or 0) != 0:
+            return None
+
+        user = node.get('user', {}) if node else {}
+        from_identifier = packet.get('fromId') or packet.get('from')
+        raw_uid = user.get('id')
+        if not raw_uid:
+            raw_uid = str(from_identifier) if from_identifier else "MESH-UNKNOWN"
+        sender_uid = normalize_meshtastic_uid(raw_uid)
+        contact = atak_payload.get("contact") or {}
+        callsign = (
+            contact.get("callsign")
+            or user.get("longName")
+            or user.get("shortName")
+            or sender_uid
+        )
+        chatroom = (
+            chat.get("to_callsign")
+            or chat.get("to")
+            or DEFAULT_CHATROOM_NAME
+        )
+        return {
+            "message": message,
+            "callsign": callsign,
+            "sender_uid": sender_uid,
+            "chatroom": chatroom,
+        }
 
     def _resolve_chat_position(self, uid, node=None):
         alt = 0.0
@@ -1861,9 +2056,10 @@ class TAKMeshtasticGateway:
             self.logger.error("Fehler in send_chat_to_tak:\n" + traceback.format_exc())
 
     def process_meshtastic_text_message(self, packet, node=None, source_interface=None):
-        message = self._extract_meshtastic_text(packet)
-        if not message:
+        chat_payload = self._extract_meshtastic_chat_payload(packet, node=node)
+        if not chat_payload:
             return
+        message = chat_payload["message"]
 
         from_id = packet.get('fromId') or packet.get('from')
         from_num = packet.get('from')
@@ -1897,10 +2093,11 @@ class TAKMeshtasticGateway:
 
         user = node.get('user', {}) if node else {}
         raw_uid = user.get('id') or (str(from_id) if from_id else "MESH-UNKNOWN")
-        sender_uid = normalize_meshtastic_uid(raw_uid)
-        callsign = user.get('longName') or user.get('shortName') or sender_uid
+        sender_uid = chat_payload.get("sender_uid") or normalize_meshtastic_uid(raw_uid)
+        callsign = chat_payload.get("callsign") or user.get('longName') or user.get('shortName') or sender_uid
+        chatroom = chat_payload.get("chatroom") or DEFAULT_CHATROOM_NAME
         lat, lon, alt = self._resolve_chat_position(sender_uid, node=node)
-        self.send_chat_to_tak(sender_uid, callsign, message, lat, lon, alt)
+        self.send_chat_to_tak(sender_uid, callsign, message, lat, lon, alt, chatroom=chatroom)
         self.logger.info(f"Meshtastic-Chat nach TAK weitergeleitet: {callsign}: {message}")
 
     def _extract_tak_chat_payload(self, packet_xml):
@@ -2193,7 +2390,7 @@ class TAKMeshtasticGateway:
             self.logger.debug(f"RAW Paket empfangen: {packet}")
             from_id = packet.get('fromId') or packet.get('from')
             node = self._find_node_for_packet(interface, from_id)
-            if self._is_text_message_packet(packet):
+            if self._is_text_message_packet(packet) or self._is_atak_plugin_packet(packet):
                 self.process_meshtastic_text_message(packet, node=node, source_interface=interface)
             if from_id and node:
                 # Force update für Live-Events
