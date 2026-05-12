@@ -66,6 +66,9 @@ MAX_PORT_NUMBER = 65535
 DEFAULT_CHATROOM_NAME = "All Chat Rooms"
 DEFAULT_CHAT_LISTEN_PORT = 4243
 DEFAULT_CHAT_TCP_LISTEN_PORT = 8087
+DEFAULT_SOURCE_PROTOCOL = "UNKNOWN"
+TCP_SOCKET_TIMEOUT_SECONDS = 1.0
+TCP_LISTENER_BACKLOG = 5
 TCP_RECV_BUFFER_SIZE = 4096
 MAX_TCP_STREAM_BUFFER_BYTES = 262144
 TCP_STREAM_BUFFER_TAIL_BYTES = 64
@@ -2351,9 +2354,9 @@ class TAKMeshtasticGateway:
                         )
                     except (AttributeError, OSError):
                         pass
-                sock.settimeout(1.0)
+                sock.settimeout(TCP_SOCKET_TIMEOUT_SECONDS)
                 sock.bind((bind_ip, listen_port))
-                sock.listen(5)
+                sock.listen(TCP_LISTENER_BACKLOG)
                 return sock, bind_ip
             except OSError as exc:
                 logger = getattr(self, "logger", None)
@@ -2405,7 +2408,7 @@ class TAKMeshtasticGateway:
             return
 
         if metadata is None:
-            protocol_label = str(source_protocol or "UNKNOWN").upper()
+            protocol_label = str(source_protocol or DEFAULT_SOURCE_PROTOCOL).upper()
             self.logger.debug(
                 f"{protocol_label}-Paket am TAK-Listener empfangen, aber nicht als CoT erkannt"
                 + (f" ({source_addr[0]}:{source_addr[1]})" if source_addr else "")
@@ -2466,7 +2469,7 @@ class TAKMeshtasticGateway:
 
     def _handle_tak_tcp_client(self, conn, addr):
         buffer_text = ""
-        conn.settimeout(1.0)
+        conn.settimeout(TCP_SOCKET_TIMEOUT_SECONDS)
         try:
             while not self.shutdown_flag.is_set():
                 try:
