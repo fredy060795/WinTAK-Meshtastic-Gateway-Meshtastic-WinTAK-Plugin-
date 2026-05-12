@@ -211,6 +211,15 @@ def _collect_xml_text(element):
     return "\n".join(text_parts)
 
 
+def _strip_tak_sender_prefix(value):
+    """Normalize common TAK sender prefixes like BAO.F.ATAK./BAO.F.WinTAK."""
+    normalized = str(value or "")
+    for prefix in ("BAO.F.ATAK.", "BAO.F.WinTAK."):
+        if normalized.startswith(prefix):
+            return normalized[len(prefix):]
+    return normalized
+
+
 def _extract_latest_wintak_chat_message(text):
     """Collapse WinTAK transcript exports to the newest message body.
 
@@ -2252,11 +2261,7 @@ class TAKMeshtasticGateway:
             sender_uid = chatgrp.get("uid0") or chatgrp.get("uid")
         if not sender_uid:
             sender_uid = event_uid
-        sender_uid = str(sender_uid or "")
-        if sender_uid.startswith("BAO.F.ATAK."):
-            sender_uid = sender_uid[len("BAO.F.ATAK."):]
-        elif sender_uid.startswith("BAO.F.WinTAK."):
-            sender_uid = sender_uid[len("BAO.F.WinTAK."):]
+        sender_uid = _strip_tak_sender_prefix(sender_uid)
 
         sender_callsign = chat.get("senderCallsign") if chat is not None else None
         if not sender_callsign and contact is not None:
@@ -2267,11 +2272,7 @@ class TAKMeshtasticGateway:
             sender_callsign = chatgrp.get("uid0") or chatgrp.get("name")
         if not sender_callsign and remarks is not None:
             sender_callsign = remarks.get("source")
-        sender_callsign = str(sender_callsign or "")
-        if sender_callsign.startswith("BAO.F.ATAK."):
-            sender_callsign = sender_callsign[len("BAO.F.ATAK."):]
-        elif sender_callsign.startswith("BAO.F.WinTAK."):
-            sender_callsign = sender_callsign[len("BAO.F.WinTAK."):]
+        sender_callsign = _strip_tak_sender_prefix(sender_callsign)
         if not sender_callsign:
             sender_callsign = "UNKNOWN-SENDER"
 
