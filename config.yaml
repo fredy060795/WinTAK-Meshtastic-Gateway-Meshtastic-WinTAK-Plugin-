@@ -20,6 +20,10 @@ local_tak_port: 4242
 # UDP-Port, auf den WinTAK seine GeoChat-/Chat-CoT-Nachrichten an dieses Gateway senden soll,
 # damit sie ins Meshtastic-Mesh ausgestrahlt werden.
 local_tak_chat_listen_port: 4243
+# Optional: auf welcher lokalen IP der Chat-Listener lauscht.
+# Standard ist 0.0.0.0, damit WinTAK sowohl über 127.0.0.1 als auch über die LAN-IP
+# des Gateway-Rechners senden kann.
+# local_tak_chat_listen_ip: 0.0.0.0
 
 # true  = alle Nodes anzeigen – Nodes ohne GPS-Fix werden bei park_lat/park_lon platziert (empfohlen)
 # false = nur Nodes mit gültigen GPS-Koordinaten senden
