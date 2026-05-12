@@ -12,6 +12,7 @@ TAK Meshtastic Gateway - vollständige, robuste Version
 import os
 import sys
 import argparse
+import base64
 import datetime
 import hashlib
 import math
@@ -66,6 +67,10 @@ DEFAULT_CHAT_LISTEN_PORT = 4243
 RECENT_CHAT_CACHE_TTL_SECONDS = 30
 RECENT_CHAT_CACHE_MAX_ENTRIES = 256
 MESHTASTIC_TEXT_CHUNK_MAX_BYTES = 180
+MESHTASTIC_COT_FRAGMENT_PREFIX = "COTM"
+MESHTASTIC_COT_FRAGMENT_PAYLOAD_BYTES = 140
+MESHTASTIC_COT_FRAGMENT_TTL_SECONDS = 120
+DEFAULT_MESHTASTIC_CHANNEL_INDEX = 0
 
 
 def get_tak_timestamp():
@@ -188,6 +193,14 @@ def _collect_xml_text(element):
         return ""
     text_parts = [text.strip() for text in element.itertext() if text and text.strip()]
     return "\n".join(text_parts)
+
+
+def _ensure_bytes(value):
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, bytearray):
+        return bytes(value)
+    return str(value or "").encode("utf-8")
 
 
 def load_config():
@@ -1238,6 +1251,8 @@ class TAKMeshtasticGateway:
         self.recent_tak_chat_ids = {}
         self.recent_meshtastic_chat_ids = {}
         self.recent_meshtastic_outbound_texts = {}
+        self.recent_cot_ids = {}
+        self.partial_meshtastic_cot_messages = {}
         self.relay_text_messages = as_bool(self.cfg.get("relay_text_messages", True))
         self.relay_text_from_ports = {
             port.upper() for port in _config_ports_to_list(self.cfg.get("relay_text_from_ports"))
@@ -1356,6 +1371,37 @@ class TAKMeshtasticGateway:
                 return False
             return True
 
+    def _cleanup_expired_meshtastic_cot_fragments(self):
+        now = time.time()
+        with self.chat_cache_lock:
+            expired_keys = [
+                key for key, entry in self.partial_meshtastic_cot_messages.items()
+                if now - entry.get("updated_at", entry.get("created_at", now)) > MESHTASTIC_COT_FRAGMENT_TTL_SECONDS
+            ]
+            for key in expired_keys:
+                self.partial_meshtastic_cot_messages.pop(key, None)
+
+    def _extract_cot_event_metadata(self, packet_xml):
+        try:
+            root = fromstring(packet_xml)
+        except Exception:
+            return None
+        if _xml_local_name(root.tag) != "event":
+            return None
+        return {
+            "uid": (root.get("uid") or "").strip(),
+            "type": str(root.get("type") or "").strip().lower(),
+        }
+
+    def _build_cot_dedupe_key(self, packet_xml):
+        packet_bytes = _ensure_bytes(packet_xml).strip()
+        if not packet_bytes:
+            return None
+        metadata = self._extract_cot_event_metadata(packet_bytes)
+        if metadata and metadata["uid"]:
+            return metadata["uid"]
+        return hashlib.sha256(packet_bytes).hexdigest()
+
     def _register_local_nodes(self):
         for iface in self.interfaces:
             try:
@@ -1435,6 +1481,9 @@ class TAKMeshtasticGateway:
         return 0.0, 0.0, 0.0
 
     def _send_packet_to_tak(self, packet_xml, label):
+        cot_dedupe_key = self._build_cot_dedupe_key(packet_xml)
+        if cot_dedupe_key:
+            self._remember_recent_chat(self.recent_cot_ids, cot_dedupe_key)
         try:
             self.sock_udp.sendto(packet_xml, (self.tak_ip, self.tak_port))
             self.logger.debug(f"Lokales UDP gesendet an {self.tak_ip}:{self.tak_port} ({label})")
@@ -1525,14 +1574,32 @@ class TAKMeshtasticGateway:
         last_error = None
         for iface in interfaces:
             try:
-                # Broadcast chat to the mesh; broadcast messages cannot be acknowledged per recipient
-                # at the protocol level, so enabling ACKs would not provide meaningful delivery feedback.
-                iface.sendText(message, wantAck=False)
+                # Broadcast chat/CoT always on the primary Meshtastic channel 0.
+                send_attempts = (
+                    {"destinationId": "^all", "wantAck": False, "channelIndex": DEFAULT_MESHTASTIC_CHANNEL_INDEX},
+                    {"destinationId": "^all", "wantAck": False, "channel_index": DEFAULT_MESHTASTIC_CHANNEL_INDEX},
+                    {"destinationId": "^all", "wantAck": False, "channel": DEFAULT_MESHTASTIC_CHANNEL_INDEX},
+                    {"wantAck": False, "channelIndex": DEFAULT_MESHTASTIC_CHANNEL_INDEX},
+                    {"wantAck": False, "channel_index": DEFAULT_MESHTASTIC_CHANNEL_INDEX},
+                    {"wantAck": False, "channel": DEFAULT_MESHTASTIC_CHANNEL_INDEX},
+                    {"destinationId": "^all", "wantAck": False},
+                    {"wantAck": False},
+                )
+                sent = False
+                for kwargs in send_attempts:
+                    try:
+                        iface.sendText(message, **kwargs)
+                        sent = True
+                        break
+                    except TypeError:
+                        continue
+                if not sent:
+                    raise TypeError("sendText unterstützt keinen kompatiblen channelIndex/destinationId-Aufruf")
                 sent_interfaces.append(iface)
             except Exception as exc:
                 last_error = exc
                 self.logger.warning(
-                    f"Fehler beim Senden einer Meshtastic-Chatnachricht auf {self._get_interface_label(iface)}: {exc}"
+                    f"Fehler beim Senden einer Meshtastic-Nachricht auf {self._get_interface_label(iface)}: {exc}"
                 )
         if not sent_interfaces and last_error is not None:
             raise last_error
@@ -1579,6 +1646,111 @@ class TAKMeshtasticGateway:
             chunks.append(current)
         return chunks
 
+    def _prepare_meshtastic_cot_chunks(self, packet_xml):
+        packet_bytes = _ensure_bytes(packet_xml).strip()
+        if not packet_bytes:
+            return []
+        encoded_packet = base64.urlsafe_b64encode(packet_bytes).decode("ascii")
+        payload_chunks = [
+            encoded_packet[i:i + MESHTASTIC_COT_FRAGMENT_PAYLOAD_BYTES]
+            for i in range(0, len(encoded_packet), MESHTASTIC_COT_FRAGMENT_PAYLOAD_BYTES)
+        ]
+        if not payload_chunks:
+            return []
+        message_id = uuid.uuid4().hex[:12]
+        total_chunks = len(payload_chunks)
+        return [
+            f"{MESHTASTIC_COT_FRAGMENT_PREFIX}:{message_id}:{index}:{total_chunks}:{payload}"
+            for index, payload in enumerate(payload_chunks, start=1)
+        ]
+
+    def _parse_meshtastic_cot_chunk(self, message):
+        if not message:
+            return None
+        prefix = f"{MESHTASTIC_COT_FRAGMENT_PREFIX}:"
+        if not str(message).startswith(prefix):
+            return None
+        parts = str(message).split(":", 4)
+        if len(parts) != 5:
+            return None
+        _, message_id, part_index, total_parts, payload = parts
+        try:
+            part_index = int(part_index)
+            total_parts = int(total_parts)
+        except (TypeError, ValueError):
+            return None
+        if not message_id or part_index < 1 or total_parts < 1 or part_index > total_parts or not payload:
+            return None
+        return {
+            "message_id": message_id,
+            "part_index": part_index,
+            "total_parts": total_parts,
+            "payload": payload,
+        }
+
+    def _forward_cot_to_meshtastic(self, packet_xml):
+        cot_chunks = self._prepare_meshtastic_cot_chunks(packet_xml)
+        if not cot_chunks:
+            raise ValueError("Leere CoT-Nachricht kann nicht ins Mesh gesendet werden.")
+        for chunk in cot_chunks:
+            self._send_text_to_interfaces(chunk, self.interfaces)
+            self._remember_recent_chat(self.recent_meshtastic_outbound_texts, chunk)
+        return cot_chunks
+
+    def _handle_meshtastic_cot_chunk(self, message, from_id):
+        chunk = self._parse_meshtastic_cot_chunk(message)
+        if chunk is None:
+            return False
+
+        self._cleanup_expired_meshtastic_cot_fragments()
+        cache_key = f"{from_id}:{chunk['message_id']}"
+        now = time.time()
+        with self.chat_cache_lock:
+            entry = self.partial_meshtastic_cot_messages.get(cache_key)
+            if entry is None or entry.get("total_parts") != chunk["total_parts"]:
+                entry = {
+                    "created_at": now,
+                    "updated_at": now,
+                    "total_parts": chunk["total_parts"],
+                    "parts": {},
+                }
+                self.partial_meshtastic_cot_messages[cache_key] = entry
+            entry["updated_at"] = now
+            entry["parts"][chunk["part_index"]] = chunk["payload"]
+            if len(entry["parts"]) < entry["total_parts"]:
+                return True
+            missing_parts = [index for index in range(1, entry["total_parts"] + 1) if index not in entry["parts"]]
+            if missing_parts:
+                return True
+            encoded_packet = "".join(entry["parts"].get(index, "") for index in range(1, entry["total_parts"] + 1))
+            self.partial_meshtastic_cot_messages.pop(cache_key, None)
+
+        if not encoded_packet:
+            self.logger.warning("Unvollständige CoT-Fragmentserie aus dem Mesh verworfen.")
+            return True
+
+        try:
+            packet_xml = base64.urlsafe_b64decode(encoded_packet.encode("ascii"))
+        except Exception as exc:
+            self.logger.warning(f"Mesh-CoT konnte nicht dekodiert werden: {exc}")
+            self.logger.debug("Fehler beim Dekodieren einer Mesh-CoT-Nachricht:\n" + traceback.format_exc())
+            return True
+
+        cot_dedupe_key = self._build_cot_dedupe_key(packet_xml)
+        if cot_dedupe_key and self._was_seen_recently(self.recent_cot_ids, cot_dedupe_key):
+            return True
+
+        metadata = self._extract_cot_event_metadata(packet_xml)
+        if metadata is None:
+            self.logger.warning("Mesh-CoT verworfen: empfangene Nachricht ist kein gültiges CoT-Event.")
+            return True
+
+        self._send_packet_to_tak(packet_xml, metadata["uid"] or f"Mesh-CoT {from_id}")
+        self.logger.info(
+            f"CoT aus dem Mesh nach TAK weitergeleitet: {metadata['uid'] or f'ohne UID von {from_id}'}"
+        )
+        return True
+
     def send_chat_to_tak(self, sender_uid, callsign, message, lat, lon, alt=0.0, chatroom=DEFAULT_CHATROOM_NAME):
         try:
             packet_xml = self._build_chat_cot_xml(sender_uid, callsign, message, lat, lon, alt, chatroom=chatroom)
@@ -1605,6 +1777,9 @@ class TAKMeshtasticGateway:
         if self._was_seen_recently(self.recent_meshtastic_chat_ids, dedupe_key):
             return
         self._remember_recent_chat(self.recent_meshtastic_chat_ids, dedupe_key)
+
+        if self._handle_meshtastic_cot_chunk(message, from_id or "MESH-UNKNOWN"):
+            return
 
         if self.relay_text_messages and len(self.interfaces) > 1:
             relay_targets = self._get_relay_targets(source_interface)
@@ -1718,40 +1893,63 @@ class TAKMeshtasticGateway:
             total_sent += len(self._send_text_to_interfaces(chunk, self.interfaces))
         return total_sent
 
-    def handle_tak_chat_message(self, packet_xml, source_addr=None):
+    def handle_tak_packet(self, packet_xml, source_addr=None):
         chat_payload = self._extract_tak_chat_payload(packet_xml)
-        if not chat_payload:
+        if chat_payload:
+            sender_uid = chat_payload["sender_uid"] or self.gateway_uid
+            if sender_uid in self.local_node_ids:
+                return
+
+            dedupe_key = chat_payload["event_uid"] or f"tak:{sender_uid}:{chat_payload['message']}"
+            if self._was_seen_recently(self.recent_tak_chat_ids, dedupe_key):
+                return
+
+            try:
+                sent_chunks = self._prepare_meshtastic_text_chunks(chat_payload["message"])
+                self._send_text_to_meshtastic(chat_payload["message"], prepared_chunks=sent_chunks)
+            except Exception as exc:
+                self.logger.warning(f"TAK-Chat konnte nicht ins Mesh gesendet werden: {exc}")
+                self.logger.debug("Fehler beim Senden von TAK-Chat ins Mesh:\n" + traceback.format_exc())
+                return
+            self._remember_recent_chat(self.recent_tak_chat_ids, dedupe_key)
+            for chunk in sent_chunks:
+                self._remember_recent_chat(self.recent_meshtastic_outbound_texts, chunk)
+            src = chat_payload["sender_callsign"]
+            if len(sent_chunks) > 1:
+                self.logger.info(
+                    f"TAK-Chat wurde in {len(sent_chunks)} Mesh-Nachrichten aufgeteilt: {src}: {chat_payload['message']}"
+                )
+            else:
+                self.logger.info(f"TAK-Chat ins Mesh gesendet: {src}: {chat_payload['message']}")
+            return
+
+        metadata = self._extract_cot_event_metadata(packet_xml)
+        if metadata is None:
             self.logger.debug(
-                "UDP-Paket am TAK-Chat-Listener empfangen, aber nicht als GeoChat erkannt"
+                "UDP-Paket am TAK-Listener empfangen, aber nicht als CoT erkannt"
                 + (f" ({source_addr[0]}:{source_addr[1]})" if source_addr else "")
             )
             return
 
-        sender_uid = chat_payload["sender_uid"] or self.gateway_uid
-        if sender_uid in self.local_node_ids:
-            return
-
-        dedupe_key = chat_payload["event_uid"] or f"tak:{sender_uid}:{chat_payload['message']}"
-        if self._was_seen_recently(self.recent_tak_chat_ids, dedupe_key):
+        cot_dedupe_key = metadata["uid"] or self._build_cot_dedupe_key(packet_xml)
+        if cot_dedupe_key and self._was_seen_recently(self.recent_cot_ids, cot_dedupe_key):
             return
 
         try:
-            sent_chunks = self._prepare_meshtastic_text_chunks(chat_payload["message"])
-            self._send_text_to_meshtastic(chat_payload["message"], prepared_chunks=sent_chunks)
+            sent_chunks = self._forward_cot_to_meshtastic(packet_xml)
         except Exception as exc:
-            self.logger.warning(f"TAK-Chat konnte nicht ins Mesh gesendet werden: {exc}")
-            self.logger.debug("Fehler beim Senden von TAK-Chat ins Mesh:\n" + traceback.format_exc())
+            self.logger.warning(f"TAK-CoT konnte nicht ins Mesh gesendet werden: {exc}")
+            self.logger.debug("Fehler beim Senden von TAK-CoT ins Mesh:\n" + traceback.format_exc())
             return
-        self._remember_recent_chat(self.recent_tak_chat_ids, dedupe_key)
-        for chunk in sent_chunks:
-            self._remember_recent_chat(self.recent_meshtastic_outbound_texts, chunk)
-        src = chat_payload["sender_callsign"]
-        if len(sent_chunks) > 1:
-            self.logger.info(
-                f"TAK-Chat wurde in {len(sent_chunks)} Mesh-Nachrichten aufgeteilt: {src}: {chat_payload['message']}"
-            )
-        else:
-            self.logger.info(f"TAK-Chat ins Mesh gesendet: {src}: {chat_payload['message']}")
+        if cot_dedupe_key:
+            self._remember_recent_chat(self.recent_cot_ids, cot_dedupe_key)
+        self.logger.info(
+            f"TAK-CoT ins Mesh gesendet: {metadata['uid'] or 'ohne UID'} "
+            f"({len(sent_chunks)} Fragment{'e' if len(sent_chunks) != 1 else ''})"
+        )
+
+    def handle_tak_chat_message(self, packet_xml, source_addr=None):
+        self.handle_tak_packet(packet_xml, source_addr=source_addr)
 
     def listen_for_tak_chat(self):
         try:
@@ -1761,11 +1959,11 @@ class TAKMeshtasticGateway:
             sock.bind((self.chat_listen_ip, self.chat_listen_port))
             self.sock_chat_listener = sock
             self.logger.info(
-                f"TAK-Chat-Listener aktiv auf {self.chat_listen_ip}:{self.chat_listen_port} "
-                f"(WinTAK-Ausgang hierhin senden, damit Chats ins Mesh gehen)."
+                f"TAK-CoT-Listener aktiv auf {self.chat_listen_ip}:{self.chat_listen_port} "
+                f"(WinTAK-Ausgang hierhin senden, damit Chat und CoT ins Mesh gehen)."
             )
         except Exception as e:
-            self.logger.warning(f"TAK-Chat-Listener konnte nicht gestartet werden: {e}")
+            self.logger.warning(f"TAK-CoT-Listener konnte nicht gestartet werden: {e}")
             self.sock_chat_listener = None
             return
 
@@ -1779,7 +1977,7 @@ class TAKMeshtasticGateway:
             except Exception:
                 self.logger.debug("Fehler beim Empfangen von TAK-Chat:\n" + traceback.format_exc())
                 continue
-            self.handle_tak_chat_message(packet_xml.strip(), source_addr=addr)
+            self.handle_tak_packet(packet_xml.strip(), source_addr=addr)
 
     def maintain_server(self):
         """
