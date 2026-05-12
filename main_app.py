@@ -1039,7 +1039,7 @@ class GatewayApp:
             variable=self._set_gateway_position_var,
         ).grid(row=11, column=2, columnspan=3, sticky="w", padx=(8, 0), pady=(0, 4))
 
-        # ── Zeile 12: park_lat / park_lon ──
+        # ── Zeile 13: park_lat / park_lon ──
         cfg_label("Fallback Lat (park_lat):", row=12, col=0, pady=(0, 4))
         raw_park_lat = self.cfg.get("park_lat")
         park_lat_val = "" if raw_park_lat is None else f"{float(raw_park_lat):.6f}".rstrip("0").rstrip(".")
@@ -1055,7 +1055,7 @@ class GatewayApp:
         self._park_lat_var.trace_add("write", lambda *_: self._update_no_gps_hint())
         self._park_lon_var.trace_add("write", lambda *_: self._update_no_gps_hint())
 
-        # ── Zeile 11: Hinweis ──
+        # ── Zeile 14: Hinweis ──
         self._no_gps_hint_var = tk.StringVar()
         ttk.Label(cfg_frame, textvariable=self._no_gps_hint_var, style="Hint.TLabel").grid(
             row=13, column=0, columnspan=6, sticky="w", pady=(0, 2))
