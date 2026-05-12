@@ -1188,7 +1188,7 @@ class GatewayApp:
             cfg_frame, textvariable=self._server_protocol_var,
             state="readonly", values=["TCP", "UDP"], width=10
         ).grid(row=5, column=1, sticky="w", padx=(6, 12), pady=(0, 4))
-        cfg_label("WinTAK UDP IP:", row=5, col=2, padx=(8, 6), pady=(0, 4))
+        cfg_label("WinTAK UDP Ziel-IP:", row=5, col=2, padx=(8, 6), pady=(0, 4))
         self._local_tak_ip_var = tk.StringVar(value=str(self.cfg.get("local_tak_ip", WINTAK_REQUIRED_HOST)))
         ttk.Entry(cfg_frame, textvariable=self._local_tak_ip_var, width=16).grid(
             row=5, column=3, sticky="w", pady=(0, 4))
@@ -1658,7 +1658,7 @@ class GatewayApp:
             text=f" 📡  WinTAK-Nachrichten (TCP {listen_ip}:{listen_port}) "
         )
         self._wintak_monitor_status_var.set(
-            f"⚪ Warte auf WinTAK-Verbindung auf TCP {listen_ip}:{listen_port} … In WinTAK lokalen Server 127.0.0.1:{listen_port} / TCP nutzen."
+            f"⚪ Warte auf WinTAK-Verbindung auf TCP {listen_ip}:{listen_port} … In WinTAK lokalen Server {WINTAK_REQUIRED_HOST}:{listen_port} / TCP nutzen."
         )
 
     def _on_wintak_tcp_chat(self, kind, sender, message, addr=None):
