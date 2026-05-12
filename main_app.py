@@ -322,6 +322,15 @@ def _decode_protobuf_string(value):
     return bytes(value).decode("utf-8", errors="ignore").strip()
 
 
+def _read_protobuf_length_delimited(buffer, offset):
+    """Read a protobuf length-delimited field and return its bytes and next offset."""
+    length, offset = _read_protobuf_varint(buffer, offset)
+    end_offset = offset + length
+    if length < 0 or end_offset > len(buffer):
+        raise ValueError("Protobuf-Feld überschreitet das Ende des Puffers")
+    return buffer[offset:end_offset], end_offset
+
+
 def _parse_meshtastic_atak_contact(payload):
     """Extract the subset of ATAK contact fields needed for chat forwarding."""
     contact = {}
@@ -334,9 +343,7 @@ def _parse_meshtastic_atak_contact(payload):
         if wire_type != 2:
             offset = _skip_protobuf_field(payload, offset, wire_type)
             continue
-        length, offset = _read_protobuf_varint(payload, offset)
-        field_bytes = payload[offset:offset + length]
-        offset += length
+        field_bytes, offset = _read_protobuf_length_delimited(payload, offset)
         if field_number == 1:
             contact["callsign"] = _decode_protobuf_string(field_bytes)
         elif field_number == 2:
@@ -354,9 +361,7 @@ def _parse_meshtastic_atak_chat(payload):
         field_number = key >> 3
         wire_type = key & 0x07
         if wire_type == 2:
-            length, offset = _read_protobuf_varint(payload, offset)
-            field_bytes = payload[offset:offset + length]
-            offset += length
+            field_bytes, offset = _read_protobuf_length_delimited(payload, offset)
             if field_number == 1:
                 chat["message"] = _decode_protobuf_string(field_bytes)
             elif field_number == 2:
@@ -394,9 +399,7 @@ def _parse_meshtastic_atak_payload(payload):
         if wire_type != 2:
             offset = _skip_protobuf_field(payload, offset, wire_type)
             continue
-        length, offset = _read_protobuf_varint(payload, offset)
-        field_bytes = payload[offset:offset + length]
-        offset += length
+        field_bytes, offset = _read_protobuf_length_delimited(payload, offset)
         if field_number == 2:
             decoded["contact"] = _parse_meshtastic_atak_contact(field_bytes)
         elif field_number == 6:
@@ -1656,10 +1659,11 @@ class TAKMeshtasticGateway:
             return True
         if portnums_pb2 is not None:
             try:
-                return int(portnum) in {
-                    int(portnums_pb2.PortNum.ATAK_PLUGIN),
-                    int(getattr(portnums_pb2.PortNum, "ATAK_PLUGIN_V2", -1)),
-                }
+                portnum_values = {int(portnums_pb2.PortNum.ATAK_PLUGIN)}
+                atak_plugin_v2 = getattr(portnums_pb2.PortNum, "ATAK_PLUGIN_V2", None)
+                if atak_plugin_v2 is not None:
+                    portnum_values.add(int(atak_plugin_v2))
+                return int(portnum) in portnum_values
             except (AttributeError, TypeError, ValueError):
                 return False
         return False
@@ -1706,7 +1710,10 @@ class TAKMeshtasticGateway:
             return None
 
         user = node.get('user', {}) if node else {}
-        raw_uid = user.get('id') or (str(packet.get('fromId') or packet.get('from')) if packet.get('fromId') or packet.get('from') else "MESH-UNKNOWN")
+        from_identifier = packet.get('fromId') or packet.get('from')
+        raw_uid = user.get('id')
+        if not raw_uid:
+            raw_uid = str(from_identifier) if from_identifier else "MESH-UNKNOWN"
         sender_uid = normalize_meshtastic_uid(raw_uid)
         contact = atak_payload.get("contact") or {}
         callsign = (
