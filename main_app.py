@@ -84,6 +84,14 @@ MESHTASTIC_COT_FRAGMENT_TTL_SECONDS = 120
 DEFAULT_MESHTASTIC_CHANNEL_INDEX = 0
 GEOCHAT_UID_PREFIX = "GeoChat."
 TAK_EVENT_PATTERN = re.compile(r"<event\b[^>]*>.*?</event>", re.DOTALL)
+TAK_PING_EVENT_TYPE = "t-x-c-t"
+TAK_PONG_EVENT_TYPE = "t-x-c-t-r"
+# Compiled patterns for detecting WinTAK/ATAK keepalive ping and pong types in CoT XML.
+# Using anchors around the quoted value avoids false positives
+# (e.g. the pong type "t-x-c-t-r" also contains the ping type "t-x-c-t").
+TAK_PING_TYPE_PATTERN = re.compile(r'\btype=["\']t-x-c-t["\']')
+TAK_PONG_TYPE_PATTERN = re.compile(r'\btype=["\']t-x-c-t-r["\']')
+WINTAK_TCP_INBOX_MAX_MESSAGES = 20
 MIN_NULL_BYTES_FOR_UTF16 = 2
 UTF16_NULL_BYTE_RATIO_THRESHOLD = 4
 _WINTAK_CHAT_TRANSCRIPT_LINE_PATTERN = re.compile(
@@ -739,6 +747,7 @@ class GatewayApp:
         self._gateway = None
         self._gateway_thread = None
         self._gui_handler = None
+        self._wintak_last_message = None  # last WinTAK TCP chat text for manual forwarding
 
         try:
             self._root = tk.Tk()
@@ -1202,6 +1211,41 @@ class GatewayApp:
             style="Sub.TLabel",
         ).pack(side="left", padx=(10, 0))
 
+        # ── WinTAK TCP Monitor ──
+        tak_monitor_frame = ttk.LabelFrame(
+            root, text=" 📡  WinTAK-Nachrichten (TCP 127.0.0.1:8087) ", padding=6
+        )
+        tak_monitor_frame.pack(fill="x", padx=10, pady=(6, 0))
+
+        self._wintak_monitor_text = tk.Text(
+            tak_monitor_frame, height=4, wrap="word", state="disabled",
+            bg="#0d1117", fg="#58d68d",
+            font=self._log_font,
+            relief="flat", bd=0,
+        )
+        self._wintak_monitor_text.pack(fill="x", expand=True, padx=2, pady=(0, 4))
+
+        tak_status_row = ttk.Frame(tak_monitor_frame)
+        tak_status_row.pack(fill="x")
+
+        self._wintak_monitor_status_var = tk.StringVar(
+            value="⚪ Warte auf WinTAK-Verbindung auf TCP 127.0.0.1:8087 …"
+        )
+        ttk.Label(
+            tak_status_row,
+            textvariable=self._wintak_monitor_status_var,
+            style="Sub.TLabel",
+        ).pack(side="left", fill="x", expand=True)
+
+        self._wintak_forward_btn = ttk.Button(
+            tak_status_row,
+            text="Letzte Nachricht → Mesh",
+            command=self._on_forward_wintak_msg,
+            state="disabled",
+            style="Accent.TButton",
+        )
+        self._wintak_forward_btn.pack(side="right")
+
         # ── Eingabe / Befehlszeile ──
         input_frame = ttk.LabelFrame(root, text=" ⌨  Befehlseingabe ", padding=6)
         input_frame.pack(fill="x", padx=10, pady=(6, 0))
@@ -1412,6 +1456,8 @@ class GatewayApp:
         try:
             gw = TAKMeshtasticGateway(ports, self.cfg)
             self._gateway = gw
+            # Wire WinTAK TCP monitor callback so the UI shows incoming messages.
+            gw.wintak_tcp_chat_callback = self._on_wintak_tcp_chat
             self._root.after(0, lambda: self._status_var.set(f"🟢 Läuft  –  {', '.join(ports)}"))
             self._root.after(0, lambda: self._send_mesh_test_btn.configure(state="normal"))
             self._root.after(0, lambda: self._mesh_test_status_var.set("Bereit für manuelles Mesh-Test-Senden."))
@@ -1485,6 +1531,55 @@ class GatewayApp:
         self._queue_log(f"Testnachricht erfolgreich ins Mesh gesendet (Interfaces: {total_sent}).", "INFO")
         self._root.after(0, lambda: self._mesh_test_status_var.set(f"✅ Gesendet (Interfaces: {total_sent})."))
         self._root.after(0, lambda: self._mesh_test_message_var.set(""))
+
+    # ─────────────────────────── WinTAK TCP Monitor ───────────────────────────
+
+    def _on_wintak_tcp_chat(self, kind, sender, message, addr=None):
+        """Thread-safe callback invoked by the gateway TCP listener for WinTAK events."""
+        self._root.after(0, self._update_wintak_monitor, kind, sender, message, addr)
+
+    def _update_wintak_monitor(self, kind, sender, message, addr):
+        """Update the WinTAK TCP monitor panel (must be called from the GUI thread)."""
+        if kind == "connect":
+            ip = addr[0] if addr else "?"
+            self._wintak_monitor_status_var.set(f"🟢 WinTAK verbunden von {ip}")
+        elif kind == "disconnect":
+            self._wintak_monitor_status_var.set(
+                "⚪ Warte auf WinTAK-Verbindung auf TCP 127.0.0.1:8087 …"
+            )
+        elif kind == "chat":
+            ts = datetime.datetime.now().strftime("%H:%M:%S")
+            line = f"[{ts}] {sender}: {message}"
+            self._wintak_last_message = message
+            self._wintak_monitor_text.configure(state="normal")
+            self._wintak_monitor_text.insert("end", line + "\n")
+            # Trim the monitor to at most WINTAK_TCP_INBOX_MAX_MESSAGES lines.
+            line_count = int(self._wintak_monitor_text.index("end-1c").split(".")[0])
+            if line_count > WINTAK_TCP_INBOX_MAX_MESSAGES:
+                # Delete excess lines from the top so the widget stays within the limit.
+                lines_to_remove = line_count - WINTAK_TCP_INBOX_MAX_MESSAGES
+                self._wintak_monitor_text.delete("1.0", f"{lines_to_remove + 1}.0")
+            self._wintak_monitor_text.see("end")
+            self._wintak_monitor_text.configure(state="disabled")
+            self._wintak_monitor_status_var.set(f"📨 Zuletzt empfangen [{ts}] von {sender}")
+            self._wintak_forward_btn.configure(state="normal")
+
+    def _on_forward_wintak_msg(self):
+        """Forward the last received WinTAK message manually into the Meshtastic mesh."""
+        msg = self._wintak_last_message
+        if not msg:
+            self._append_log("Keine WinTAK-Nachricht zum Weiterleiten vorhanden.", "WARNING")
+            return
+        gw = self._gateway
+        if not gw:
+            self._append_log("Gateway ist nicht gestartet.", "WARNING")
+            return
+        self._append_log(f"WinTAK-Nachricht wird manuell ins Mesh weitergeleitet: {msg}", "INFO")
+        threading.Thread(
+            target=self._send_mesh_test_message_worker,
+            args=(gw, msg),
+            daemon=True,
+        ).start()
 
     def _on_log_level_change(self, _event=None):
         level_str = self._log_level_var.get()
@@ -1665,6 +1760,11 @@ class TAKMeshtasticGateway:
         self.sock_udp.settimeout(self.SOCKET_TIMEOUT)  # Add timeout to prevent hanging
         self.sock_chat_listeners = []
 
+        # Callback invoked by the TCP listener for connection events and received chat messages.
+        # Signature: callback(kind, sender, message, addr)
+        # kind: "connect" | "disconnect" | "chat"
+        self.wintak_tcp_chat_callback = None
+
         # Remote server socket(s)
         self.sock_remote = None  # für TCP: persistent socket; für UDP: socket used for sendto
 
@@ -1840,6 +1940,21 @@ class TAKMeshtasticGateway:
         if metadata and metadata["uid"]:
             return metadata["uid"]
         return hashlib.sha256(packet_bytes).hexdigest()
+
+    def _build_pong_xml(self):
+        """Build a minimal CoT t-x-c-t-r ping-ack reply for WinTAK/ATAK keepalive pings."""
+        now = datetime.datetime.now(datetime.timezone.utc)
+        stale = now + datetime.timedelta(seconds=30)
+        def _fmt_ts(dt):
+            return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
+        uid = self.gateway_uid or "GW-01"
+        return (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            f'<event version="2.0" uid="{uid}" type="{TAK_PONG_EVENT_TYPE}" how="m-g"'
+            f' time="{_fmt_ts(now)}" start="{_fmt_ts(now)}" stale="{_fmt_ts(stale)}">'
+            '<point lat="0.0" lon="0.0" hae="0.0" ce="9999999.0" le="9999999.0"/>'
+            '<detail/></event>'
+        )
 
     def _register_local_nodes(self):
         for iface in self._get_interfaces_snapshot():
@@ -2769,6 +2884,14 @@ class TAKMeshtasticGateway:
                 self.logger.debug("TAK-Chat wegen Duplikat-Schutz ignoriert.")
                 return
 
+            # Notify the UI so it can display the received WinTAK message.
+            cb = self.wintak_tcp_chat_callback
+            if cb:
+                try:
+                    cb("chat", chat_payload["sender_callsign"], chat_payload["message"], source_addr)
+                except Exception:
+                    pass
+
             try:
                 sent_chunks = self._prepare_meshtastic_text_chunks(chat_payload["message"])
                 total_sent = self._send_text_to_meshtastic(chat_payload["message"], prepared_chunks=sent_chunks)
@@ -2883,6 +3006,12 @@ class TAKMeshtasticGateway:
         probe_buffer = b""
         decoder = None
         conn.settimeout(TCP_SOCKET_TIMEOUT_SECONDS)
+        cb = self.wintak_tcp_chat_callback
+        if cb:
+            try:
+                cb("connect", None, None, addr)
+            except Exception:
+                pass
         try:
             while not self.shutdown_flag.is_set():
                 try:
@@ -2902,6 +3031,18 @@ class TAKMeshtasticGateway:
                     buffer_text += decoder.decode(data)
                     events, buffer_text = self._extract_tak_events_from_stream_buffer(buffer_text)
                     for packet_xml in events:
+                        # Respond to WinTAK/ATAK keepalive pings with a pong so the
+                        # connection stays alive long enough to receive chat messages.
+                        if TAK_PING_TYPE_PATTERN.search(packet_xml) and not TAK_PONG_TYPE_PATTERN.search(packet_xml):
+                            try:
+                                conn.sendall(self._build_pong_xml().encode("utf-8"))
+                                self.logger.debug(
+                                    f"TAK-TCP-Ping von {_format_network_endpoint(addr)} "
+                                    "beantwortet (Pong gesendet)."
+                                )
+                            except OSError:
+                                return
+                            continue
                         raw_packet_bytes = _ensure_bytes(packet_xml)
                         normalized_packet = self._normalize_inbound_tak_packet(packet_xml)
                         packet_size = len(raw_packet_bytes)
@@ -2985,6 +3126,12 @@ class TAKMeshtasticGateway:
         except (OSError, UnicodeError, ValueError):
             self.logger.debug("Fehler beim Lesen einer TAK-TCP-Verbindung:\n" + traceback.format_exc())
         finally:
+            cb = self.wintak_tcp_chat_callback
+            if cb:
+                try:
+                    cb("disconnect", None, None, addr)
+                except Exception:
+                    pass
             try:
                 conn.close()
             except Exception:
