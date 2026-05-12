@@ -298,6 +298,16 @@ def _extract_latest_wintak_chat_attribute_message(element):
     return ""
 
 
+def _looks_like_tak_chat_remarks(remarks):
+    """Return True when a TAK <remarks> element looks like a GeoChat payload."""
+    if remarks is None:
+        return False
+    for attr_name in ("source", "sourceID", "sourceId", "to"):
+        if str(remarks.get(attr_name) or "").strip():
+            return True
+    return False
+
+
 def _ensure_bytes(value):
     if isinstance(value, bytes):
         return value
@@ -2227,8 +2237,9 @@ class TAKMeshtasticGateway:
         chatgrp = _find_descendant_by_local_name(detail, "chatgrp")
         event_uid = root.get("uid") or ""
         event_type = str(root.get("type") or "").lower()
-        if chat is None and chatgrp is None and not event_uid.startswith(GEOCHAT_UID_PREFIX) and not event_type.startswith("b-t-f"):
-            return None
+        has_chat_identity = event_uid.startswith(GEOCHAT_UID_PREFIX) or event_type.startswith("b-t-f")
+        has_chat_elements = any(element is not None for element in (chat, chat_note, chatgrp))
+        has_chat_remarks = _looks_like_tak_chat_remarks(remarks)
 
         message = ""
         if remarks is not None and remarks.text:
@@ -2246,6 +2257,8 @@ class TAKMeshtasticGateway:
                 if message:
                     break
         if not message:
+            return None
+        if not (has_chat_identity or has_chat_elements or has_chat_remarks):
             return None
 
         link = _find_descendant_by_local_name(detail, "link")
@@ -2303,12 +2316,16 @@ class TAKMeshtasticGateway:
         }
 
     def _send_text_to_meshtastic(self, message, prepared_chunks=None):
+        if not self.interfaces:
+            raise RuntimeError("Keine verbundenen Meshtastic-Interfaces verfügbar.")
         chunks = prepared_chunks if prepared_chunks is not None else self._prepare_meshtastic_text_chunks(message)
         if not chunks:
             raise ValueError("Leere TAK-Chatnachricht kann nicht ins Mesh gesendet werden.")
         total_sent = 0
         for chunk in chunks:
             total_sent += len(self._send_text_to_interfaces(chunk, self.interfaces))
+        if total_sent <= 0:
+            raise RuntimeError("TAK-Chat konnte an kein Meshtastic-Interface gesendet werden.")
         return total_sent
 
     def _normalize_inbound_tak_packet(self, packet_xml):
@@ -2471,15 +2488,17 @@ class TAKMeshtasticGateway:
         if chat_payload:
             sender_uid = chat_payload["sender_uid"] or self.gateway_uid
             if sender_uid in self.local_node_ids:
+                self.logger.debug("TAK-Chat vom lokalen Meshtastic-Knoten ignoriert, um Echos zu vermeiden.")
                 return
 
             dedupe_key = chat_payload["event_uid"] or f"tak:{sender_uid}:{chat_payload['message']}"
             if self._was_seen_recently(self.recent_tak_chat_ids, dedupe_key):
+                self.logger.debug("TAK-Chat wegen Duplikat-Schutz ignoriert.")
                 return
 
             try:
                 sent_chunks = self._prepare_meshtastic_text_chunks(chat_payload["message"])
-                self._send_text_to_meshtastic(chat_payload["message"], prepared_chunks=sent_chunks)
+                total_sent = self._send_text_to_meshtastic(chat_payload["message"], prepared_chunks=sent_chunks)
             except Exception as exc:
                 self.logger.warning(f"TAK-Chat konnte nicht ins Mesh gesendet werden: {exc}")
                 self.logger.debug("Fehler beim Senden von TAK-Chat ins Mesh:\n" + traceback.format_exc())
@@ -2490,10 +2509,13 @@ class TAKMeshtasticGateway:
             src = chat_payload["sender_callsign"]
             if len(sent_chunks) > 1:
                 self.logger.info(
-                    f"TAK-Chat wurde in {len(sent_chunks)} Mesh-Nachrichten aufgeteilt: {src}: {chat_payload['message']}"
+                    f"TAK-Chat wurde in {len(sent_chunks)} Mesh-Nachrichten über {total_sent} Interface(s) gesendet: "
+                    f"{src}: {chat_payload['message']}"
                 )
             else:
-                self.logger.info(f"TAK-Chat ins Mesh gesendet: {src}: {chat_payload['message']}")
+                self.logger.info(
+                    f"TAK-Chat ins Mesh über {total_sent} Interface(s) gesendet: {src}: {chat_payload['message']}"
+                )
             return
 
         if metadata is None:
