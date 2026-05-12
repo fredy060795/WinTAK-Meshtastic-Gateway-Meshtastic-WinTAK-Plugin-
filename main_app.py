@@ -15,6 +15,7 @@ import argparse
 import base64
 import datetime
 import hashlib
+import inspect
 import math
 import re
 import socket
@@ -1374,10 +1375,13 @@ class TAKMeshtasticGateway:
     def _cleanup_expired_meshtastic_cot_fragments(self):
         now = time.time()
         with self.chat_cache_lock:
-            expired_keys = [
-                key for key, entry in self.partial_meshtastic_cot_messages.items()
-                if now - entry.get("updated_at", entry.get("created_at", now)) > MESHTASTIC_COT_FRAGMENT_TTL_SECONDS
-            ]
+            expired_keys = []
+            for key, entry in self.partial_meshtastic_cot_messages.items():
+                updated_at = entry.get("updated_at")
+                created_at = entry.get("created_at")
+                last_seen_at = updated_at if updated_at is not None else created_at
+                if last_seen_at is None or now - last_seen_at > MESHTASTIC_COT_FRAGMENT_TTL_SECONDS:
+                    expired_keys.append(key)
             for key in expired_keys:
                 self.partial_meshtastic_cot_messages.pop(key, None)
 
@@ -1569,32 +1573,48 @@ class TAKMeshtasticGateway:
                 return str(value)
         return "unbekannt"
 
+    def _build_meshtastic_send_kwargs(self, iface):
+        try:
+            parameters = inspect.signature(iface.sendText).parameters
+            supports_var_kwargs = any(
+                parameter.kind == inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters.values()
+            )
+        except (TypeError, ValueError):
+            parameters = {}
+            supports_var_kwargs = True
+
+        def supports(name):
+            return supports_var_kwargs or name in parameters
+
+        kwargs = {}
+        if supports("destinationId"):
+            kwargs["destinationId"] = "^all"
+        elif supports("destination_id"):
+            kwargs["destination_id"] = "^all"
+
+        if supports("wantAck"):
+            kwargs["wantAck"] = False
+        elif supports("want_ack"):
+            kwargs["want_ack"] = False
+
+        if supports("channelIndex"):
+            kwargs["channelIndex"] = DEFAULT_MESHTASTIC_CHANNEL_INDEX
+        elif supports("channel_index"):
+            kwargs["channel_index"] = DEFAULT_MESHTASTIC_CHANNEL_INDEX
+        elif supports("channel"):
+            kwargs["channel"] = DEFAULT_MESHTASTIC_CHANNEL_INDEX
+
+        return kwargs
+
     def _send_text_to_interfaces(self, message, interfaces):
         sent_interfaces = []
         last_error = None
         for iface in interfaces:
             try:
                 # Broadcast chat/CoT always on the primary Meshtastic channel 0.
-                send_attempts = (
-                    {"destinationId": "^all", "wantAck": False, "channelIndex": DEFAULT_MESHTASTIC_CHANNEL_INDEX},
-                    {"destinationId": "^all", "wantAck": False, "channel_index": DEFAULT_MESHTASTIC_CHANNEL_INDEX},
-                    {"destinationId": "^all", "wantAck": False, "channel": DEFAULT_MESHTASTIC_CHANNEL_INDEX},
-                    {"wantAck": False, "channelIndex": DEFAULT_MESHTASTIC_CHANNEL_INDEX},
-                    {"wantAck": False, "channel_index": DEFAULT_MESHTASTIC_CHANNEL_INDEX},
-                    {"wantAck": False, "channel": DEFAULT_MESHTASTIC_CHANNEL_INDEX},
-                    {"destinationId": "^all", "wantAck": False},
-                    {"wantAck": False},
-                )
-                sent = False
-                for kwargs in send_attempts:
-                    try:
-                        iface.sendText(message, **kwargs)
-                        sent = True
-                        break
-                    except TypeError:
-                        continue
-                if not sent:
-                    raise TypeError("sendText unterstützt keinen kompatiblen channelIndex/destinationId-Aufruf")
+                kwargs = self._build_meshtastic_send_kwargs(iface)
+                iface.sendText(message, **kwargs)
                 sent_interfaces.append(iface)
             except Exception as exc:
                 last_error = exc
@@ -1721,8 +1741,11 @@ class TAKMeshtasticGateway:
                 return True
             missing_parts = [index for index in range(1, entry["total_parts"] + 1) if index not in entry["parts"]]
             if missing_parts:
+                self.logger.debug(
+                    f"CoT-Fragmentserie aus dem Mesh noch unvollständig ({cache_key}), fehlend: {missing_parts}"
+                )
                 return True
-            encoded_packet = "".join(entry["parts"].get(index, "") for index in range(1, entry["total_parts"] + 1))
+            encoded_packet = "".join(entry["parts"][index] for index in range(1, entry["total_parts"] + 1))
             self.partial_meshtastic_cot_messages.pop(cache_key, None)
 
         if not encoded_packet:
@@ -1893,7 +1916,7 @@ class TAKMeshtasticGateway:
             total_sent += len(self._send_text_to_interfaces(chunk, self.interfaces))
         return total_sent
 
-    def handle_tak_packet(self, packet_xml, source_addr=None):
+    def handle_tak_cot_or_chat(self, packet_xml, source_addr=None):
         chat_payload = self._extract_tak_chat_payload(packet_xml)
         if chat_payload:
             sender_uid = chat_payload["sender_uid"] or self.gateway_uid
@@ -1949,7 +1972,7 @@ class TAKMeshtasticGateway:
         )
 
     def handle_tak_chat_message(self, packet_xml, source_addr=None):
-        self.handle_tak_packet(packet_xml, source_addr=source_addr)
+        self.handle_tak_cot_or_chat(packet_xml, source_addr=source_addr)
 
     def listen_for_tak_chat(self):
         try:
@@ -1977,7 +2000,7 @@ class TAKMeshtasticGateway:
             except Exception:
                 self.logger.debug("Fehler beim Empfangen von TAK-Chat:\n" + traceback.format_exc())
                 continue
-            self.handle_tak_packet(packet_xml.strip(), source_addr=addr)
+            self.handle_tak_cot_or_chat(packet_xml.strip(), source_addr=addr)
 
     def maintain_server(self):
         """
