@@ -101,6 +101,8 @@ UTF16_NULL_BYTE_RATIO_THRESHOLD = 4
 MIN_UPPER_CONTENT_PANE_HEIGHT = 220
 MIN_LOG_PANE_HEIGHT = 180
 INITIAL_UPPER_CONTENT_PANE_RATIO = 0.58
+MIN_VALID_LAYOUT_PANE_HEIGHT = 1
+LAYOUT_INIT_RETRY_DELAY_MS = 50
 _WINTAK_CHAT_TRANSCRIPT_LINE_PATTERN = re.compile(
     r"^\((?P<time>\d{1,2}:\d{2}(?::\d{2})?)\)\s+(?P<sender>.+):(?:\s*(?P<message>.*))?$"
 )
@@ -1409,8 +1411,8 @@ class GatewayApp:
     def _set_initial_content_layout(self):
         try:
             total_height = self._content_pane.winfo_height()
-            if total_height <= 1:
-                self._root.after(50, self._set_initial_content_layout)
+            if total_height <= MIN_VALID_LAYOUT_PANE_HEIGHT:
+                self._root.after(LAYOUT_INIT_RETRY_DELAY_MS, self._set_initial_content_layout)
                 return
             min_top = MIN_UPPER_CONTENT_PANE_HEIGHT
             min_bottom = MIN_LOG_PANE_HEIGHT
