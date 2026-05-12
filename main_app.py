@@ -2840,7 +2840,20 @@ class TAKMeshtasticGateway:
         except (AttributeError, OSError):
             pass
         sock.settimeout(1.0)
-        sock.bind(("", listen_port))
+        bind_targets = [(multicast_group, listen_port)]
+        if self.tak_multicast_interface_ip not in ("0.0.0.0", "", "*"):
+            bind_targets.append((self.tak_multicast_interface_ip, listen_port))
+        last_error = None
+        for bind_target in bind_targets:
+            try:
+                sock.bind(bind_target)
+                break
+            except OSError as exc:
+                last_error = exc
+        else:
+            raise OSError(
+                f"Multicast-Bind fehlgeschlagen für {multicast_group}:{listen_port}"
+            ) from last_error
         membership_request = socket.inet_aton(multicast_group) + socket.inet_aton(
             self.tak_multicast_interface_ip
         )
