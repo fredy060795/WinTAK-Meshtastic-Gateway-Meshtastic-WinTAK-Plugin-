@@ -80,6 +80,7 @@ MESHTASTIC_COT_FRAGMENT_PREFIX = "COTM"
 MESHTASTIC_COT_FRAGMENT_PAYLOAD_BYTES = 140
 MESHTASTIC_COT_FRAGMENT_TTL_SECONDS = 120
 DEFAULT_MESHTASTIC_CHANNEL_INDEX = 0
+GEOCHAT_UID_PREFIX = "GeoChat."
 TAK_EVENT_PATTERN = re.compile(r"<event\b[^>]*>.*?</event>", re.DOTALL)
 MIN_NULL_BYTES_FOR_UTF16 = 2
 UTF16_NULL_BYTE_RATIO_THRESHOLD = 4
@@ -2226,7 +2227,7 @@ class TAKMeshtasticGateway:
         chatgrp = _find_descendant_by_local_name(detail, "chatgrp")
         event_uid = root.get("uid") or ""
         event_type = str(root.get("type") or "").lower()
-        if chat is None and chatgrp is None and not event_uid.startswith("GeoChat.") and not event_type.startswith("b-t-f"):
+        if chat is None and chatgrp is None and not event_uid.startswith(GEOCHAT_UID_PREFIX) and not event_type.startswith("b-t-f"):
             return None
 
         message = ""
@@ -2255,7 +2256,7 @@ class TAKMeshtasticGateway:
             sender_uid = link.get("uid")
         if not sender_uid and remarks is not None:
             sender_uid = remarks.get("sourceID") or remarks.get("source") or sender_uid
-        if not sender_uid and event_uid.startswith("GeoChat.") and len(uid_parts) >= 2:
+        if not sender_uid and event_uid.startswith(GEOCHAT_UID_PREFIX) and len(uid_parts) >= 2:
             sender_uid = uid_parts[1]
         if not sender_uid and chatgrp is not None:
             sender_uid = chatgrp.get("uid0") or chatgrp.get("uid")
@@ -2287,6 +2288,7 @@ class TAKMeshtasticGateway:
             )
         if chatroom == DEFAULT_CHATROOM_NAME and chatgrp is not None:
             chatroom = chatgrp.get("id") or chatgrp.get("name") or chatroom
+        # WinTAK GeoChat UIDs typically follow GeoChat.<sender>.<chatroom>.<messageId>.
         if chatroom == DEFAULT_CHATROOM_NAME and len(uid_parts) >= 3:
             chatroom = uid_parts[2] or chatroom
         if chatroom == DEFAULT_CHATROOM_NAME and remarks is not None:
