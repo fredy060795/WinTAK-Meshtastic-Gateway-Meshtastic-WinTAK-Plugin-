@@ -1860,8 +1860,8 @@ class TAKMeshtasticGateway:
         except (ValueError, TypeError) as e:
             raise ValueError(f"Invalid local_tak_port in config: {e}")
 
-        # LPU5-style interoperability intentionally uses the same default UDP
-        # port for inbound chat/CoT and local TAK delivery.
+        # Match the LPU5 TAK bridge pattern by using the standard TAK UDP port
+        # for both inbound chat/CoT reception and local TAK delivery.
         default_chat_listen_port = self.tak_port
         try:
             chat_listen_port = int(
