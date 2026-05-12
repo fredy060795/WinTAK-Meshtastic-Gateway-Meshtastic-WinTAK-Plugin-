@@ -2023,7 +2023,7 @@ class TAKMeshtasticGateway:
                 if (family, host) in seen:
                     continue
                 seen.add((family, host))
-                should_enable_dual_stack = family == socket.AF_INET6 and host in ("::", requested_ip)
+                should_enable_dual_stack = family == socket.AF_INET6 and requested_ip == "::" and host == "::"
                 bind_attempts.append((family, host, should_enable_dual_stack))
 
         last_error = None
