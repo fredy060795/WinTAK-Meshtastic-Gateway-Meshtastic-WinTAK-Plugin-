@@ -604,10 +604,36 @@ def save_config(cfg):
 
 def detect_serial_port_devices():
     """Return a list of detected serial port device names."""
+    return [entry["device"] for entry in detect_serial_port_details()]
+
+
+def detect_serial_port_details():
+    """Return detected serial ports with human-friendly labels."""
     if serial is None:
         return []
     try:
-        return [p.device for p in serial.tools.list_ports.comports()]
+        details = []
+        for port in serial.tools.list_ports.comports():
+            device = str(getattr(port, "device", "") or "").strip()
+            if not device:
+                continue
+            info_parts = []
+            for value in (
+                getattr(port, "description", None),
+                getattr(port, "manufacturer", None),
+                getattr(port, "product", None),
+            ):
+                text = str(value or "").strip()
+                if not text or text.lower() == "n/a" or text in info_parts:
+                    continue
+                info_parts.append(text)
+            details.append(
+                {
+                    "device": device,
+                    "label": f"{device} - {' | '.join(info_parts)}" if info_parts else device,
+                }
+            )
+        return details
     except Exception:
         return []
 
@@ -1135,12 +1161,15 @@ class GatewayApp:
         self._ports_var = tk.StringVar(value=default_ports)
         ttk.Entry(cfg_frame, textvariable=self._ports_var, width=28).grid(
             row=0, column=1, sticky="ew", padx=(6, 12), pady=(0, 4))
+        self._ports_var.trace_add("write", self._on_ports_var_changed)
 
         # ── Zeile 1: Erkannte Ports-Liste ──
-        detected = detect_serial_port_devices()
+        detected_details = detect_serial_port_details()
+        self._detected_port_details = detected_details
+        detected = [entry["device"] for entry in detected_details]
         self._detected_ports = detected
         self._detected_ports_var = tk.StringVar(
-            value=f"Detected ports: {', '.join(detected) if detected else '–'}"
+            value=self._build_detected_ports_summary(detected_details)
         )
         ttk.Label(cfg_frame, textvariable=self._detected_ports_var, style="Sub.TLabel").grid(
             row=1, column=0, columnspan=4, sticky="w", pady=(0, 2))
@@ -1155,8 +1184,8 @@ class GatewayApp:
                                             command=self._detected_ports_list.yview)
         self._detected_ports_list.configure(yscrollcommand=detected_scrollbar.set)
         detected_scrollbar.grid(row=2, column=2, sticky="nsw", padx=(0, 8), pady=(0, 6))
-        for port in detected:
-            self._detected_ports_list.insert("end", port)
+        for entry in detected_details:
+            self._detected_ports_list.insert("end", entry["label"])
         ttk.Button(
             cfg_frame, text="↩ Use selected ports",
             command=self._apply_selected_ports_from_list
@@ -1243,13 +1272,31 @@ class GatewayApp:
         self._relay_text_to_ports_var = tk.StringVar(
             value=_format_ports_for_entry(self.cfg.get("relay_text_to_ports"))
         )
-        ttk.Entry(cfg_frame, textvariable=self._relay_text_to_ports_var, width=16).grid(
-            row=9, column=3, sticky="ew", pady=(0, 4))
+        self._relay_text_to_ports_var.trace_add("write", self._on_relay_to_ports_changed)
+        relay_to_frame = ttk.Frame(cfg_frame)
+        relay_to_frame.grid(row=9, column=3, columnspan=2, sticky="ew", pady=(0, 4))
+        relay_to_frame.columnconfigure(0, weight=1)
+        self._relay_text_to_picker_var = tk.StringVar()
+        self._relay_text_to_picker = ttk.Combobox(
+            relay_to_frame,
+            textvariable=self._relay_text_to_picker_var,
+            state="readonly",
+            width=28,
+        )
+        self._relay_text_to_picker.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        ttk.Button(
+            relay_to_frame,
+            text="Use",
+            command=self._apply_relay_to_picker_selection,
+        ).grid(row=0, column=1, sticky="ew")
+        ttk.Entry(relay_to_frame, textvariable=self._relay_text_to_ports_var, width=16).grid(
+            row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         ttk.Label(
             cfg_frame,
-            text="Leave Relay From blank to relay from any selected port, and leave Relay To blank to relay to all other selected ports.",
+            text="Leave Relay From blank to relay from any selected port. For Relay To, choose 'All other selected ports' in the dropdown or list custom ports in the field.",
             style="Sub.TLabel",
-        ).grid(row=10, column=0, columnspan=4, sticky="w", pady=(0, 4))
+        ).grid(row=10, column=0, columnspan=5, sticky="w", pady=(0, 4))
+        self._refresh_relay_to_picker_options()
 
         # ── Row 11: GPS fallback ──
         self._send_nodes_without_gps_var = tk.BooleanVar(
@@ -1387,6 +1434,77 @@ class GatewayApp:
         if canvas_width > 1:
             self._scroll_canvas.itemconfigure(self._scroll_window_id, width=canvas_width)
 
+    def _build_detected_ports_summary(self, port_details):
+        if not port_details:
+            return "Detected ports: –"
+        return "Detected ports: " + ", ".join(entry["label"] for entry in port_details)
+
+    def _build_relay_to_picker_values(self):
+        selected_ports = _parse_ports_text(self._ports_var.get())
+        if not selected_ports:
+            selected_ports = list(self._detected_ports)
+        detail_map = {
+            entry["device"].upper(): entry["label"]
+            for entry in getattr(self, "_detected_port_details", [])
+        }
+        picker_values = ["All other selected ports", "Custom list below"]
+        self._relay_text_to_picker_map = {
+            "All other selected ports": "",
+            "Custom list below": None,
+        }
+        for port in selected_ports:
+            display = detail_map.get(port.upper(), port)
+            if display in self._relay_text_to_picker_map:
+                continue
+            self._relay_text_to_picker_map[display] = port
+            picker_values.append(display)
+        return picker_values
+
+    def _refresh_relay_to_picker_options(self):
+        if not hasattr(self, "_relay_text_to_picker"):
+            return
+        picker_values = self._build_relay_to_picker_values()
+        self._relay_text_to_picker.configure(values=picker_values)
+        current_choice = self._relay_text_to_picker_var.get().strip()
+        if current_choice not in picker_values:
+            if self._relay_text_to_ports_var.get().strip():
+                self._relay_text_to_picker_var.set("Custom list below")
+            else:
+                self._relay_text_to_picker_var.set("All other selected ports")
+
+    def _on_ports_var_changed(self, *_):
+        self._refresh_relay_to_picker_options()
+
+    def _on_relay_to_ports_changed(self, *_):
+        if not hasattr(self, "_relay_text_to_picker_var"):
+            return
+        relay_to_text = self._relay_text_to_ports_var.get().strip()
+        current_choice = self._relay_text_to_picker_var.get().strip()
+        if relay_to_text and current_choice == "All other selected ports":
+            self._relay_text_to_picker_var.set("Custom list below")
+        elif not relay_to_text and current_choice == "Custom list below":
+            self._relay_text_to_picker_var.set("All other selected ports")
+
+    def _apply_relay_to_picker_selection(self):
+        selected_display = self._relay_text_to_picker_var.get().strip()
+        if not selected_display:
+            return
+        selected_port = self._relay_text_to_picker_map.get(selected_display)
+        if selected_port == "":
+            self._relay_text_to_ports_var.set("")
+            return
+        if not selected_port:
+            return
+        merged = []
+        seen = set()
+        for port in _parse_ports_text(self._relay_text_to_ports_var.get()) + [selected_port]:
+            upper_port = port.upper()
+            if upper_port in seen:
+                continue
+            seen.add(upper_port)
+            merged.append(port)
+        self._relay_text_to_ports_var.set(", ".join(merged))
+
     def _apply_selected_ports_from_list(self):
         if not self._detected_ports:
             return
@@ -1407,16 +1525,16 @@ class GatewayApp:
             self._ports_var.set(", ".join(merged))
 
     def _refresh_detected_ports(self):
-        self._detected_ports = detect_serial_port_devices()
-        self._detected_ports_var.set(
-            f"Detected ports: {', '.join(self._detected_ports) if self._detected_ports else '–'}"
-        )
+        self._detected_port_details = detect_serial_port_details()
+        self._detected_ports = [entry["device"] for entry in self._detected_port_details]
+        self._detected_ports_var.set(self._build_detected_ports_summary(self._detected_port_details))
         self._detected_ports_list.delete(0, "end")
-        for port in self._detected_ports:
-            self._detected_ports_list.insert("end", port)
+        for entry in self._detected_port_details:
+            self._detected_ports_list.insert("end", entry["label"])
         self._detected_ports_list.configure(
             height=min(max(len(self._detected_ports), 1), MAX_DETECTED_PORTS_DISPLAY)
         )
+        self._refresh_relay_to_picker_options()
 
     def _get_wintak_tcp_port_text(self):
         return self._local_tak_tcp_listen_port_var.get().strip() or str(TCP_LISTENER_DEFAULT_PORT)
@@ -1469,7 +1587,11 @@ class GatewayApp:
         )
         self.cfg["relay_text_messages"] = bool(self._relay_text_messages_var.get())
         relay_from_ports = _parse_ports_text(self._relay_text_from_ports_var.get())
-        relay_to_ports = _parse_ports_text(self._relay_text_to_ports_var.get())
+        relay_to_choice = self._relay_text_to_picker_var.get().strip()
+        if relay_to_choice == "All other selected ports":
+            relay_to_ports = []
+        else:
+            relay_to_ports = _parse_ports_text(self._relay_text_to_ports_var.get())
         selected_ports_upper = {port.upper() for port in ports}
         unknown_relay_from = [port for port in relay_from_ports if port.upper() not in selected_ports_upper]
         unknown_relay_to = [port for port in relay_to_ports if port.upper() not in selected_ports_upper]
