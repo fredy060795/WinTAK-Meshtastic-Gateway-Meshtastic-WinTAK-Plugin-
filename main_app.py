@@ -206,6 +206,7 @@ def _extract_latest_wintak_chat_message(text):
         return ""
 
     transcript_blocks = []
+    saw_transcript_header = False
     current_block = None
     for raw_line in normalized_text.split("\n"):
         line = raw_line.strip()
@@ -216,6 +217,7 @@ def _extract_latest_wintak_chat_message(text):
 
         match = WINTAK_CHAT_TRANSCRIPT_LINE_RE.match(line)
         if match:
+            saw_transcript_header = True
             inline_message = (match.group("message") or "").strip()
             current_block = [inline_message] if inline_message else []
             transcript_blocks.append(current_block)
@@ -228,6 +230,9 @@ def _extract_latest_wintak_chat_message(text):
         message = "\n".join(part for part in block_lines if part).strip()
         if message:
             return message
+
+    if saw_transcript_header:
+        return ""
 
     return normalized_text
 
