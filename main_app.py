@@ -86,9 +86,11 @@ GEOCHAT_UID_PREFIX = "GeoChat."
 TAK_EVENT_PATTERN = re.compile(r"<event\b[^>]*>.*?</event>", re.DOTALL)
 TAK_PING_EVENT_TYPE = "t-x-c-t"
 TAK_PONG_EVENT_TYPE = "t-x-c-t-r"
-# Matches the event type attribute in CoT XML; used to detect WinTAK keepalive pings.
-# Anchors around quotes to avoid false positives (e.g. t-x-c-t-r also contains t-x-c-t).
-_TAK_PING_TYPE_PATTERN = re.compile(r'\btype=["\']t-x-c-t["\']')
+# Compiled patterns for detecting WinTAK/ATAK keepalive ping and pong types in CoT XML.
+# Using anchors around the quoted value avoids false positives
+# (e.g. the pong type "t-x-c-t-r" also contains the ping type "t-x-c-t").
+TAK_PING_TYPE_PATTERN = re.compile(r'\btype=["\']t-x-c-t["\']')
+TAK_PONG_TYPE_PATTERN = re.compile(r'\btype=["\']t-x-c-t-r["\']')
 WINTAK_TCP_INBOX_MAX_MESSAGES = 20
 MIN_NULL_BYTES_FOR_UTF16 = 2
 UTF16_NULL_BYTE_RATIO_THRESHOLD = 4
@@ -1554,7 +1556,9 @@ class GatewayApp:
             # Trim the monitor to at most WINTAK_TCP_INBOX_MAX_MESSAGES lines.
             line_count = int(self._wintak_monitor_text.index("end-1c").split(".")[0])
             if line_count > WINTAK_TCP_INBOX_MAX_MESSAGES:
-                self._wintak_monitor_text.delete("1.0", f"{line_count - WINTAK_TCP_INBOX_MAX_MESSAGES + 1}.0")
+                # Delete excess lines from the top so the widget stays within the limit.
+                lines_to_remove = line_count - WINTAK_TCP_INBOX_MAX_MESSAGES
+                self._wintak_monitor_text.delete("1.0", f"{lines_to_remove + 1}.0")
             self._wintak_monitor_text.see("end")
             self._wintak_monitor_text.configure(state="disabled")
             self._wintak_monitor_status_var.set(f"📨 Zuletzt empfangen [{ts}] von {sender}")
@@ -3029,7 +3033,7 @@ class TAKMeshtasticGateway:
                     for packet_xml in events:
                         # Respond to WinTAK/ATAK keepalive pings with a pong so the
                         # connection stays alive long enough to receive chat messages.
-                        if _TAK_PING_TYPE_PATTERN.search(packet_xml) and TAK_PONG_EVENT_TYPE not in packet_xml:
+                        if TAK_PING_TYPE_PATTERN.search(packet_xml) and not TAK_PONG_TYPE_PATTERN.search(packet_xml):
                             try:
                                 conn.sendall(self._build_pong_xml().encode("utf-8"))
                                 self.logger.debug(
