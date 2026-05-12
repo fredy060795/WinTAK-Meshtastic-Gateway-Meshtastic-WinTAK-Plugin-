@@ -72,6 +72,9 @@ MESHTASTIC_COT_FRAGMENT_PREFIX = "COTM"
 MESHTASTIC_COT_FRAGMENT_PAYLOAD_BYTES = 140
 MESHTASTIC_COT_FRAGMENT_TTL_SECONDS = 120
 DEFAULT_MESHTASTIC_CHANNEL_INDEX = 0
+WINTAK_CHAT_TRANSCRIPT_LINE_RE = re.compile(
+    r"^\((?P<time>\d{1,2}:\d{2}(?::\d{2})?)\)\s+(?P<sender>.+?):(?:\s*(?P<message>.*))?$"
+)
 
 
 def get_tak_timestamp():
@@ -194,6 +197,39 @@ def _collect_xml_text(element):
         return ""
     text_parts = [text.strip() for text in element.itertext() if text and text.strip()]
     return "\n".join(text_parts)
+
+
+def _extract_latest_wintak_chat_message(text):
+    """Collapse WinTAK transcript exports to the newest message body."""
+    normalized_text = str(text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not normalized_text:
+        return ""
+
+    transcript_blocks = []
+    current_block = None
+    for raw_line in normalized_text.split("\n"):
+        line = raw_line.strip()
+        if not line:
+            if current_block is not None:
+                current_block.append("")
+            continue
+
+        match = WINTAK_CHAT_TRANSCRIPT_LINE_RE.match(line)
+        if match:
+            inline_message = (match.group("message") or "").strip()
+            current_block = [inline_message] if inline_message else []
+            transcript_blocks.append(current_block)
+            continue
+
+        if current_block is not None:
+            current_block.append(line)
+
+    for block_lines in reversed(transcript_blocks):
+        message = "\n".join(part for part in block_lines if part).strip()
+        if message:
+            return message
+
+    return normalized_text
 
 
 def _ensure_bytes(value):
@@ -1848,20 +1884,20 @@ class TAKMeshtasticGateway:
 
         message = ""
         if remarks is not None and remarks.text:
-            message = remarks.text.strip()
+            message = _extract_latest_wintak_chat_message(remarks.text)
         note = _find_descendant_by_local_name(detail, "note")
         if not message:
             for element in (note, chat_note, chat, remarks, chatgrp):
                 if element is None:
                     continue
-                candidate_text = _collect_xml_text(element)
+                candidate_text = _extract_latest_wintak_chat_message(_collect_xml_text(element))
                 if candidate_text:
                     message = candidate_text
                     break
                 for attr in ("message", "text", "note", "remarks"):
                     attr_value = element.get(attr)
                     if attr_value and attr_value.strip():
-                        message = attr_value.strip()
+                        message = _extract_latest_wintak_chat_message(attr_value)
                         break
                 if message:
                     break
