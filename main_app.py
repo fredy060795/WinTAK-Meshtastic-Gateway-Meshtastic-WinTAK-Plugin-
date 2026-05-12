@@ -26,6 +26,7 @@ import logging
 import threading
 import traceback
 import uuid
+import zlib
 from xml.etree.ElementTree import Element, ParseError, SubElement, tostring, fromstring
 try:
     import tkinter as tk
@@ -87,6 +88,8 @@ MESHTASTIC_COT_FRAGMENT_PREFIX = "COTM"
 MESHTASTIC_COT_FRAGMENT_PAYLOAD_BYTES = 140
 MESHTASTIC_COT_FRAGMENT_TTL_SECONDS = 120
 DEFAULT_MESHTASTIC_CHANNEL_INDEX = 0
+MESHTASTIC_ATAK_PLUGIN_PORTNUM = 72
+MESHTASTIC_ATAK_FORWARDER_PORTNUM = 257
 GEOCHAT_UID_PREFIX = "GeoChat."
 TAK_EVENT_PATTERN = re.compile(r"<event\b[^>]*>.*?</event>", re.DOTALL)
 TAK_PING_EVENT_TYPE = "t-x-c-t"
@@ -2111,6 +2114,20 @@ class TAKMeshtasticGateway:
                 return False
         return False
 
+    def _is_atak_forwarder_packet(self, packet):
+        decoded = packet.get("decoded") or {}
+        if not isinstance(decoded, dict):
+            return False
+        portnum = decoded.get("portnum")
+        if portnum is None:
+            return False
+        if str(portnum).upper() == "ATAK_FORWARDER":
+            return True
+        try:
+            return int(portnum) == MESHTASTIC_ATAK_FORWARDER_PORTNUM
+        except (TypeError, ValueError):
+            return False
+
     def _extract_meshtastic_chat_payload(self, packet, node=None):
         decoded = packet.get("decoded") or {}
         if not isinstance(decoded, dict):
@@ -2394,6 +2411,50 @@ class TAKMeshtasticGateway:
 
         return kwargs
 
+    def _build_meshtastic_send_data_kwargs(self, iface, portnum):
+        send_data = getattr(iface, "sendData", None)
+        if send_data is None:
+            raise AttributeError("Meshtastic-Interface unterstützt sendData nicht.")
+        try:
+            parameters = inspect.signature(send_data).parameters
+            supports_var_kwargs = any(
+                parameter.kind == inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters.values()
+            )
+        except (TypeError, ValueError):
+            parameters = {}
+            supports_var_kwargs = True
+
+        def supports(name):
+            return supports_var_kwargs or name in parameters
+
+        kwargs = {}
+        if supports("destinationId"):
+            kwargs["destinationId"] = "^all"
+        elif supports("destination_id"):
+            kwargs["destination_id"] = "^all"
+
+        if supports("wantAck"):
+            kwargs["wantAck"] = False
+        elif supports("want_ack"):
+            kwargs["want_ack"] = False
+
+        if supports("channelIndex"):
+            kwargs["channelIndex"] = DEFAULT_MESHTASTIC_CHANNEL_INDEX
+        elif supports("channel_index"):
+            kwargs["channel_index"] = DEFAULT_MESHTASTIC_CHANNEL_INDEX
+        elif supports("channel"):
+            kwargs["channel"] = DEFAULT_MESHTASTIC_CHANNEL_INDEX
+
+        if supports("portNum"):
+            kwargs["portNum"] = portnum
+        elif supports("portnum"):
+            kwargs["portnum"] = portnum
+        elif supports("port_num"):
+            kwargs["port_num"] = portnum
+
+        return kwargs
+
     def _send_text_to_interfaces(self, message, interfaces, allow_reconnect=True):
         interfaces = [iface for iface in (interfaces or []) if iface is not None]
         if not interfaces:
@@ -2422,6 +2483,40 @@ class TAKMeshtasticGateway:
                 except Exception as retry_exc:
                     self.logger.warning(
                         "Meshtastic-Senden ist auch nach COM-Neuverbindung fehlgeschlagen: "
+                        f"erst '{last_error}', dann '{retry_exc}'"
+                    )
+                    raise retry_exc from last_error
+        if not sent_interfaces and last_error is not None:
+            raise last_error
+        return sent_interfaces
+
+    def _send_data_to_interfaces(self, payload, interfaces, portnum, allow_reconnect=True):
+        interfaces = [iface for iface in (interfaces or []) if iface is not None]
+        if not interfaces:
+            if allow_reconnect:
+                interfaces = self._ensure_meshtastic_interfaces(raise_on_empty=True)
+            else:
+                raise RuntimeError("Keine verbundenen Meshtastic-Interfaces verfügbar.")
+        sent_interfaces = []
+        last_error = None
+        for iface in interfaces:
+            try:
+                kwargs = self._build_meshtastic_send_data_kwargs(iface, portnum)
+                iface.sendData(payload, **kwargs)
+                sent_interfaces.append(iface)
+            except Exception as exc:
+                last_error = exc
+                self.logger.warning(
+                    f"Fehler beim Senden eines Meshtastic-Datenpakets auf {self._get_interface_label(iface)}: {exc}"
+                )
+        if not sent_interfaces and last_error is not None and allow_reconnect:
+            retry_interfaces = self._ensure_meshtastic_interfaces(reconnect=True, reason=str(last_error))
+            if retry_interfaces:
+                try:
+                    return self._send_data_to_interfaces(payload, retry_interfaces, portnum, allow_reconnect=False)
+                except Exception as retry_exc:
+                    self.logger.warning(
+                        "Meshtastic-Datensenden ist auch nach COM-Neuverbindung fehlgeschlagen: "
                         f"erst '{last_error}', dann '{retry_exc}'"
                     )
                     raise retry_exc from last_error
@@ -2514,8 +2609,67 @@ class TAKMeshtasticGateway:
             "payload": payload,
         }
 
+    def _prepare_meshtastic_forwarder_payload(self, packet_xml):
+        packet_bytes = _ensure_bytes(packet_xml).strip()
+        if not packet_bytes:
+            return b""
+        return zlib.compress(packet_bytes)
+
+    def _decode_meshtastic_forwarder_payload(self, payload):
+        payload_bytes = _ensure_bytes(payload).strip()
+        if not payload_bytes:
+            return None
+        for wbits in (zlib.MAX_WBITS, -zlib.MAX_WBITS):
+            try:
+                return zlib.decompress(payload_bytes, wbits)
+            except zlib.error:
+                continue
+        if payload_bytes.lstrip().startswith(b"<"):
+            return payload_bytes
+        return None
+
+    def _forward_meshtastic_cot_xml_to_tak(self, packet_xml, from_id, source_label="Mesh-CoT"):
+        cot_dedupe_key = self._build_cot_dedupe_key(packet_xml)
+        if cot_dedupe_key and self._was_seen_recently(self.recent_cot_ids, cot_dedupe_key):
+            return True
+
+        metadata = self._extract_cot_event_metadata(packet_xml)
+        if metadata is None:
+            self.logger.warning(f"{source_label} verworfen: empfangene Nachricht ist kein gültiges CoT-Event.")
+            return True
+
+        self._send_packet_to_tak(packet_xml, metadata["uid"] or f"{source_label} {from_id}")
+        self.logger.info(
+            f"CoT aus dem Mesh nach TAK weitergeleitet: {metadata['uid'] or f'ohne UID von {from_id}'}"
+        )
+        return True
+
+    def _handle_meshtastic_forwarder_packet(self, packet, from_id):
+        decoded = packet.get("decoded") or {}
+        if not isinstance(decoded, dict):
+            return False
+        payload = decoded.get("payload")
+        if not isinstance(payload, (bytes, bytearray)):
+            return False
+        packet_xml = self._decode_meshtastic_forwarder_payload(payload)
+        if not packet_xml:
+            self.logger.warning("ATAK_FORWARDER-Payload aus dem Mesh konnte nicht dekodiert werden.")
+            return True
+        return self._forward_meshtastic_cot_xml_to_tak(packet_xml, from_id, source_label="ATAK_FORWARDER")
+
     def _forward_cot_to_meshtastic(self, packet_xml):
         interfaces = self._ensure_meshtastic_interfaces(raise_on_empty=True)
+        forwarder_payload = self._prepare_meshtastic_forwarder_payload(packet_xml)
+        if not forwarder_payload:
+            raise ValueError("Leere CoT-Nachricht kann nicht ins Mesh gesendet werden.")
+        try:
+            self._send_data_to_interfaces(forwarder_payload, interfaces, MESHTASTIC_ATAK_FORWARDER_PORTNUM)
+            return ["ATAK_FORWARDER"]
+        except Exception as exc:
+            self.logger.warning(
+                "ATAK_FORWARDER-Senden fehlgeschlagen, versuche Legacy-CoT-Fragmente als Fallback: "
+                f"{exc}"
+            )
         cot_chunks = self._prepare_meshtastic_cot_chunks(packet_xml)
         if not cot_chunks:
             raise ValueError("Leere CoT-Nachricht kann nicht ins Mesh gesendet werden.")
@@ -2564,20 +2718,7 @@ class TAKMeshtasticGateway:
             self.logger.debug("Fehler beim Dekodieren einer Mesh-CoT-Nachricht:\n" + traceback.format_exc())
             return True
 
-        cot_dedupe_key = self._build_cot_dedupe_key(packet_xml)
-        if cot_dedupe_key and self._was_seen_recently(self.recent_cot_ids, cot_dedupe_key):
-            return True
-
-        metadata = self._extract_cot_event_metadata(packet_xml)
-        if metadata is None:
-            self.logger.warning("Mesh-CoT verworfen: empfangene Nachricht ist kein gültiges CoT-Event.")
-            return True
-
-        self._send_packet_to_tak(packet_xml, metadata["uid"] or f"Mesh-CoT {from_id}")
-        self.logger.info(
-            f"CoT aus dem Mesh nach TAK weitergeleitet: {metadata['uid'] or f'ohne UID von {from_id}'}"
-        )
-        return True
+        return self._forward_meshtastic_cot_xml_to_tak(packet_xml, from_id)
 
     def send_chat_to_tak(self, sender_uid, callsign, message, lat, lon, alt=0.0, chatroom=DEFAULT_CHATROOM_NAME):
         try:
@@ -3058,10 +3199,10 @@ class TAKMeshtasticGateway:
             return
         if cot_dedupe_key:
             self._remember_recent_chat(self.recent_cot_ids, cot_dedupe_key)
-        self.logger.info(
-            f"TAK-CoT ins Mesh gesendet: {metadata['uid'] or 'ohne UID'} "
-            f"({len(sent_chunks)} Fragment{'e' if len(sent_chunks) != 1 else ''})"
-        )
+        transport_label = "ATAK_FORWARDER-Paket"
+        if sent_chunks != ["ATAK_FORWARDER"]:
+            transport_label = f"{len(sent_chunks)} Legacy-Fragment{'e' if len(sent_chunks) != 1 else ''}"
+        self.logger.info(f"TAK-CoT ins Mesh gesendet: {metadata['uid'] or 'ohne UID'} ({transport_label})")
 
     def handle_tak_chat_message(self, packet_xml, source_addr=None, source_protocol=None):
         """Backward-compatible alias for existing callers of the TAK listener packet handler."""
@@ -3399,6 +3540,8 @@ class TAKMeshtasticGateway:
             self.logger.debug(f"RAW Paket empfangen: {packet}")
             from_id = packet.get('fromId') or packet.get('from')
             node = self._find_node_for_packet(interface, from_id)
+            if self._is_atak_forwarder_packet(packet):
+                self._handle_meshtastic_forwarder_packet(packet, from_id or "MESH-UNKNOWN")
             if self._is_text_message_packet(packet) or self._is_atak_plugin_packet(packet):
                 self.process_meshtastic_text_message(packet, node=node, source_interface=interface)
             if from_id and node:
