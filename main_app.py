@@ -1658,8 +1658,9 @@ class TAKMeshtasticGateway:
             for element in (note, chat_note, chat, remarks, chatgrp):
                 if element is None:
                     continue
-                message = _collect_xml_text(element)
-                if message:
+                candidate_text = _collect_xml_text(element)
+                if candidate_text:
+                    message = candidate_text
                     break
                 for attr in ("message", "text", "note", "remarks"):
                     attr_value = element.get(attr)
