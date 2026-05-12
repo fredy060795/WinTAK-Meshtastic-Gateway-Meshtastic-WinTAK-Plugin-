@@ -1425,7 +1425,7 @@ class TAKMeshtasticGateway:
             return
 
         message_id = packet.get('id')
-        message_hash = hashlib.sha1(message.encode("utf-8", errors="ignore")).hexdigest()
+        message_hash = hashlib.sha256(message.encode("utf-8", errors="ignore")).hexdigest()
         dedupe_key = f"mesh:{message_id}" if message_id is not None else f"mesh:{from_id}:{message_hash}"
         if self._was_seen_recently(self.recent_meshtastic_chat_ids, dedupe_key):
             return
