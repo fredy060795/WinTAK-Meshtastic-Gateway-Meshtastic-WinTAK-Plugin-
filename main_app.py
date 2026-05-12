@@ -62,6 +62,7 @@ MAX_DETECTED_PORTS_DISPLAY = 6
 MIN_PORT_NUMBER = 1
 MAX_PORT_NUMBER = 65535
 DEFAULT_CHATROOM_NAME = "All Chat Rooms"
+DEFAULT_CHAT_LISTEN_PORT = 4243
 RECENT_CHAT_CACHE_TTL_SECONDS = 30
 RECENT_CHAT_CACHE_MAX_ENTRIES = 256
 
@@ -662,7 +663,7 @@ class GatewayApp:
 
         cfg_label("Chat Listen Port:", row=7, col=0, pady=(0, 4))
         self._local_tak_chat_listen_port_var = tk.StringVar(
-            value=str(self.cfg.get("local_tak_chat_listen_port", 4243))
+            value=str(self.cfg.get("local_tak_chat_listen_port", DEFAULT_CHAT_LISTEN_PORT))
         )
         ttk.Entry(cfg_frame, textvariable=self._local_tak_chat_listen_port_var, width=10).grid(
             row=7, column=1, sticky="w", padx=(6, 12), pady=(0, 4))
@@ -846,7 +847,10 @@ class GatewayApp:
             self._local_tak_chat_listen_port_var.get(), "Local TAK Chat Listen Port"
         )
         if self.cfg["local_tak_chat_listen_port"] == self.cfg["local_tak_port"]:
-            raise ValueError("Local TAK Chat Listen Port must differ from Local TAK Port.")
+            raise ValueError(
+                f"Local TAK Chat Listen Port ({self.cfg['local_tak_chat_listen_port']}) "
+                f"must differ from Local TAK Port ({self.cfg['local_tak_port']})."
+            )
         self.cfg["sync_interval_seconds"] = self._parse_int_field(
             self._sync_interval_var.get(), "Sync-Intervall", min_value=1, max_value=86400
         )
@@ -1102,7 +1106,7 @@ class TAKMeshtasticGateway:
         except (ValueError, TypeError) as e:
             raise ValueError(f"Invalid local_tak_port in config: {e}")
 
-        default_chat_listen_port = self.tak_port + 1 if self.tak_port < MAX_PORT_NUMBER else 4243
+        default_chat_listen_port = self.tak_port + 1 if self.tak_port < MAX_PORT_NUMBER else DEFAULT_CHAT_LISTEN_PORT
         try:
             chat_listen_port = int(
                 self.cfg.get(
@@ -1470,7 +1474,7 @@ class TAKMeshtasticGateway:
         if not sender_callsign and contact is not None:
             sender_callsign = contact.get("callsign")
         if not sender_callsign:
-            sender_callsign = sender_uid or self.gateway_callsign
+            sender_callsign = "UNKNOWN-SENDER"
 
         return {
             "event_uid": root.get("uid"),
@@ -1485,8 +1489,8 @@ class TAKMeshtasticGateway:
         last_error = None
         for iface in self.interfaces:
             try:
-                # Broadcast chat to the mesh; ACKs are disabled because this is a broadcast operation
-                # and ACK traffic would add noise without giving a reliable per-recipient guarantee.
+                # Broadcast chat to the mesh; broadcast messages cannot be acknowledged per recipient
+                # at the protocol level, so enabling ACKs would not provide meaningful delivery feedback.
                 iface.sendText(message, wantAck=False)
                 sent_count += 1
             except Exception as exc:
