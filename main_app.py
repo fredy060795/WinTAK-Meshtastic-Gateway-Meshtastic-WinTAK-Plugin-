@@ -73,6 +73,7 @@ TCP_LISTENER_BACKLOG = 5
 TCP_RECV_BUFFER_SIZE = 4096
 MAX_TCP_STREAM_BUFFER_BYTES = 262144
 TCP_STREAM_BUFFER_TAIL_BYTES = 64
+INBOUND_TAK_DEBUG_SNIPPET_CHARS = 240
 UTF8_BOM_CHAR = "\ufeff"
 RECENT_CHAT_CACHE_TTL_SECONDS = 30
 RECENT_CHAT_CACHE_MAX_ENTRIES = 256
@@ -88,7 +89,10 @@ UTF16_NULL_BYTE_RATIO_THRESHOLD = 4
 _WINTAK_CHAT_TRANSCRIPT_LINE_PATTERN = re.compile(
     r"^\((?P<time>\d{1,2}:\d{2}(?::\d{2})?)\)\s+(?P<sender>.+):(?:\s*(?P<message>.*))?$"
 )
-_WINTAK_CHAT_FIELD_PATTERN = re.compile(r"^(?:message|text|note|remarks)(?P<index>\d+)?$", re.IGNORECASE)
+_WINTAK_CHAT_FIELD_PATTERN = re.compile(
+    r"^(?:message|text|note|remarks|body|content)(?P<index>\d+)?$",
+    re.IGNORECASE,
+)
 
 
 def get_tak_timestamp():
@@ -307,6 +311,32 @@ def _looks_like_tak_chat_remarks(remarks):
         if str(remarks.get(attr_name) or "").strip():
             return True
     return False
+
+
+def _format_network_endpoint(address):
+    """Render IPv4/IPv6 socket addresses in a compact log-friendly form."""
+    if not address:
+        return "unbekannt"
+    if isinstance(address, (tuple, list)) and address:
+        host = str(address[0])
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        if len(address) >= 2 and address[1] is not None:
+            return f"{host}:{address[1]}"
+        return host
+    return str(address)
+
+
+def _build_safe_payload_snippet(payload, limit=INBOUND_TAK_DEBUG_SNIPPET_CHARS):
+    """Return a single-line, truncated payload preview for DEBUG diagnostics."""
+    if isinstance(payload, (bytes, bytearray)):
+        text = bytes(payload).decode("utf-8", errors="replace")
+    else:
+        text = str(payload or "")
+    compact = " ".join(text.replace("\x00", " ").replace("\r", "\n").split())
+    if len(compact) > limit:
+        return compact[:limit] + "…"
+    return compact
 
 
 def _ensure_bytes(value):
@@ -2416,13 +2446,19 @@ class TAKMeshtasticGateway:
         has_chat_identity = event_uid.startswith(GEOCHAT_UID_PREFIX) or event_type.startswith("b-t-f")
         has_chat_elements = any(element is not None for element in (chat, chat_note, chatgrp))
         has_chat_remarks = _looks_like_tak_chat_remarks(remarks)
+        generic_message_nodes = []
+        for element in detail.iter():
+            if element is detail:
+                continue
+            if _xml_local_name(element.tag).lower() in {"message", "text", "body", "content"}:
+                generic_message_nodes.append(element)
 
         message = ""
         if remarks is not None and remarks.text:
             message = _extract_latest_wintak_chat_message(remarks.text)
         note = _find_descendant_by_local_name(detail, "note")
         if not message:
-            for element in (note, chat_note, chat, remarks, chatgrp):
+            for element in (note, chat_note, chat, remarks, chatgrp, *generic_message_nodes):
                 if element is None:
                     continue
                 candidate_text = _extract_latest_wintak_chat_message(_collect_xml_text(element))
@@ -2432,6 +2468,8 @@ class TAKMeshtasticGateway:
                 message = _extract_latest_wintak_chat_attribute_message(element)
                 if message:
                     break
+        if not message:
+            message = _extract_latest_wintak_chat_attribute_message(detail)
         if not message:
             return None
         if not (has_chat_identity or has_chat_elements or has_chat_remarks):
@@ -2653,15 +2691,73 @@ class TAKMeshtasticGateway:
             raise last_error
         raise OSError("Kein TCP-Listener-Socket konnte erstellt werden.")
 
-    def handle_inbound_tak_packet(self, packet_xml, source_addr=None, source_protocol=None):
+    def _log_inbound_tak_diagnostics(
+        self,
+        source_addr=None,
+        source_protocol=None,
+        listener_port=None,
+        packet_size=None,
+        was_normalized=None,
+        is_cot_event=None,
+        is_chat_payload=None,
+        payload_snippet=None,
+        discard_reason=None,
+    ):
+        if not self.logger.isEnabledFor(logging.DEBUG):
+            return
+
+        def _format_flag(value):
+            if value is True:
+                return "ja"
+            if value is False:
+                return "nein"
+            return "unbekannt"
+
+        message = (
+            "TAK-Inbound-Diagnose: "
+            f"proto={str(source_protocol or DEFAULT_SOURCE_PROTOCOL).upper()} "
+            f"quelle={_format_network_endpoint(source_addr)} "
+            f"listener_port={listener_port if listener_port is not None else '-'} "
+            f"groesse={packet_size if packet_size is not None else '-'} "
+            f"normalisiert={_format_flag(was_normalized)} "
+            f"cot_event={_format_flag(is_cot_event)} "
+            f"chat_payload={_format_flag(is_chat_payload)}"
+        )
+        if discard_reason:
+            message += f" grund={discard_reason}"
+        if payload_snippet:
+            message += f" snippet={payload_snippet!r}"
+        self.logger.debug(message)
+
+    def handle_inbound_tak_packet(
+        self,
+        packet_xml,
+        source_addr=None,
+        source_protocol=None,
+        listener_port=None,
+        packet_size=None,
+        was_normalized=None,
+    ):
         metadata = self._extract_cot_event_metadata(packet_xml)
+
+        chat_payload = self._extract_tak_chat_payload(packet_xml)
+        self._log_inbound_tak_diagnostics(
+            source_addr=source_addr,
+            source_protocol=source_protocol,
+            listener_port=listener_port,
+            packet_size=packet_size if packet_size is not None else len(_ensure_bytes(packet_xml)),
+            was_normalized=was_normalized,
+            is_cot_event=metadata is not None,
+            is_chat_payload=bool(chat_payload),
+        )
+
         cot_dedupe_key = None
         if metadata is not None:
             cot_dedupe_key = metadata["uid"] or self._build_cot_dedupe_key(packet_xml)
             if cot_dedupe_key and self._was_seen_recently(self.recent_cot_ids, cot_dedupe_key):
+                self.logger.debug("TAK-CoT wegen Duplikat-Schutz ignoriert.")
                 return
 
-        chat_payload = self._extract_tak_chat_payload(packet_xml)
         if chat_payload:
             sender_uid = chat_payload["sender_uid"] or self.gateway_uid
             if sender_uid in self.local_node_ids:
@@ -2696,10 +2792,16 @@ class TAKMeshtasticGateway:
             return
 
         if metadata is None:
-            protocol_label = str(source_protocol or DEFAULT_SOURCE_PROTOCOL).upper()
-            self.logger.debug(
-                f"{protocol_label}-Paket am TAK-Listener empfangen, aber nicht als CoT erkannt"
-                + (f" ({source_addr[0]}:{source_addr[1]})" if source_addr else "")
+            self._log_inbound_tak_diagnostics(
+                source_addr=source_addr,
+                source_protocol=source_protocol,
+                listener_port=listener_port,
+                packet_size=packet_size if packet_size is not None else len(_ensure_bytes(packet_xml)),
+                was_normalized=was_normalized,
+                is_cot_event=False,
+                is_chat_payload=False,
+                payload_snippet=_build_safe_payload_snippet(packet_xml),
+                discard_reason="nicht als CoT oder Chat erkannt",
             )
             return
 
@@ -2750,10 +2852,30 @@ class TAKMeshtasticGateway:
             except Exception:
                 self.logger.debug("Fehler beim Empfangen von TAK-Chat:\n" + traceback.format_exc())
                 continue
+            packet_size = len(_ensure_bytes(packet_xml))
             normalized_packet = self._normalize_inbound_tak_packet(packet_xml)
+            was_normalized = bool(normalized_packet) and _ensure_bytes(normalized_packet) != _ensure_bytes(packet_xml)
             if not normalized_packet:
+                self._log_inbound_tak_diagnostics(
+                    source_addr=addr,
+                    source_protocol="UDP",
+                    listener_port=listen_port,
+                    packet_size=packet_size,
+                    was_normalized=False,
+                    is_cot_event=False,
+                    is_chat_payload=False,
+                    payload_snippet=_build_safe_payload_snippet(packet_xml),
+                    discard_reason="Paket konnte nicht zu einem TAK-Event normalisiert werden",
+                )
                 continue
-            self.handle_inbound_tak_packet(normalized_packet, source_addr=addr, source_protocol="UDP")
+            self.handle_inbound_tak_packet(
+                normalized_packet,
+                source_addr=addr,
+                source_protocol="UDP",
+                listener_port=listen_port,
+                packet_size=packet_size,
+                was_normalized=was_normalized,
+            )
 
     def _handle_tak_tcp_client(self, conn, addr):
         buffer_text = ""
@@ -2780,9 +2902,29 @@ class TAKMeshtasticGateway:
                     events, buffer_text = self._extract_tak_events_from_stream_buffer(buffer_text)
                     for packet_xml in events:
                         normalized_packet = self._normalize_inbound_tak_packet(packet_xml)
+                        packet_size = len(_ensure_bytes(packet_xml))
+                        was_normalized = bool(normalized_packet) and _ensure_bytes(normalized_packet) != _ensure_bytes(packet_xml)
                         if not normalized_packet:
+                            self._log_inbound_tak_diagnostics(
+                                source_addr=addr,
+                                source_protocol="TCP",
+                                listener_port=self.tcp_chat_listen_port,
+                                packet_size=packet_size,
+                                was_normalized=False,
+                                is_cot_event=False,
+                                is_chat_payload=False,
+                                payload_snippet=_build_safe_payload_snippet(packet_xml),
+                                discard_reason="TCP-Event konnte nicht zu einem TAK-Event normalisiert werden",
+                            )
                             continue
-                        self.handle_inbound_tak_packet(normalized_packet, source_addr=addr, source_protocol="TCP")
+                        self.handle_inbound_tak_packet(
+                            normalized_packet,
+                            source_addr=addr,
+                            source_protocol="TCP",
+                            listener_port=self.tcp_chat_listen_port,
+                            packet_size=packet_size,
+                            was_normalized=was_normalized,
+                        )
                 except socket.timeout:
                     continue
             if decoder is not None:
@@ -2790,13 +2932,52 @@ class TAKMeshtasticGateway:
             elif probe_buffer:
                 normalized_packet = self._normalize_inbound_tak_packet(probe_buffer)
                 if normalized_packet:
-                    self.handle_inbound_tak_packet(normalized_packet, source_addr=addr, source_protocol="TCP")
+                    self.handle_inbound_tak_packet(
+                        normalized_packet,
+                        source_addr=addr,
+                        source_protocol="TCP",
+                        listener_port=self.tcp_chat_listen_port,
+                        packet_size=len(_ensure_bytes(probe_buffer)),
+                        was_normalized=_ensure_bytes(normalized_packet) != _ensure_bytes(probe_buffer),
+                    )
+                else:
+                    self._log_inbound_tak_diagnostics(
+                        source_addr=addr,
+                        source_protocol="TCP",
+                        listener_port=self.tcp_chat_listen_port,
+                        packet_size=len(_ensure_bytes(probe_buffer)),
+                        was_normalized=False,
+                        is_cot_event=False,
+                        is_chat_payload=False,
+                        payload_snippet=_build_safe_payload_snippet(probe_buffer),
+                        discard_reason="TCP-Probe konnte nicht zu einem TAK-Event normalisiert werden",
+                    )
             events, buffer_text = self._extract_tak_events_from_stream_buffer(buffer_text)
             for packet_xml in events:
                 normalized_packet = self._normalize_inbound_tak_packet(packet_xml)
+                packet_size = len(_ensure_bytes(packet_xml))
+                was_normalized = bool(normalized_packet) and _ensure_bytes(normalized_packet) != _ensure_bytes(packet_xml)
                 if not normalized_packet:
+                    self._log_inbound_tak_diagnostics(
+                        source_addr=addr,
+                        source_protocol="TCP",
+                        listener_port=self.tcp_chat_listen_port,
+                        packet_size=packet_size,
+                        was_normalized=False,
+                        is_cot_event=False,
+                        is_chat_payload=False,
+                        payload_snippet=_build_safe_payload_snippet(packet_xml),
+                        discard_reason="TCP-Stream-Event konnte nicht zu einem TAK-Event normalisiert werden",
+                    )
                     continue
-                self.handle_inbound_tak_packet(normalized_packet, source_addr=addr, source_protocol="TCP")
+                self.handle_inbound_tak_packet(
+                    normalized_packet,
+                    source_addr=addr,
+                    source_protocol="TCP",
+                    listener_port=self.tcp_chat_listen_port,
+                    packet_size=packet_size,
+                    was_normalized=was_normalized,
+                )
         except (OSError, UnicodeError, ValueError):
             self.logger.debug("Fehler beim Lesen einer TAK-TCP-Verbindung:\n" + traceback.format_exc())
         finally:
@@ -2829,6 +3010,10 @@ class TAKMeshtasticGateway:
             except Exception:
                 self.logger.debug("Fehler beim Annehmen einer TAK-TCP-Verbindung:\n" + traceback.format_exc())
                 continue
+            self.logger.debug(
+                f"TAK-TCP-Verbindung angenommen: quelle={_format_network_endpoint(addr)} "
+                f"listener_port={listen_port}"
+            )
             threading.Thread(
                 target=self._handle_tak_tcp_client,
                 args=(conn, addr),
