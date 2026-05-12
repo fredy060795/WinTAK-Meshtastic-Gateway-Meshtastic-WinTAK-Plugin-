@@ -331,6 +331,27 @@ def _decode_tak_packet_bytes(packet_bytes):
     return packet_bytes
 
 
+def _extract_first_tak_event(packet_bytes):
+    """Return the first CoT <event> XML found in a decoded TAK packet payload."""
+    normalized_bytes = _decode_tak_packet_bytes(packet_bytes)
+    normalized_bytes = _ensure_bytes(normalized_bytes).strip(b"\x00 \t\r\n")
+    if not normalized_bytes:
+        return b""
+
+    try:
+        root = fromstring(normalized_bytes)
+    except (ParseError, TypeError, ValueError):
+        root = None
+    if root is not None and _xml_local_name(root.tag) == "event":
+        return normalized_bytes
+
+    decoded_text = normalized_bytes.decode("utf-8", errors="ignore")
+    match = TAK_EVENT_PATTERN.search(decoded_text)
+    if not match:
+        return normalized_bytes
+    return match.group(0).encode("utf-8")
+
+
 def _read_protobuf_varint(buffer, offset):
     """Read a protobuf varint from buffer starting at offset."""
     result = 0
@@ -2219,11 +2240,24 @@ class TAKMeshtasticGateway:
 
         link = _find_descendant_by_local_name(detail, "link")
         contact = _find_descendant_by_local_name(detail, "contact")
-        sender_uid = event_uid
+        uid_parts = [part for part in event_uid.split(".") if part]
+        sender_uid = ""
+        if event_uid.startswith("GeoChat.") and len(uid_parts) >= 2:
+            sender_uid = uid_parts[1]
         if link is not None and link.get("uid"):
             sender_uid = link.get("uid")
+        if not sender_uid and remarks is not None:
+            sender_uid = remarks.get("sourceID") or remarks.get("source") or sender_uid
         if not sender_uid and chatgrp is not None:
             sender_uid = chatgrp.get("uid0") or chatgrp.get("uid")
+        if not sender_uid:
+            sender_uid = event_uid
+        sender_uid = str(sender_uid or "")
+        if sender_uid.startswith("BAO.F.ATAK."):
+            sender_uid = sender_uid[len("BAO.F.ATAK."):]
+        elif sender_uid.startswith("BAO.F.WinTAK."):
+            sender_uid = sender_uid[len("BAO.F.WinTAK."):]
+
         sender_callsign = chat.get("senderCallsign") if chat is not None else None
         if not sender_callsign and contact is not None:
             sender_callsign = contact.get("callsign")
@@ -2231,6 +2265,13 @@ class TAKMeshtasticGateway:
             sender_callsign = chat.get("sender") or chat.get("callsign")
         if not sender_callsign and chatgrp is not None:
             sender_callsign = chatgrp.get("uid0") or chatgrp.get("name")
+        if not sender_callsign and remarks is not None:
+            sender_callsign = remarks.get("source")
+        sender_callsign = str(sender_callsign or "")
+        if sender_callsign.startswith("BAO.F.ATAK."):
+            sender_callsign = sender_callsign[len("BAO.F.ATAK."):]
+        elif sender_callsign.startswith("BAO.F.WinTAK."):
+            sender_callsign = sender_callsign[len("BAO.F.WinTAK."):]
         if not sender_callsign:
             sender_callsign = "UNKNOWN-SENDER"
 
@@ -2245,6 +2286,10 @@ class TAKMeshtasticGateway:
             )
         if chatroom == DEFAULT_CHATROOM_NAME and chatgrp is not None:
             chatroom = chatgrp.get("id") or chatgrp.get("name") or chatroom
+        if chatroom == DEFAULT_CHATROOM_NAME and len(uid_parts) >= 3:
+            chatroom = uid_parts[2] or chatroom
+        if chatroom == DEFAULT_CHATROOM_NAME and remarks is not None:
+            chatroom = remarks.get("to") or chatroom
 
         return {
             "event_uid": root.get("uid"),
@@ -2267,7 +2312,7 @@ class TAKMeshtasticGateway:
         packet_bytes = _ensure_bytes(packet_xml)
         if packet_bytes.startswith(b"\xef\xbb\xbf"):
             packet_bytes = packet_bytes[3:]
-        return _decode_tak_packet_bytes(packet_bytes)
+        return _extract_first_tak_event(packet_bytes)
 
     def _extract_tak_events_from_stream_buffer(self, buffer_text):
         events = []
