@@ -65,7 +65,7 @@ MIN_PORT_NUMBER = 1
 MAX_PORT_NUMBER = 65535
 DEFAULT_CHATROOM_NAME = "All Chat Rooms"
 DEFAULT_CHAT_LISTEN_PORT = 4243
-DEFAULT_CHAT_TCP_LISTEN_PORT = 8087
+TCP_LISTENER_DEFAULT_PORT = 8087
 DEFAULT_SOURCE_PROTOCOL = "UNKNOWN"
 TCP_SOCKET_TIMEOUT_SECONDS = 1.0
 TCP_LISTENER_BACKLOG = 5
@@ -79,7 +79,7 @@ MESHTASTIC_COT_FRAGMENT_PREFIX = "COTM"
 MESHTASTIC_COT_FRAGMENT_PAYLOAD_BYTES = 140
 MESHTASTIC_COT_FRAGMENT_TTL_SECONDS = 120
 DEFAULT_MESHTASTIC_CHANNEL_INDEX = 0
-TAK_TCP_EVENT_PATTERN = re.compile(r"<event\b[^>]*>.*?</event>", re.DOTALL)
+TAK_EVENT_PATTERN = re.compile(r"<event\b[^>]*>.*?</event>", re.DOTALL)
 _WINTAK_CHAT_TRANSCRIPT_LINE_PATTERN = re.compile(
     r"^\((?P<time>\d{1,2}:\d{2}(?::\d{2})?)\)\s+(?P<sender>.+):(?:\s*(?P<message>.*))?$"
 )
@@ -953,7 +953,7 @@ class GatewayApp:
             row=7, column=1, sticky="w", padx=(6, 12), pady=(0, 4))
         cfg_label("WinTAK TCP Port:", row=7, col=2, padx=(8, 6), pady=(0, 4))
         self._local_tak_tcp_listen_port_var = tk.StringVar(
-            value=str(self.cfg.get("local_tak_tcp_listen_port", DEFAULT_CHAT_TCP_LISTEN_PORT))
+            value=str(self.cfg.get("local_tak_tcp_listen_port", TCP_LISTENER_DEFAULT_PORT))
         )
         ttk.Entry(cfg_frame, textvariable=self._local_tak_tcp_listen_port_var, width=10).grid(
             row=7, column=3, sticky="w", pady=(0, 4))
@@ -1454,7 +1454,7 @@ class TAKMeshtasticGateway:
         self.chat_listen_ip = str(self.cfg.get("local_tak_chat_listen_ip", "0.0.0.0")).strip() or "0.0.0.0"
         try:
             tcp_chat_listen_port = int(
-                self.cfg.get("local_tak_tcp_listen_port", DEFAULT_CHAT_TCP_LISTEN_PORT)
+                self.cfg.get("local_tak_tcp_listen_port", TCP_LISTENER_DEFAULT_PORT)
             )
             if not (1 <= tcp_chat_listen_port <= 65535):
                 raise ValueError(f"Invalid local TAK TCP listen port: {tcp_chat_listen_port}")
@@ -2235,7 +2235,7 @@ class TAKMeshtasticGateway:
     def _extract_tak_events_from_stream_buffer(self, buffer_text):
         events = []
         last_end = 0
-        for match in TAK_TCP_EVENT_PATTERN.finditer(buffer_text):
+        for match in TAK_EVENT_PATTERN.finditer(buffer_text):
             events.append(match.group(0))
             last_end = match.end()
         remaining_buffer = buffer_text[last_end:]
@@ -2477,8 +2477,6 @@ class TAKMeshtasticGateway:
                     if not data:
                         break
                     buffer_text += data.decode("utf-8", errors="replace")
-                    if len(buffer_text) > MAX_TCP_STREAM_BUFFER_BYTES and "<event" not in buffer_text:
-                        buffer_text = buffer_text[-TCP_STREAM_BUFFER_TAIL_BYTES:]
                     events, buffer_text = self._extract_tak_events_from_stream_buffer(buffer_text)
                     for packet_xml in events:
                         normalized_packet = self._normalize_inbound_tak_packet(packet_xml)
@@ -2488,7 +2486,7 @@ class TAKMeshtasticGateway:
                 except socket.timeout:
                     continue
         except OSError:
-            pass
+            self.logger.debug("Fehler beim Lesen einer TAK-TCP-Verbindung:\n" + traceback.format_exc())
         finally:
             try:
                 conn.close()
