@@ -1655,25 +1655,19 @@ class TAKMeshtasticGateway:
             message = remarks.text.strip()
         note = _find_descendant_by_local_name(detail, "note")
         if not message:
-            message = _collect_xml_text(note)
-        if not message:
-            for element in (chat, chat_note, note, remarks, chatgrp):
+            for element in (note, chat_note, chat, remarks, chatgrp):
                 if element is None:
                     continue
                 message = _collect_xml_text(element)
                 if message:
                     break
-            if not message:
-                for element in (chat, chat_note, note, remarks, chatgrp):
-                    if element is None:
-                        continue
-                    for attr in ("message", "text", "note", "remarks"):
-                        attr_value = element.get(attr)
-                        if attr_value and attr_value.strip():
-                            message = attr_value.strip()
-                            break
-                    if message:
+                for attr in ("message", "text", "note", "remarks"):
+                    attr_value = element.get(attr)
+                    if attr_value and attr_value.strip():
+                        message = attr_value.strip()
                         break
+                if message:
+                    break
         if not message:
             return None
 
