@@ -186,14 +186,7 @@ def _collect_xml_text(element):
     """Collect stripped text from an XML element and all of its descendants."""
     if element is None:
         return ""
-    text_parts = []
-    if element.text and element.text.strip():
-        text_parts.append(element.text.strip())
-    for child in element.iter():
-        if child is element:
-            continue
-        if child.text and child.text.strip():
-            text_parts.append(child.text.strip())
+    text_parts = [text.strip() for text in element.itertext() if text and text.strip()]
     return "\n".join(text_parts)
 
 
@@ -1665,6 +1658,8 @@ class TAKMeshtasticGateway:
             message = _collect_xml_text(note)
         if not message:
             for element in (chat, chat_note, note, remarks, chatgrp):
+                if element is None:
+                    continue
                 message = _collect_xml_text(element)
                 if message:
                     break
