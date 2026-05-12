@@ -75,6 +75,7 @@ DEFAULT_MESHTASTIC_CHANNEL_INDEX = 0
 _WINTAK_CHAT_TRANSCRIPT_LINE_PATTERN = re.compile(
     r"^\((?P<time>\d{1,2}:\d{2}(?::\d{2})?)\)\s+(?P<sender>.+):(?:\s*(?P<message>.*))?$"
 )
+_WINTAK_CHAT_FIELD_PATTERN = re.compile(r"^(?:message|text|note|remarks)(?P<index>\d+)?$", re.IGNORECASE)
 
 
 def get_tak_timestamp():
@@ -243,6 +244,35 @@ def _extract_latest_wintak_chat_message(text):
         return ""
 
     return normalized_text
+
+
+def _extract_latest_wintak_chat_attribute_message(element):
+    """Find the newest usable chat payload from supported chat-like XML attributes."""
+    if element is None:
+        return ""
+
+    candidates = []
+    for node in element.iter():
+        matching_attrs = []
+        for attr_name, attr_value in node.attrib.items():
+            if attr_value is None:
+                continue
+            normalized_value = str(attr_value).strip()
+            if not normalized_value:
+                continue
+            match = _WINTAK_CHAT_FIELD_PATTERN.match(attr_name)
+            if not match:
+                continue
+            attr_index = int(match.group("index") or 0)
+            matching_attrs.append((attr_index, attr_name.lower(), normalized_value))
+        matching_attrs.sort(key=lambda item: (item[0], item[1]))
+        candidates.extend(value for _, _, value in matching_attrs)
+
+    for candidate in reversed(candidates):
+        latest_message = _extract_latest_wintak_chat_message(candidate)
+        if latest_message:
+            return latest_message
+    return ""
 
 
 def _ensure_bytes(value):
@@ -1907,11 +1937,7 @@ class TAKMeshtasticGateway:
                 if candidate_text:
                     message = candidate_text
                     break
-                for attr in ("message", "text", "note", "remarks"):
-                    attr_value = element.get(attr)
-                    if attr_value and attr_value.strip():
-                        message = _extract_latest_wintak_chat_message(attr_value)
-                        break
+                message = _extract_latest_wintak_chat_attribute_message(element)
                 if message:
                     break
         if not message:
