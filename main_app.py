@@ -25,7 +25,7 @@ import logging
 import threading
 import traceback
 import uuid
-from xml.etree.ElementTree import Element, SubElement, tostring, fromstring
+from xml.etree.ElementTree import Element, ParseError, SubElement, tostring, fromstring
 try:
     import tkinter as tk
     from tkinter import ttk
@@ -1388,7 +1388,7 @@ class TAKMeshtasticGateway:
     def _extract_cot_event_metadata(self, packet_xml):
         try:
             root = fromstring(packet_xml)
-        except Exception:
+        except (ParseError, TypeError, ValueError):
             return None
         if _xml_local_name(root.tag) != "event":
             return None
@@ -1699,7 +1699,9 @@ class TAKMeshtasticGateway:
             total_parts = int(total_parts)
         except (TypeError, ValueError):
             return None
-        if not message_id or part_index < 1 or total_parts < 1 or part_index > total_parts or not payload:
+        has_required_fields = bool(message_id and payload)
+        has_valid_part_numbers = part_index >= 1 and total_parts >= 1 and part_index <= total_parts
+        if not has_required_fields or not has_valid_part_numbers:
             return None
         return {
             "message_id": message_id,
@@ -1738,12 +1740,6 @@ class TAKMeshtasticGateway:
             entry["updated_at"] = now
             entry["parts"][chunk["part_index"]] = chunk["payload"]
             if len(entry["parts"]) < entry["total_parts"]:
-                return True
-            missing_parts = [index for index in range(1, entry["total_parts"] + 1) if index not in entry["parts"]]
-            if missing_parts:
-                self.logger.debug(
-                    f"CoT-Fragmentserie aus dem Mesh noch unvollständig ({cache_key}), fehlend: {missing_parts}"
-                )
                 return True
             encoded_packet = "".join(entry["parts"][index] for index in range(1, entry["total_parts"] + 1))
             self.partial_meshtastic_cot_messages.pop(cache_key, None)
@@ -1916,7 +1912,7 @@ class TAKMeshtasticGateway:
             total_sent += len(self._send_text_to_interfaces(chunk, self.interfaces))
         return total_sent
 
-    def handle_tak_cot_or_chat(self, packet_xml, source_addr=None):
+    def handle_inbound_tak_packet(self, packet_xml, source_addr=None):
         chat_payload = self._extract_tak_chat_payload(packet_xml)
         if chat_payload:
             sender_uid = chat_payload["sender_uid"] or self.gateway_uid
@@ -1972,7 +1968,8 @@ class TAKMeshtasticGateway:
         )
 
     def handle_tak_chat_message(self, packet_xml, source_addr=None):
-        self.handle_tak_cot_or_chat(packet_xml, source_addr=source_addr)
+        """Backward-compatible alias for inbound packets received on the TAK listener."""
+        self.handle_inbound_tak_packet(packet_xml, source_addr=source_addr)
 
     def listen_for_tak_chat(self):
         try:
@@ -2000,7 +1997,7 @@ class TAKMeshtasticGateway:
             except Exception:
                 self.logger.debug("Fehler beim Empfangen von TAK-Chat:\n" + traceback.format_exc())
                 continue
-            self.handle_tak_cot_or_chat(packet_xml.strip(), source_addr=addr)
+            self.handle_inbound_tak_packet(packet_xml.strip(), source_addr=addr)
 
     def maintain_server(self):
         """
