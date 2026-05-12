@@ -846,7 +846,7 @@ class GatewayApp:
             self._local_tak_chat_listen_port_var.get(), "Local TAK Chat Listen Port"
         )
         if self.cfg["local_tak_chat_listen_port"] == self.cfg["local_tak_port"]:
-            raise ValueError("Local TAK Chat Listen Port muss sich von Local TAK Port unterscheiden.")
+            raise ValueError("Local TAK Chat Listen Port must differ from Local TAK Port.")
         self.cfg["sync_interval_seconds"] = self._parse_int_field(
             self._sync_interval_var.get(), "Sync-Intervall", min_value=1, max_value=86400
         )
@@ -1103,8 +1103,6 @@ class TAKMeshtasticGateway:
             raise ValueError(f"Invalid local_tak_port in config: {e}")
 
         default_chat_listen_port = self.tak_port + 1 if self.tak_port < MAX_PORT_NUMBER else 4243
-        if default_chat_listen_port == self.tak_port:
-            default_chat_listen_port = 4244 if self.tak_port == 4243 else 4243
         try:
             chat_listen_port = int(
                 self.cfg.get(
@@ -1285,7 +1283,7 @@ class TAKMeshtasticGateway:
             return True
         if portnums_pb2 is not None:
             try:
-                return portnum == portnums_pb2.PortNum.TEXT_MESSAGE_APP or int(portnum) == int(portnums_pb2.PortNum.TEXT_MESSAGE_APP)
+                return int(portnum) == int(portnums_pb2.PortNum.TEXT_MESSAGE_APP)
             except (TypeError, ValueError):
                 return False
         return False
@@ -1487,7 +1485,7 @@ class TAKMeshtasticGateway:
         last_error = None
         for iface in self.interfaces:
             try:
-                # Broadcast chat to the mesh; ACKs stay disabled because this is a broadcast operation
+                # Broadcast chat to the mesh; ACKs are disabled because this is a broadcast operation
                 # and ACK traffic would add noise without giving a reliable per-recipient guarantee.
                 iface.sendText(message, wantAck=False)
                 sent_count += 1
