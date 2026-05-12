@@ -72,6 +72,7 @@ MESHTASTIC_COT_FRAGMENT_PREFIX = "COTM"
 MESHTASTIC_COT_FRAGMENT_PAYLOAD_BYTES = 140
 MESHTASTIC_COT_FRAGMENT_TTL_SECONDS = 120
 DEFAULT_MESHTASTIC_CHANNEL_INDEX = 0
+UTF16_NULL_BYTE_TRIGGER_RATIO = 4
 _WINTAK_CHAT_TRANSCRIPT_LINE_PATTERN = re.compile(
     r"^\((?P<time>\d{1,2}:\d{2}(?::\d{2})?)\)\s+(?P<sender>.+):(?:\s*(?P<message>.*))?$"
 )
@@ -292,19 +293,23 @@ def _decode_tak_packet_bytes(packet_bytes):
     if not packet_bytes:
         return b""
 
+    def _is_xml_text(text):
+        stripped = str(text or "").strip()
+        return stripped.startswith("<") and ">" in stripped
+
     if packet_bytes.startswith((b"\xff\xfe", b"\xfe\xff")):
         try:
             return packet_bytes.decode("utf-16").encode("utf-8")
         except UnicodeDecodeError:
             return packet_bytes
 
-    if packet_bytes.count(b"\x00") >= max(2, len(packet_bytes) // 4):
+    if packet_bytes.count(b"\x00") >= max(2, len(packet_bytes) // UTF16_NULL_BYTE_TRIGGER_RATIO):
         for encoding in ("utf-16-le", "utf-16-be"):
             try:
                 decoded_text = packet_bytes.decode(encoding)
             except UnicodeDecodeError:
                 continue
-            if "<event" in decoded_text or "<?xml" in decoded_text:
+            if _is_xml_text(decoded_text):
                 return decoded_text.encode("utf-8")
     return packet_bytes
 
