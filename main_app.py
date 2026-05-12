@@ -96,7 +96,6 @@ TAK_PONG_EVENT_TYPE = "t-x-c-t-r"
 # (e.g. the pong type "t-x-c-t-r" also contains the ping type "t-x-c-t").
 TAK_PING_TYPE_PATTERN = re.compile(r'\btype=["\']t-x-c-t["\']')
 TAK_PONG_TYPE_PATTERN = re.compile(r'\btype=["\']t-x-c-t-r["\']')
-WINTAK_TCP_INBOX_MAX_MESSAGES = 20
 MIN_NULL_BYTES_FOR_UTF16 = 2
 UTF16_NULL_BYTE_RATIO_THRESHOLD = 4
 _WINTAK_CHAT_TRANSCRIPT_LINE_PATTERN = re.compile(
@@ -823,7 +822,6 @@ class GatewayApp:
         self._gateway = None
         self._gateway_thread = None
         self._gui_handler = None
-        self._wintak_last_message = None  # last WinTAK TCP chat text for manual forwarding
         self._scroll_canvas = None
         self._scrollable_body = None
         self._scroll_window_id = None
@@ -1089,7 +1087,7 @@ class GatewayApp:
 
         body = self._scrollable_body
 
-        wintak_hint_frame = ttk.LabelFrame(body, text=" WICHTIG: WinTAK Verbindung ", padding=(12, 8))
+        wintak_hint_frame = ttk.LabelFrame(body, text=" REQUIRED: WinTAK Connection ", padding=(12, 8))
         wintak_hint_frame.pack(fill="x", padx=10, pady=(10, 4))
         self._wintak_banner_var = tk.StringVar()
         tk.Label(
@@ -1103,7 +1101,7 @@ class GatewayApp:
         ).pack(fill="x")
         tk.Label(
             wintak_hint_frame,
-            text="Ohne diesen lokalen TCP-Server entsteht keine Verbindung zum Gateway.",
+            text="Without this local TCP server, WinTAK will not connect to the gateway.",
             bg=C["card"],
             fg=C["fg_sub"],
             font=("Segoe UI", 9),
@@ -1112,7 +1110,7 @@ class GatewayApp:
         ).pack(fill="x", pady=(4, 0))
 
         # ── Einstellungen ──
-        cfg_frame = ttk.LabelFrame(body, text=" ⚙  Basis-Einstellungen ", padding=(12, 8))
+        cfg_frame = ttk.LabelFrame(body, text=" ⚙  Main Settings ", padding=(12, 8))
         cfg_frame.pack(fill="x", padx=10, pady=(10, 4))
 
         # Hilfsfunktion für einheitliche Labels in cfg_frame
@@ -1139,7 +1137,7 @@ class GatewayApp:
         detected = detect_serial_port_devices()
         self._detected_ports = detected
         self._detected_ports_var = tk.StringVar(
-            value=f"Erkannte Ports: {', '.join(detected) if detected else '–'}"
+            value=f"Detected ports: {', '.join(detected) if detected else '–'}"
         )
         ttk.Label(cfg_frame, textvariable=self._detected_ports_var, style="Sub.TLabel").grid(
             row=1, column=0, columnspan=4, sticky="w", pady=(0, 2))
@@ -1157,11 +1155,11 @@ class GatewayApp:
         for port in detected:
             self._detected_ports_list.insert("end", port)
         ttk.Button(
-            cfg_frame, text="↩ Auswahl übernehmen",
+            cfg_frame, text="↩ Use selected ports",
             command=self._apply_selected_ports_from_list
         ).grid(row=2, column=3, sticky="w", pady=(0, 6))
         ttk.Button(
-            cfg_frame, text="🔄 Ports aktualisieren",
+            cfg_frame, text="🔄 Refresh ports",
             command=self._refresh_detected_ports
         ).grid(row=2, column=4, sticky="w", padx=(8, 0), pady=(0, 6))
 
@@ -1179,7 +1177,7 @@ class GatewayApp:
             row=4, column=3, sticky="w", pady=(0, 4))
 
         # ── Zeile 5: Remote Protokoll + WinTAK UDP ──
-        cfg_label("Remote Protokoll:", row=5, col=0, pady=(0, 4))
+        cfg_label("Remote Protocol:", row=5, col=0, pady=(0, 4))
         server_protocol = str(self.cfg.get("tak_server_protocol", "TCP")).upper()
         if server_protocol not in ("TCP", "UDP"):
             server_protocol = "TCP"
@@ -1188,7 +1186,7 @@ class GatewayApp:
             cfg_frame, textvariable=self._server_protocol_var,
             state="readonly", values=["TCP", "UDP"], width=10
         ).grid(row=5, column=1, sticky="w", padx=(6, 12), pady=(0, 4))
-        cfg_label("WinTAK UDP Ziel-IP:", row=5, col=2, padx=(8, 6), pady=(0, 4))
+        cfg_label("WinTAK UDP Target IP:", row=5, col=2, padx=(8, 6), pady=(0, 4))
         self._local_tak_ip_var = tk.StringVar(value=str(self.cfg.get("local_tak_ip", WINTAK_REQUIRED_HOST)))
         ttk.Entry(cfg_frame, textvariable=self._local_tak_ip_var, width=16).grid(
             row=5, column=3, sticky="w", pady=(0, 4))
@@ -1217,52 +1215,71 @@ class GatewayApp:
         )
         log_combo.grid(row=7, column=1, sticky="w", padx=(6, 12), pady=(0, 4))
         log_combo.bind("<<ComboboxSelected>>", self._on_log_level_change)
-        cfg_label("Sync-Intervall (s):", row=7, col=2, padx=(8, 6), pady=(0, 4))
+        cfg_label("Sync Interval (s):", row=7, col=2, padx=(8, 6), pady=(0, 4))
         self._sync_interval_var = tk.StringVar(value=str(self.cfg.get("sync_interval_seconds", 300)))
         ttk.Entry(cfg_frame, textvariable=self._sync_interval_var, width=10).grid(
             row=7, column=3, sticky="w", pady=(0, 4))
 
-        # ── Zeile 8: GPS-Fallback ──
+        # ── Rows 8-10: Relay mode ──
+        self._relay_text_messages_var = tk.BooleanVar(
+            value=as_bool(self.cfg.get("relay_text_messages", True))
+        )
+        ttk.Checkbutton(
+            cfg_frame,
+            text="Enable relay between selected COM ports",
+            variable=self._relay_text_messages_var,
+        ).grid(row=8, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        cfg_label("Relay From COM Port(s):", row=8, col=2, padx=(8, 6), pady=(0, 4))
+        self._relay_text_from_ports_var = tk.StringVar(
+            value=_format_ports_for_entry(self.cfg.get("relay_text_from_ports"))
+        )
+        ttk.Entry(cfg_frame, textvariable=self._relay_text_from_ports_var, width=16).grid(
+            row=8, column=3, sticky="ew", pady=(0, 4))
+
+        cfg_label("Relay To COM Port(s):", row=9, col=2, padx=(8, 6), pady=(0, 4))
+        self._relay_text_to_ports_var = tk.StringVar(
+            value=_format_ports_for_entry(self.cfg.get("relay_text_to_ports"))
+        )
+        ttk.Entry(cfg_frame, textvariable=self._relay_text_to_ports_var, width=16).grid(
+            row=9, column=3, sticky="ew", pady=(0, 4))
+        ttk.Label(
+            cfg_frame,
+            text="Leave Relay From blank to relay from any selected port, and leave Relay To blank to relay to all other selected ports.",
+            style="Sub.TLabel",
+        ).grid(row=10, column=0, columnspan=4, sticky="w", pady=(0, 4))
+
+        # ── Row 11: GPS fallback ──
         self._send_nodes_without_gps_var = tk.BooleanVar(
             value=as_bool(self.cfg.get("send_nodes_without_gps", True))
         )
         ttk.Checkbutton(
             cfg_frame,
-            text="Nodes ohne GPS-Fix senden",
+            text="Send nodes without GPS fix",
             variable=self._send_nodes_without_gps_var,
             command=self._update_no_gps_hint,
-        ).grid(row=8, column=0, columnspan=2, sticky="w", pady=(0, 4))
-        cfg_label("Fallback Lat:", row=8, col=2, padx=(8, 6), pady=(0, 4))
+        ).grid(row=11, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        cfg_label("Fallback Lat:", row=11, col=2, padx=(8, 6), pady=(0, 4))
         raw_park_lat = self.cfg.get("park_lat")
         park_lat_val = "" if raw_park_lat is None else f"{float(raw_park_lat):.6f}".rstrip("0").rstrip(".")
         self._park_lat_var = tk.StringVar(value=park_lat_val)
         ttk.Entry(cfg_frame, textvariable=self._park_lat_var, width=16).grid(
-            row=8, column=3, sticky="w", pady=(0, 4))
+            row=11, column=3, sticky="w", pady=(0, 4))
 
-        # ── Zeile 9: WinTAK Pflicht-Hinweis + Fallback Lon ──
+        # ── Row 12: WinTAK hint + fallback lon ──
         self._wintak_setup_var = tk.StringVar()
         ttk.Label(cfg_frame, textvariable=self._wintak_setup_var, style="Hint.TLabel").grid(
-            row=9, column=0, columnspan=2, sticky="w", pady=(0, 4))
-        cfg_label("Fallback Lon:", row=9, col=2, padx=(8, 6), pady=(0, 4))
+            row=12, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        cfg_label("Fallback Lon:", row=12, col=2, padx=(8, 6), pady=(0, 4))
         raw_park_lon = self.cfg.get("park_lon")
         park_lon_val = "" if raw_park_lon is None else f"{float(raw_park_lon):.6f}".rstrip("0").rstrip(".")
         self._park_lon_var = tk.StringVar(value=park_lon_val)
         ttk.Entry(cfg_frame, textvariable=self._park_lon_var, width=16).grid(
-            row=9, column=3, sticky="w", pady=(0, 4))
+            row=12, column=3, sticky="w", pady=(0, 4))
         self._local_tak_tcp_listen_port_var.trace_add("write", self._update_wintak_setup_hint)
 
-        # ── Versteckte/fortgeführte Optionen für bestehendes Config-Verhalten ──
+        # ── Hidden/legacy options kept for existing config behavior ──
         self._local_tak_chat_listen_port_var = tk.StringVar(
             value=str(self.cfg.get("local_tak_chat_listen_port", DEFAULT_CHAT_LISTEN_PORT))
-        )
-        self._relay_text_messages_var = tk.BooleanVar(
-            value=as_bool(self.cfg.get("relay_text_messages", True))
-        )
-        self._relay_text_from_ports_var = tk.StringVar(
-            value=_format_ports_for_entry(self.cfg.get("relay_text_from_ports"))
-        )
-        self._relay_text_to_ports_var = tk.StringVar(
-            value=_format_ports_for_entry(self.cfg.get("relay_text_to_ports"))
         )
         self._set_gateway_position_var = tk.BooleanVar(
             value=as_bool(self.cfg.get("set_gateway_position_on_start", False))
@@ -1271,7 +1288,7 @@ class GatewayApp:
         self._park_lon_var.trace_add("write", lambda *_: self._update_no_gps_hint())
         self._no_gps_hint_var = tk.StringVar()
         ttk.Label(cfg_frame, textvariable=self._no_gps_hint_var, style="Hint.TLabel").grid(
-            row=10, column=0, columnspan=6, sticky="w", pady=(0, 2))
+            row=13, column=0, columnspan=6, sticky="w", pady=(0, 2))
         self._update_no_gps_hint()
 
         cfg_frame.columnconfigure(1, weight=1)
@@ -1292,7 +1309,7 @@ class GatewayApp:
             toolbar, text="🔄  Sync", command=self._on_manual_sync, width=10
         ).pack(side="left", padx=(0, 4))
 
-        self._status_var = tk.StringVar(value="⬛  Gestoppt")
+        self._status_var = tk.StringVar(value="⬛  Stopped")
         ttk.Label(
             toolbar, textvariable=self._status_var,
             font=("Segoe UI", 9, "bold"),
@@ -1301,50 +1318,17 @@ class GatewayApp:
         self._mesh_test_message_var = tk.StringVar()
         self._send_mesh_test_btn = ttk.Button(
             body,
-            text="Ins Mesh senden",
+            text="Send to Mesh",
             command=self._on_send_mesh_test_message,
             state="disabled",
             style="Accent.TButton",
         )
-        self._mesh_test_status_var = tk.StringVar(value="Gateway nicht gestartet.")
-
-        # ── WinTAK TCP Monitor ──
-        tak_monitor_frame = ttk.LabelFrame(body, padding=6)
-        tak_monitor_frame.pack(fill="x", padx=10, pady=(6, 0))
-        self._wintak_monitor_frame = tak_monitor_frame
-
-        self._wintak_monitor_text = tk.Text(
-            tak_monitor_frame, height=4, wrap="word", state="disabled",
-            bg="#0d1117", fg="#58d68d",
-            font=self._log_font,
-            relief="flat", bd=0,
-        )
-        self._wintak_monitor_text.pack(fill="x", expand=True, padx=2, pady=(0, 4))
-
-        tak_status_row = ttk.Frame(tak_monitor_frame)
-        tak_status_row.pack(fill="x")
-
-        self._wintak_monitor_status_var = tk.StringVar()
-        ttk.Label(
-            tak_status_row,
-            textvariable=self._wintak_monitor_status_var,
-            style="Sub.TLabel",
-        ).pack(side="left", fill="x", expand=True)
-
-        self._wintak_forward_btn = ttk.Button(
-            tak_status_row,
-            text="Letzte Nachricht → Mesh",
-            command=self._on_forward_wintak_msg,
-            state="disabled",
-            style="Accent.TButton",
-        )
-        self._wintak_forward_btn.pack(side="right")
-        self._refresh_wintak_monitor_listener_ui()
+        self._mesh_test_status_var = tk.StringVar(value="Gateway not started.")
 
         self._input_var = tk.StringVar()
 
-        # ── Log-Ausgabebereich ──
-        log_frame = ttk.LabelFrame(body, text=" 📋  Log-Ausgabe ", padding=4)
+        # ── Log output ──
+        log_frame = ttk.LabelFrame(body, text=" 📋  Log Output ", padding=4)
         log_frame.pack(fill="both", expand=True, padx=10, pady=(6, 0))
 
         self._log_text = tk.Text(
@@ -1422,7 +1406,7 @@ class GatewayApp:
     def _refresh_detected_ports(self):
         self._detected_ports = detect_serial_port_devices()
         self._detected_ports_var.set(
-            f"Erkannte Ports: {', '.join(self._detected_ports) if self._detected_ports else '–'}"
+            f"Detected ports: {', '.join(self._detected_ports) if self._detected_ports else '–'}"
         )
         self._detected_ports_list.delete(0, "end")
         for port in self._detected_ports:
@@ -1436,19 +1420,19 @@ class GatewayApp:
 
     def _update_wintak_setup_hint(self, *_):
         tcp_port = self._get_wintak_tcp_port_text()
-        banner_text = f"In WinTAK muss ein lokaler Server angelegt sein: {WINTAK_REQUIRED_HOST} | Port {tcp_port} | TCP"
+        banner_text = f"Create a local server in WinTAK: {WINTAK_REQUIRED_HOST} | Port {tcp_port} | TCP"
         self._wintak_banner_var.set(banner_text)
         self._wintak_setup_var.set(
-            f"WinTAK: lokalen Server auf {WINTAK_REQUIRED_HOST}:{tcp_port} / TCP anlegen."
+            f"WinTAK: add a local server at {WINTAK_REQUIRED_HOST}:{tcp_port} using TCP."
         )
-        self._bottom_wintak_hint_var.set(f"WinTAK lokal: {WINTAK_REQUIRED_HOST} | TCP | Port {tcp_port}")
+        self._bottom_wintak_hint_var.set(f"WinTAK local: {WINTAK_REQUIRED_HOST} | TCP | Port {tcp_port}")
 
     def _update_no_gps_hint(self):
         send_without_gps = bool(self._send_nodes_without_gps_var.get())
         has_park = bool(self._park_lat_var.get().strip()) and bool(self._park_lon_var.get().strip())
         if send_without_gps and not has_park:
             self._no_gps_hint_var.set(
-                "Hinweis: für Nodes ohne GPS bitte park_lat und park_lon setzen, sonst werden sie übersprungen."
+                "Note: set park_lat and park_lon for nodes without GPS, or they will be skipped."
             )
         else:
             self._no_gps_hint_var.set("")
@@ -1457,9 +1441,9 @@ class GatewayApp:
         try:
             value = int(str(raw_value).strip())
         except (TypeError, ValueError):
-            raise ValueError(f"{field_name} muss eine ganze Zahl sein.")
+            raise ValueError(f"{field_name} must be a whole number.")
         if not (min_value <= value <= max_value):
-            raise ValueError(f"{field_name} muss zwischen {min_value} und {max_value} liegen.")
+            raise ValueError(f"{field_name} must be between {min_value} and {max_value}.")
         return value
 
     def _apply_form_to_cfg(self, ports):
@@ -1478,7 +1462,7 @@ class GatewayApp:
             self._local_tak_tcp_listen_port_var.get(), "Local TAK TCP Listen Port"
         )
         self.cfg["sync_interval_seconds"] = self._parse_int_field(
-            self._sync_interval_var.get(), "Sync-Intervall", min_value=1, max_value=86400
+            self._sync_interval_var.get(), "Sync Interval", min_value=1, max_value=86400
         )
         self.cfg["relay_text_messages"] = bool(self._relay_text_messages_var.get())
         relay_from_ports = _parse_ports_text(self._relay_text_from_ports_var.get())
@@ -1488,11 +1472,11 @@ class GatewayApp:
         unknown_relay_to = [port for port in relay_to_ports if port.upper() not in selected_ports_upper]
         if unknown_relay_from:
             raise ValueError(
-                "Relay von COM enthält nicht ausgewählte Ports: " + ", ".join(unknown_relay_from)
+                "Relay From COM Port(s) contains ports that are not selected above: " + ", ".join(unknown_relay_from)
             )
         if unknown_relay_to:
             raise ValueError(
-                "Relay nach COM enthält nicht ausgewählte Ports: " + ", ".join(unknown_relay_to)
+                "Relay To COM Port(s) contains ports that are not selected above: " + ", ".join(unknown_relay_to)
             )
         _store_ports_in_config(self.cfg, "relay_text_from_ports", relay_from_ports)
         _store_ports_in_config(self.cfg, "relay_text_to_ports", relay_to_ports)
@@ -1506,15 +1490,15 @@ class GatewayApp:
             try:
                 lat_val = float(park_lat_text)
             except ValueError:
-                raise ValueError("park_lat muss eine gültige Zahl sein.")
+                raise ValueError("park_lat must be a valid number.")
             try:
                 lon_val = float(park_lon_text)
             except ValueError:
-                raise ValueError("park_lon muss eine gültige Zahl sein.")
+                raise ValueError("park_lon must be a valid number.")
             if lat_val == 0.0 and lon_val == 0.0:
                 raise ValueError(
-                    "park_lat und park_lon dürfen nicht beide 0.0 sein (Null Island / kein gültiger Standort). "
-                    "Bitte echte Koordinaten eintragen oder beide Felder leer lassen."
+                    "park_lat and park_lon cannot both be 0.0 (Null Island / invalid location). "
+                    "Enter real coordinates or leave both fields empty."
                 )
             self.cfg["park_lat"] = lat_val
             self.cfg["park_lon"] = lon_val
@@ -1524,8 +1508,8 @@ class GatewayApp:
         else:
             missing = "park_lon" if park_lat_text else "park_lat"
             raise ValueError(
-                "Beide Koordinaten (park_lat und park_lon) müssen gesetzt sein oder beide leer bleiben. "
-                f"Aktuell fehlt: {missing}."
+                "Both coordinates (park_lat and park_lon) must be filled in, or both must stay empty. "
+                f"Currently missing: {missing}."
             )
 
     # ─────────────────────────── Gateway-Steuerung ────────────────────────────
@@ -1534,20 +1518,19 @@ class GatewayApp:
         ports_text = self._ports_var.get().strip()
         ports = _parse_ports_text(ports_text)
         if not ports:
-            self._append_log("Kein Port angegeben.", "WARNING")
+            self._append_log("No port specified.", "WARNING")
             return
 
         try:
             self._apply_form_to_cfg(ports)
             save_config(self.cfg)
-            self._refresh_wintak_monitor_listener_ui()
         except Exception as e:
-            self._append_log(f"Ungültige Einstellungen: {e}", "WARNING")
+            self._append_log(f"Invalid settings: {e}", "WARNING")
             return
 
         self._start_btn.configure(state="disabled")
         self._stop_btn.configure(state="normal")
-        self._status_var.set("🟡 Startet …")
+        self._status_var.set("🟡 Starting …")
 
         # GUI-Handler anlegen und VOR Gateway-Erstellung am Logger registrieren,
         # damit TAKMeshtasticGateway.setup_logging() keinen StreamHandler mehr ergänzt.
@@ -1564,21 +1547,21 @@ class GatewayApp:
             target=self._run_gateway, args=(ports,), daemon=True
         )
         self._gateway_thread.start()
-        self._mesh_test_status_var.set("Gateway startet …")
+        self._mesh_test_status_var.set("Gateway starting …")
 
     def _run_gateway(self, ports):
         try:
             gw = TAKMeshtasticGateway(ports, self.cfg)
             self._gateway = gw
-            # Wire WinTAK TCP monitor callback so the UI shows incoming messages.
+            # Log WinTAK TCP listener events in the GUI.
             gw.wintak_tcp_chat_callback = self._on_wintak_tcp_chat
-            self._root.after(0, lambda: self._status_var.set(f"🟢 Läuft  –  {', '.join(ports)}"))
+            self._root.after(0, lambda: self._status_var.set(f"🟢 Running  –  {', '.join(ports)}"))
             self._root.after(0, lambda: self._send_mesh_test_btn.configure(state="normal"))
-            self._root.after(0, lambda: self._mesh_test_status_var.set("Bereit für manuelles Mesh-Test-Senden."))
+            self._root.after(0, lambda: self._mesh_test_status_var.set("Ready for manual mesh test sending."))
             gw.run()
         except Exception:
             err = traceback.format_exc()
-            self._queue_log(f"Gateway-Thread Fehler:\n{err}", "ERROR")
+            self._queue_log(f"Gateway thread error:\n{err}", "ERROR")
         finally:
             self._root.after(0, self._on_gateway_stopped)
 
@@ -1587,9 +1570,9 @@ class GatewayApp:
         if gw:
             gw.shutdown_flag.set()
         self._stop_btn.configure(state="disabled")
-        self._status_var.set("🟡 Stoppt …")
+        self._status_var.set("🟡 Stopping …")
         self._send_mesh_test_btn.configure(state="disabled")
-        self._mesh_test_status_var.set("Gateway stoppt …")
+        self._mesh_test_status_var.set("Gateway stopping …")
 
     def _on_gateway_stopped(self):
         if self._gui_handler:
@@ -1598,33 +1581,32 @@ class GatewayApp:
         self._gateway = None
         self._start_btn.configure(state="normal")
         self._stop_btn.configure(state="disabled")
-        self._status_var.set("⬛ Gestoppt")
+        self._status_var.set("⬛ Stopped")
         self._send_mesh_test_btn.configure(state="disabled")
-        self._mesh_test_status_var.set("Gateway nicht gestartet.")
-        self._refresh_wintak_monitor_listener_ui()
+        self._mesh_test_status_var.set("Gateway not started.")
 
     def _on_manual_sync(self):
         gw = self._gateway
         if gw:
             threading.Thread(target=gw.full_sync, daemon=True).start()
-            self._append_log("Manuelle Vollsynchronisation ausgelöst.", "INFO")
+            self._append_log("Manual full sync started.", "INFO")
         else:
-            self._append_log("Gateway ist nicht gestartet.", "WARNING")
+            self._append_log("Gateway is not running.", "WARNING")
 
     def _on_send_mesh_test_message(self):
         message = self._mesh_test_message_var.get().strip()
         if not message:
-            self._mesh_test_status_var.set("⚠ Bitte zuerst eine Testnachricht eingeben.")
-            self._append_log("Manuelles Mesh-Test-Senden abgebrochen: leere Nachricht.", "WARNING")
+            self._mesh_test_status_var.set("⚠ Please enter a test message first.")
+            self._append_log("Manual mesh test send canceled: empty message.", "WARNING")
             return
 
         gw = self._gateway
         if not gw:
-            self._mesh_test_status_var.set("⚠ Gateway ist nicht gestartet.")
-            self._append_log("Manuelles Mesh-Test-Senden nicht möglich: Gateway ist nicht gestartet.", "WARNING")
+            self._mesh_test_status_var.set("⚠ Gateway is not running.")
+            self._append_log("Manual mesh test send is not possible: gateway is not running.", "WARNING")
             return
 
-        self._mesh_test_status_var.set("🟡 Testnachricht wird gesendet …")
+        self._mesh_test_status_var.set("🟡 Sending test message …")
         threading.Thread(
             target=self._send_mesh_test_message_worker,
             args=(gw, message),
@@ -1635,76 +1617,41 @@ class GatewayApp:
         try:
             total_sent = gw._send_text_to_meshtastic(message)
         except Exception as exc:
-            self._queue_log(f"Manuelles Senden ins Mesh fehlgeschlagen: {exc}", "ERROR")
-            self._queue_log("Fehlerdetails manuelles Senden ins Mesh:\n" + traceback.format_exc(), "DEBUG")
+            self._queue_log(f"Manual mesh send failed: {exc}", "ERROR")
+            self._queue_log("Manual mesh send error details:\n" + traceback.format_exc(), "DEBUG")
             self._root.after(
                 0,
-                lambda: self._mesh_test_status_var.set(f"❌ Senden fehlgeschlagen: {exc}"),
+                lambda: self._mesh_test_status_var.set(f"❌ Send failed: {exc}"),
             )
             return
 
-        self._queue_log(f"Testnachricht erfolgreich ins Mesh gesendet (Interfaces: {total_sent}).", "INFO")
-        self._root.after(0, lambda: self._mesh_test_status_var.set(f"✅ Gesendet (Interfaces: {total_sent})."))
+        self._queue_log(f"Test message sent to the mesh successfully (interfaces: {total_sent}).", "INFO")
+        self._root.after(0, lambda: self._mesh_test_status_var.set(f"✅ Sent (interfaces: {total_sent})."))
         self._root.after(0, lambda: self._mesh_test_message_var.set(""))
 
-    # ─────────────────────────── WinTAK TCP Monitor ───────────────────────────
+    # ─────────────────────────── WinTAK TCP Events ───────────────────────────
 
     def _get_wintak_tcp_listener_endpoint(self):
         return _get_tak_tcp_listener_endpoint_from_cfg(self.cfg)
-
-    def _refresh_wintak_monitor_listener_ui(self):
-        listen_ip, listen_port = self._get_wintak_tcp_listener_endpoint()
-        self._wintak_monitor_frame.configure(
-            text=f" 📡  WinTAK-Nachrichten (TCP {listen_ip}:{listen_port}) "
-        )
-        self._wintak_monitor_status_var.set(
-            f"⚪ Warte auf WinTAK-Verbindung auf TCP {listen_ip}:{listen_port} … In WinTAK lokalen Server {WINTAK_REQUIRED_HOST}:{listen_port} / TCP nutzen."
-        )
 
     def _on_wintak_tcp_chat(self, kind, sender, message, addr=None):
         """Thread-safe callback invoked by the gateway TCP listener for WinTAK events."""
         self._root.after(0, self._update_wintak_monitor, kind, sender, message, addr)
 
     def _update_wintak_monitor(self, kind, sender, message, addr):
-        """Update the WinTAK TCP monitor panel (must be called from the GUI thread)."""
+        """Write WinTAK TCP listener events into the GUI log."""
         if kind == "connect":
             ip = addr[0] if addr else "?"
-            self._wintak_monitor_status_var.set(f"🟢 WinTAK verbunden von {ip}")
+            listen_ip, listen_port = self._get_wintak_tcp_listener_endpoint()
+            self._append_log(
+                f"WinTAK connected from {ip} to TCP listener {listen_ip}:{listen_port}.",
+                "INFO",
+            )
         elif kind == "disconnect":
-            self._refresh_wintak_monitor_listener_ui()
+            self._append_log("WinTAK TCP connection closed.", "INFO")
         elif kind == "chat":
             ts = datetime.datetime.now().strftime("%H:%M:%S")
-            line = f"[{ts}] {sender}: {message}"
-            self._wintak_last_message = message
-            self._wintak_monitor_text.configure(state="normal")
-            self._wintak_monitor_text.insert("end", line + "\n")
-            # Trim the monitor to at most WINTAK_TCP_INBOX_MAX_MESSAGES lines.
-            line_count = int(self._wintak_monitor_text.index("end-1c").split(".")[0])
-            if line_count > WINTAK_TCP_INBOX_MAX_MESSAGES:
-                # Delete excess lines from the top so the widget stays within the limit.
-                lines_to_remove = line_count - WINTAK_TCP_INBOX_MAX_MESSAGES
-                self._wintak_monitor_text.delete("1.0", f"{lines_to_remove + 1}.0")
-            self._wintak_monitor_text.see("end")
-            self._wintak_monitor_text.configure(state="disabled")
-            self._wintak_monitor_status_var.set(f"📨 Zuletzt empfangen [{ts}] von {sender}")
-            self._wintak_forward_btn.configure(state="normal")
-
-    def _on_forward_wintak_msg(self):
-        """Forward the last received WinTAK message manually into the Meshtastic mesh."""
-        msg = self._wintak_last_message
-        if not msg:
-            self._append_log("Keine WinTAK-Nachricht zum Weiterleiten vorhanden.", "WARNING")
-            return
-        gw = self._gateway
-        if not gw:
-            self._append_log("Gateway ist nicht gestartet.", "WARNING")
-            return
-        self._append_log(f"WinTAK-Nachricht wird manuell ins Mesh weitergeleitet: {msg}", "INFO")
-        threading.Thread(
-            target=self._send_mesh_test_message_worker,
-            args=(gw, msg),
-            daemon=True,
-        ).start()
+            self._append_log(f"[WinTAK {ts}] {sender}: {message}", "INFO")
 
     def _on_log_level_change(self, _event=None):
         level_str = self._log_level_var.get()
@@ -1712,9 +1659,9 @@ class GatewayApp:
         logging.getLogger("TAK_Meshtastic_Gateway").setLevel(level)
         if self._gui_handler:
             self._gui_handler.setLevel(level)
-        self._append_log(f"Log-Level geändert auf {level_str}.", "INFO")
+        self._append_log(f"Log level changed to {level_str}.", "INFO")
 
-    # ─────────────────────────── Befehlseingabe ───────────────────────────────
+    # ─────────────────────────── Command input ───────────────────────────────
 
     def _on_send_command(self):
         cmd = self._input_var.get().strip()
@@ -1738,7 +1685,7 @@ class GatewayApp:
                 self._log_level_var.set(new_level)
                 self._on_log_level_change()
             else:
-                self._append_log(f"Unbekannter Level: '{parts[1]}'. Gültig: debug|info|warning|error", "WARNING")
+                self._append_log(f"Unknown level: '{parts[1]}'. Valid values: debug|info|warning|error", "WARNING")
         elif action == "clear":
             self._log_text.configure(state="normal")
             self._log_text.delete("1.0", "end")
@@ -1746,14 +1693,14 @@ class GatewayApp:
         elif action == "nodes":
             gw = self._gateway
             if not gw:
-                self._append_log("Gateway ist nicht gestartet.", "WARNING")
+                self._append_log("Gateway is not running.", "WARNING")
                 return
             rows = gw.node_db.get_all_nodes()
             if not rows:
-                self._append_log("Keine Knoten in der Datenbank.", "INFO")
+                self._append_log("No nodes in the database.", "INFO")
             else:
                 self._append_log(
-                    f"{'UID':<22} {'Rufzeichen':<20} {'Lat':>10} {'Lon':>11} {'Alt':>6}  {'Quelle':<10} Zuletzt gesehen",
+                    f"{'UID':<22} {'Callsign':<20} {'Lat':>10} {'Lon':>11} {'Alt':>6}  {'Source':<10} Last Seen",
                     "INFO",
                 )
                 for uid, callsign, lat, lon, alt, last_seen, source in rows:
@@ -1768,40 +1715,40 @@ class GatewayApp:
                 lon = float(parts_raw[3])
                 alt = float(parts_raw[4]) if len(parts_raw) >= 5 else 0.0
             except ValueError:
-                self._append_log("setpos: ungültige Koordinaten. Syntax: setpos <uid> <lat> <lon> [alt]", "WARNING")
+                self._append_log("setpos: invalid coordinates. Syntax: setpos <uid> <lat> <lon> [alt]", "WARNING")
                 return
             normalized = normalize_coordinates(lat, lon)
             if normalized is None:
-                self._append_log(f"setpos: ungültige Koordinaten ({lat}, {lon}).", "WARNING")
+                self._append_log(f"setpos: invalid coordinates ({lat}, {lon}).", "WARNING")
                 return
             lat, lon = normalized
             gw = self._gateway
             if not gw:
-                self._append_log("Gateway ist nicht gestartet.", "WARNING")
+                self._append_log("Gateway is not running.", "WARNING")
                 return
             gw.node_db.set_manual_position(uid, lat, lon, alt)
             gw.last_known_positions[uid] = (lat, lon, alt)
-            self._append_log(f"Position für '{uid}' auf ({lat:.6f}, {lon:.6f}, {alt:.0f}m) gesetzt.", "INFO")
+            self._append_log(f"Position for '{uid}' set to ({lat:.6f}, {lon:.6f}, {alt:.0f}m).", "INFO")
         elif action == "setpos":
             self._append_log("Syntax: setpos <uid> <lat> <lon> [alt]", "WARNING")
         elif action == "help":
             for line in [
-                "Verfügbare Befehle:",
-                "  sync                         – Manuelle Vollsynchronisation aller Nodes",
-                "  nodes                        – Alle Knoten aus der Datenbank anzeigen",
-                "  setpos <uid> <lat> <lon> [alt] – Position eines Knotens manuell setzen",
-                "  log <level>                  – Log-Level setzen (debug/info/warning/error)",
-                "  clear                        – Log-Ausgabe leeren",
-                "  help                         – Diese Hilfe anzeigen",
+                "Available commands:",
+                "  sync                         – Start a manual full sync for all nodes",
+                "  nodes                        – Show all nodes from the database",
+                "  setpos <uid> <lat> <lon> [alt] – Set a node position manually",
+                "  log <level>                  – Set the log level (debug/info/warning/error)",
+                "  clear                        – Clear the log output",
+                "  help                         – Show this help",
             ]:
                 self._append_log(line, "INFO")
         else:
-            self._append_log(f"Unbekannter Befehl: '{cmd}'. Tippe 'help' für Hilfe.", "WARNING")
+            self._append_log(f"Unknown command: '{cmd}'. Type 'help' for help.", "WARNING")
 
     # ─────────────────────────── Logging in GUI ───────────────────────────────
 
     def _queue_log(self, msg, level="INFO"):
-        """Thread-sicherer Aufruf: Nachricht in den GUI-Thread einreihen."""
+        """Thread-safe call: enqueue a message for the GUI thread."""
         self._root.after(0, self._append_log, msg, level)
 
     def _append_log(self, msg, level="INFO"):
