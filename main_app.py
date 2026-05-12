@@ -1900,7 +1900,7 @@ class TAKMeshtasticGateway:
         except (ValueError, TypeError) as e:
             raise ValueError(f"Invalid local_tak_tcp_listen_port in config: {e}")
         self.tcp_chat_listen_ip, _ = _get_tak_tcp_listener_endpoint_from_cfg(self.cfg)
-        
+
         self.sock_udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock_udp.settimeout(self.SOCKET_TIMEOUT)  # Add timeout to prevent hanging
         self.sock_chat_listeners = []
