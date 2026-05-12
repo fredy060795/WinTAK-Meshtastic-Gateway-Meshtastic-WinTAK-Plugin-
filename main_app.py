@@ -289,7 +289,7 @@ def _ensure_bytes(value):
 def _decode_tak_packet_bytes(packet_bytes):
     """Normalize common TAK UDP packet encodings to UTF-8 XML bytes."""
     packet_bytes = _ensure_bytes(packet_bytes)
-    packet_bytes = packet_bytes.lstrip(b"\x00").rstrip(b"\x00").strip()
+    packet_bytes = packet_bytes.strip(b"\x00 \t\r\n")
     if not packet_bytes:
         return b""
 
@@ -297,13 +297,17 @@ def _decode_tak_packet_bytes(packet_bytes):
         stripped = str(text or "").strip()
         return stripped.startswith("<") and ">" in stripped
 
+    def _should_attempt_utf16_decode(raw_bytes):
+        null_bytes = raw_bytes.count(b"\x00")
+        return null_bytes >= 2 and null_bytes >= len(raw_bytes) // UTF16_NULL_BYTE_TRIGGER_RATIO
+
     if packet_bytes.startswith((b"\xff\xfe", b"\xfe\xff")):
         try:
             return packet_bytes.decode("utf-16").encode("utf-8")
         except UnicodeDecodeError:
             return packet_bytes
 
-    if packet_bytes.count(b"\x00") >= max(2, len(packet_bytes) // UTF16_NULL_BYTE_TRIGGER_RATIO):
+    if _should_attempt_utf16_decode(packet_bytes):
         for encoding in ("utf-16-le", "utf-16-be"):
             try:
                 decoded_text = packet_bytes.decode(encoding)
