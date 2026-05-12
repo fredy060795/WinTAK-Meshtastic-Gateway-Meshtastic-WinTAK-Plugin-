@@ -1481,7 +1481,7 @@ class TAKMeshtasticGateway:
         if (from_id in self.local_node_ids or from_num in self.local_node_numbers) and self._was_seen_recently(
             self.recent_meshtastic_outbound_texts, message
         ):
-            self.logger.debug("Echo einer gerade aus TAK gesendeten Chatnachricht ignoriert.")
+            self.logger.debug("Echo einer gerade vom Gateway gesendeten Chatnachricht ignoriert.")
             return
 
         message_id = packet.get('id')
