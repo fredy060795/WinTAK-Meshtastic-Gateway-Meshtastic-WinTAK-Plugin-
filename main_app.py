@@ -13,6 +13,7 @@ import os
 import sys
 import argparse
 import datetime
+import hashlib
 import math
 import re
 import socket
@@ -130,6 +131,11 @@ def to_float_or_none(value):
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def format_meshtastic_node_ids(node_num):
+    """Return common string representations for a Meshtastic node number."""
+    return f"!{node_num:08x}", f"ID-{node_num:08x}"
 
 
 def load_config():
@@ -1083,11 +1089,14 @@ class TAKMeshtasticGateway:
         except (ValueError, TypeError) as e:
             raise ValueError(f"Invalid local_tak_port in config: {e}")
 
+        default_chat_listen_port = self.tak_port + 1 if self.tak_port < MAX_PORT_NUMBER else 4243
+        if default_chat_listen_port == self.tak_port:
+            default_chat_listen_port = 4244 if self.tak_port == 4243 else 4243
         try:
             chat_listen_port = int(
                 self.cfg.get(
                     "local_tak_chat_listen_port",
-                    self.tak_port + 1 if self.tak_port < MAX_PORT_NUMBER else self.tak_port,
+                    default_chat_listen_port,
                 )
             )
             if not (1 <= chat_listen_port <= 65535):
@@ -1236,8 +1245,7 @@ class TAKMeshtasticGateway:
                     continue
                 node_num = int(node_num)
                 self.local_node_numbers.add(node_num)
-                self.local_node_ids.add(f"!{node_num:08x}")
-                self.local_node_ids.add(f"ID-{node_num:08x}")
+                self.local_node_ids.update(format_meshtastic_node_ids(node_num))
             except Exception:
                 self.logger.debug("Lokale Node-ID konnte nicht registriert werden:\n" + traceback.format_exc())
 
@@ -1404,7 +1412,8 @@ class TAKMeshtasticGateway:
             return
 
         message_id = packet.get('id')
-        dedupe_key = f"mesh:{message_id}" if message_id is not None else f"mesh:{from_id}:{message}"
+        message_hash = hashlib.sha1(message.encode("utf-8", errors="ignore")).hexdigest()
+        dedupe_key = f"mesh:{message_id}" if message_id is not None else f"mesh:{from_id}:{message_hash}"
         if self._was_seen_recently(self.recent_meshtastic_chat_ids, dedupe_key):
             return
         self._remember_recent_chat(self.recent_meshtastic_chat_ids, dedupe_key)
@@ -1463,6 +1472,7 @@ class TAKMeshtasticGateway:
         last_error = None
         for iface in self.interfaces:
             try:
+                # Broadcast chat to the mesh; ACKs are intentionally disabled for broadcast delivery.
                 iface.sendText(message, wantAck=False)
                 sent_count += 1
             except Exception as exc:
