@@ -1401,31 +1401,9 @@ class GatewayApp:
 
         body = self._scrollable_body
 
-        overview_frame = ttk.LabelFrame(body, text=" OVERVIEW ", padding=(14, 12))
-        overview_frame.pack(fill="x", padx=0, pady=(0, 8))
-        tk.Label(
-            overview_frame,
-            text="Configuration, live operations, and manual testing tools are grouped below. All existing gateway behavior is preserved.",
-            bg=C["card"],
-            fg=C["fg"],
-            font=("Segoe UI", 10),
-            justify="left",
-            anchor="w",
-            wraplength=980,
-        ).pack(fill="x")
-        tk.Label(
-            overview_frame,
-            text="Use the operations panel on the right to send direct Meshtastic text or paste a full WinTAK CoT <event> XML into the mesh for testing.",
-            bg=C["card"],
-            fg=C["fg_sub"],
-            font=("Segoe UI", 9),
-            justify="left",
-            anchor="w",
-            wraplength=980,
-        ).pack(fill="x", pady=(8, 0))
-
         main_grid = tk.Frame(body, bg=C["bg"])
         main_grid.pack(fill="both", expand=True)
+        main_grid.rowconfigure(0, weight=1)
         main_grid.columnconfigure(0, weight=5)
         main_grid.columnconfigure(1, weight=3)
 
@@ -1819,8 +1797,8 @@ class GatewayApp:
         self._wintak_monitor_text.tag_configure("WARNING", foreground=C["warning"])
         self._wintak_monitor_text.tag_configure("ERROR", foreground=C["danger"])
 
-        log_frame = ttk.LabelFrame(body, text=" EVENT LOG ", padding=6)
-        log_frame.pack(fill="both", expand=True, pady=(10, 0))
+        log_frame = ttk.LabelFrame(left_col, text=" EVENT LOG ", padding=6)
+        log_frame.pack(fill="both", expand=True, pady=(8, 0))
         self._log_text = tk.Text(
             log_frame,
             wrap="word",
