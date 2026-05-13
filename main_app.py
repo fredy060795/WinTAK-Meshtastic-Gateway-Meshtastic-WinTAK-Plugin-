@@ -91,6 +91,34 @@ DEFAULT_MESHTASTIC_CHANNEL_INDEX = 0
 MESHTASTIC_ATAK_PLUGIN_PORTNUM = 72
 MESHTASTIC_ATAK_FORWARDER_PORTNUM = 257
 GEOCHAT_UID_PREFIX = "GeoChat."
+MESHTASTIC_DEFAULT_TEAM_ENUM = 1  # White
+MESHTASTIC_DEFAULT_ROLE_ENUM = 1  # TeamMember
+MESHTASTIC_TEAM_NAME_TO_ENUM = {
+    "WHITE": 1,
+    "YELLOW": 2,
+    "ORANGE": 3,
+    "MAGENTA": 4,
+    "RED": 5,
+    "MAROON": 6,
+    "PURPLE": 7,
+    "DARKBLUE": 8,
+    "BLUE": 9,
+    "CYAN": 10,
+    "TEAL": 11,
+    "GREEN": 12,
+    "DARKGREEN": 13,
+    "BROWN": 14,
+}
+MESHTASTIC_ROLE_NAME_TO_ENUM = {
+    "TEAMMEMBER": 1,
+    "TEAMLEAD": 2,
+    "HQ": 3,
+    "SNIPER": 4,
+    "MEDIC": 5,
+    "FORWARDOBSERVER": 6,
+    "RTO": 7,
+    "K9": 8,
+}
 TAK_EVENT_PATTERN = re.compile(r"<event\b[^>]*>.*?</event>", re.DOTALL)
 TAK_PING_EVENT_TYPE = "t-x-c-t"
 TAK_PONG_EVENT_TYPE = "t-x-c-t-r"
@@ -466,6 +494,50 @@ def _read_protobuf_varint(buffer, offset):
     raise ValueError("Ungültige Protobuf-Varint-Daten")
 
 
+def _encode_protobuf_varint(value):
+    """Encode an integer as protobuf varint bytes."""
+    value = int(value)
+    if value < 0:
+        value += 1 << 64
+    encoded = bytearray()
+    while value > 0x7F:
+        encoded.append((value & 0x7F) | 0x80)
+        value >>= 7
+    encoded.append(value & 0x7F)
+    return bytes(encoded)
+
+
+def _encode_protobuf_key(field_number, wire_type):
+    return _encode_protobuf_varint((int(field_number) << 3) | int(wire_type))
+
+
+def _encode_protobuf_length_delimited(value):
+    value = _ensure_bytes(value)
+    return _encode_protobuf_varint(len(value)) + value
+
+
+def _encode_protobuf_varint_field(field_number, value):
+    return _encode_protobuf_key(field_number, 0) + _encode_protobuf_varint(value)
+
+
+def _encode_protobuf_sfixed32_field(field_number, value):
+    return _encode_protobuf_key(field_number, 5) + int(value).to_bytes(4, byteorder="little", signed=True)
+
+
+def _encode_protobuf_string_field(field_number, value):
+    encoded = _ensure_bytes(value)
+    if not encoded:
+        return b""
+    return _encode_protobuf_key(field_number, 2) + _encode_protobuf_length_delimited(encoded)
+
+
+def _encode_protobuf_message_field(field_number, payload):
+    payload = bytes(payload or b"")
+    if not payload:
+        return b""
+    return _encode_protobuf_key(field_number, 2) + _encode_protobuf_length_delimited(payload)
+
+
 def _skip_protobuf_field(buffer, offset, wire_type):
     """Skip a protobuf field payload and return the next offset."""
     if wire_type == 0:  # varint
@@ -570,6 +642,10 @@ def _parse_meshtastic_atak_payload(payload):
         elif field_number == 6:
             decoded["chat"] = _parse_meshtastic_atak_chat(field_bytes)
     return decoded
+
+
+def _normalize_meshtastic_enum_key(value):
+    return re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
 
 
 def load_config():
@@ -2151,6 +2227,144 @@ class TAKMeshtasticGateway:
             "uid": (root.get("uid") or "").strip(),
         }
 
+    def _extract_meshtastic_pli_candidate(self, packet_xml):
+        try:
+            root = fromstring(packet_xml)
+        except (ParseError, TypeError, ValueError):
+            return None
+        if _xml_local_name(root.tag) != "event":
+            return None
+
+        event_type = (root.get("type") or "").strip()
+        if event_type != "a-f-G-U-C":
+            return None
+
+        point = _find_child_by_local_name(root, "point")
+        if point is None:
+            return None
+        lat = to_float_or_none(point.get("lat"))
+        lon = to_float_or_none(point.get("lon"))
+        normalized_coords = normalize_coordinates(lat, lon)
+        if normalized_coords is None:
+            return None
+        lat, lon = normalized_coords
+
+        detail = _find_child_by_local_name(root, "detail")
+        contact = _find_child_by_local_name(detail, "contact")
+        link = _find_child_by_local_name(detail, "link")
+        group = _find_child_by_local_name(detail, "__group")
+        status = _find_child_by_local_name(detail, "status")
+        track = _find_child_by_local_name(detail, "track")
+
+        uid = (root.get("uid") or "").strip()
+        callsign = ""
+        if contact is not None:
+            callsign = str(contact.get("callsign") or "").strip()
+        if not callsign:
+            callsign = uid or self.gateway_callsign
+
+        device_callsign = ""
+        if link is not None:
+            device_callsign = str(link.get("uid") or "").strip()
+        if not device_callsign:
+            device_callsign = uid or callsign or self.gateway_uid
+
+        team_name = ""
+        role_name = ""
+        if group is not None:
+            team_name = str(group.get("name") or "").strip()
+            role_name = str(group.get("role") or "").strip()
+
+        battery = 0
+        if status is not None:
+            battery_value = to_float_or_none(status.get("battery"))
+            if battery_value is not None and not math.isnan(battery_value):
+                battery = max(0, min(100, int(round(battery_value))))
+
+        speed = 0
+        course = 0
+        if track is not None:
+            speed_value = to_float_or_none(track.get("speed"))
+            if speed_value is not None and not math.isnan(speed_value):
+                speed = max(0, int(round(speed_value)))
+            course_value = to_float_or_none(track.get("course"))
+            if course_value is not None and not math.isnan(course_value):
+                course = int(round(course_value)) % 360
+
+        altitude = to_float_or_none(point.get("hae"))
+        if altitude is None or math.isnan(altitude):
+            altitude = 0.0
+
+        return {
+            "uid": uid,
+            "callsign": callsign,
+            "device_callsign": device_callsign,
+            "team": team_name,
+            "role": role_name,
+            "battery": battery,
+            "speed": speed,
+            "course": course,
+            "altitude": int(round(altitude)),
+            "latitude_i": int(round(lat / 1e-7)),
+            "longitude_i": int(round(lon / 1e-7)),
+        }
+
+    def _build_meshtastic_contact_payload(self, pli_candidate):
+        return b"".join(
+            (
+                _encode_protobuf_string_field(1, pli_candidate.get("callsign") or ""),
+                _encode_protobuf_string_field(2, pli_candidate.get("device_callsign") or ""),
+            )
+        )
+
+    def _build_meshtastic_group_payload(self, pli_candidate):
+        role_enum = MESHTASTIC_ROLE_NAME_TO_ENUM.get(
+            _normalize_meshtastic_enum_key(pli_candidate.get("role")),
+            MESHTASTIC_DEFAULT_ROLE_ENUM,
+        )
+        team_enum = MESHTASTIC_TEAM_NAME_TO_ENUM.get(
+            _normalize_meshtastic_enum_key(pli_candidate.get("team")),
+            MESHTASTIC_DEFAULT_TEAM_ENUM,
+        )
+        return (
+            _encode_protobuf_varint_field(1, role_enum)
+            + _encode_protobuf_varint_field(2, team_enum)
+        )
+
+    def _build_meshtastic_status_payload(self, pli_candidate):
+        return _encode_protobuf_varint_field(1, max(0, int(pli_candidate.get("battery", 0) or 0)))
+
+    def _build_meshtastic_pli_payload(self, pli_candidate):
+        return b"".join(
+            (
+                _encode_protobuf_sfixed32_field(1, pli_candidate["latitude_i"]),
+                _encode_protobuf_sfixed32_field(2, pli_candidate["longitude_i"]),
+                _encode_protobuf_varint_field(3, int(pli_candidate.get("altitude", 0) or 0)),
+                _encode_protobuf_varint_field(4, max(0, int(pli_candidate.get("speed", 0) or 0))),
+                _encode_protobuf_varint_field(5, max(0, int(pli_candidate.get("course", 0) or 0))),
+            )
+        )
+
+    def _prepare_meshtastic_pli_packet(self, packet_xml):
+        pli_candidate = self._extract_meshtastic_pli_candidate(packet_xml)
+        if pli_candidate is None:
+            return None
+        payload = b"".join(
+            (
+                _encode_protobuf_message_field(2, self._build_meshtastic_contact_payload(pli_candidate)),
+                _encode_protobuf_message_field(3, self._build_meshtastic_group_payload(pli_candidate)),
+                _encode_protobuf_message_field(4, self._build_meshtastic_status_payload(pli_candidate)),
+                _encode_protobuf_message_field(5, self._build_meshtastic_pli_payload(pli_candidate)),
+            )
+        )
+        if not payload:
+            return None
+        return {
+            "uid": pli_candidate["uid"],
+            "callsign": pli_candidate["callsign"],
+            "payload": payload,
+        }
+
     def _build_cot_dedupe_key(self, packet_xml):
         packet_bytes = _ensure_bytes(packet_xml).strip()
         if not packet_bytes:
@@ -2795,6 +3009,20 @@ class TAKMeshtasticGateway:
 
     def _forward_cot_to_meshtastic(self, packet_xml):
         interfaces = self._ensure_meshtastic_interfaces(raise_on_empty=True)
+        pli_packet = self._prepare_meshtastic_pli_packet(packet_xml)
+        if pli_packet is not None:
+            try:
+                self._send_data_to_interfaces(
+                    pli_packet["payload"],
+                    interfaces,
+                    MESHTASTIC_ATAK_PLUGIN_PORTNUM,
+                )
+                return ["ATAK_PLUGIN"]
+            except Exception as exc:
+                self.logger.warning(
+                    "ATAK_PLUGIN-PLI-Senden fehlgeschlagen, versuche ATAK_FORWARDER-Fallback: "
+                    f"{exc}"
+                )
         forwarder_payload = self._prepare_meshtastic_forwarder_payload(packet_xml)
         if not forwarder_payload:
             raise ValueError("Leere CoT-Nachricht kann nicht ins Mesh gesendet werden.")
@@ -3337,7 +3565,9 @@ class TAKMeshtasticGateway:
         if cot_dedupe_key:
             self._remember_recent_chat(self.recent_cot_ids, cot_dedupe_key)
         transport_label = "ATAK_FORWARDER-Paket"
-        if sent_chunks != ["ATAK_FORWARDER"]:
+        if sent_chunks == ["ATAK_PLUGIN"]:
+            transport_label = "ATAK_PLUGIN-PLI"
+        elif sent_chunks != ["ATAK_FORWARDER"]:
             transport_label = f"{len(sent_chunks)} Legacy-Fragment{'e' if len(sent_chunks) != 1 else ''}"
         self.logger.info(f"TAK-CoT ins Mesh gesendet: {metadata['uid'] or 'ohne UID'} ({transport_label})")
 
