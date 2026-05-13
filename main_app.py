@@ -2682,6 +2682,60 @@ class TAKMeshtasticGateway:
                 return str(value)
         return "unbekannt"
 
+    def _get_interface_label_key(self, interface):
+        return self._normalize_interface_label_key(self._get_interface_label(interface))
+
+    def _normalize_interface_label_key(self, label):
+        return str(label or "").strip().upper()
+
+    def _format_interface_labels(self, labels):
+        normalized = []
+        seen = set()
+        for label in labels or []:
+            text = str(label or "").strip()
+            key = text.upper()
+            if not text or key in seen:
+                continue
+            seen.add(key)
+            normalized.append(text)
+        return normalized
+
+    def _get_interface_label_keys(self, labels):
+        return {
+            self._normalize_interface_label_key(label)
+            for label in labels or []
+            if self._normalize_interface_label_key(label)
+        }
+
+    def _merge_interfaces_by_label(self, interfaces, additional_interfaces):
+        merged = list(interfaces or [])
+        seen = {self._get_interface_label_key(iface) for iface in merged if iface is not None}
+        for iface in additional_interfaces or []:
+            if iface is None:
+                continue
+            label_key = self._get_interface_label_key(iface)
+            if label_key in seen:
+                continue
+            seen.add(label_key)
+            merged.append(iface)
+        return merged
+
+    def _get_interfaces_by_labels(self, labels, interfaces=None):
+        label_keys = self._get_interface_label_keys(labels)
+        if not label_keys:
+            return []
+        matched = []
+        seen = set()
+        for iface in interfaces or self._get_interfaces_snapshot():
+            if iface is None:
+                continue
+            label_key = self._get_interface_label_key(iface)
+            if not label_key or label_key not in label_keys or label_key in seen:
+                continue
+            seen.add(label_key)
+            matched.append(iface)
+        return matched
+
     def _get_interfaces_snapshot(self):
         with self.interface_lock:
             return list(self.interfaces)
@@ -2852,6 +2906,7 @@ class TAKMeshtasticGateway:
                 raise RuntimeError("Keine verbundenen Meshtastic-Interfaces verfügbar.")
         sent_interfaces = []
         last_error = None
+        failed_labels = []
         for iface in interfaces:
             try:
                 # Broadcast Chat/CoT always on the primary Meshtastic channel 0.
@@ -2860,22 +2915,48 @@ class TAKMeshtasticGateway:
                 sent_interfaces.append(iface)
             except Exception as exc:
                 last_error = exc
+                failed_labels.append(self._get_interface_label(iface))
                 self.logger.warning(
                     f"Fehler beim Senden einer Meshtastic-Nachricht auf {self._get_interface_label(iface)}: {exc}"
                 )
-        if not sent_interfaces and last_error is not None and allow_reconnect:
+        normalized_failed_labels = self._format_interface_labels(failed_labels)
+        if normalized_failed_labels and allow_reconnect:
             retry_interfaces = self._ensure_meshtastic_interfaces(reconnect=True, reason=str(last_error))
-            if retry_interfaces:
+            retry_targets = self._get_interfaces_by_labels(normalized_failed_labels, retry_interfaces)
+            retry_target_labels = {
+                self._get_interface_label_key(iface) for iface in retry_targets if iface is not None
+            }
+            missing_retry_labels = [
+                label
+                for label in normalized_failed_labels
+                if self._normalize_interface_label_key(label) not in retry_target_labels
+            ]
+            if missing_retry_labels:
+                failure = RuntimeError(
+                    f"Meshtastic-Nachricht konnte nach COM-Neuverbindung nicht an folgende Ports gesendet werden: "
+                    f"{', '.join(missing_retry_labels)}"
+                )
+                raise failure from last_error
+            if retry_targets:
                 try:
-                    return self._send_text_to_interfaces(message, retry_interfaces, allow_reconnect=False)
+                    retried_interfaces = self._send_text_to_interfaces(
+                        message,
+                        retry_targets,
+                        allow_reconnect=False,
+                    )
+                    return self._merge_interfaces_by_label(sent_interfaces, retried_interfaces)
                 except Exception as retry_exc:
                     self.logger.warning(
                         "Meshtastic-Senden ist auch nach COM-Neuverbindung fehlgeschlagen: "
                         f"erst '{last_error}', dann '{retry_exc}'"
                     )
                     raise retry_exc from last_error
-        if not sent_interfaces and last_error is not None:
-            raise last_error
+        if normalized_failed_labels:
+            failure = RuntimeError(
+                f"Meshtastic-Nachricht konnte nicht an alle verbundenen Ports gesendet werden: "
+                f"{', '.join(normalized_failed_labels)}"
+            )
+            raise failure from last_error
         return sent_interfaces
 
     def _send_data_to_interfaces(self, payload, interfaces, portnum, allow_reconnect=True):
@@ -2887,6 +2968,7 @@ class TAKMeshtasticGateway:
                 raise RuntimeError("Keine verbundenen Meshtastic-Interfaces verfügbar.")
         sent_interfaces = []
         last_error = None
+        failed_labels = []
         for iface in interfaces:
             try:
                 kwargs = self._build_meshtastic_send_data_kwargs(iface, portnum)
@@ -2894,27 +2976,55 @@ class TAKMeshtasticGateway:
                 sent_interfaces.append(iface)
             except Exception as exc:
                 last_error = exc
+                failed_labels.append(self._get_interface_label(iface))
                 self.logger.warning(
                     f"Fehler beim Senden eines Meshtastic-Datenpakets auf {self._get_interface_label(iface)}: {exc}"
                 )
         should_retry = (
             allow_reconnect
             and last_error is not None
+            and failed_labels
             and not _is_meshtastic_payload_too_big_error(last_error)
         )
-        if not sent_interfaces and should_retry:
+        normalized_failed_labels = self._format_interface_labels(failed_labels)
+        if should_retry:
             retry_interfaces = self._ensure_meshtastic_interfaces(reconnect=True, reason=str(last_error))
-            if retry_interfaces:
+            retry_targets = self._get_interfaces_by_labels(normalized_failed_labels, retry_interfaces)
+            retry_target_labels = {
+                self._get_interface_label_key(iface) for iface in retry_targets if iface is not None
+            }
+            missing_retry_labels = [
+                label
+                for label in normalized_failed_labels
+                if self._normalize_interface_label_key(label) not in retry_target_labels
+            ]
+            if missing_retry_labels:
+                failure = RuntimeError(
+                    f"Meshtastic-Datenpaket konnte nach COM-Neuverbindung nicht an folgende Ports gesendet werden: "
+                    f"{', '.join(missing_retry_labels)}"
+                )
+                raise failure from last_error
+            if retry_targets:
                 try:
-                    return self._send_data_to_interfaces(payload, retry_interfaces, portnum, allow_reconnect=False)
+                    retried_interfaces = self._send_data_to_interfaces(
+                        payload,
+                        retry_targets,
+                        portnum,
+                        allow_reconnect=False,
+                    )
+                    return self._merge_interfaces_by_label(sent_interfaces, retried_interfaces)
                 except Exception as retry_exc:
                     self.logger.warning(
                         "Meshtastic-Datensenden ist auch nach COM-Neuverbindung fehlgeschlagen: "
                         f"erst '{last_error}', dann '{retry_exc}'"
                     )
                     raise retry_exc from last_error
-        if not sent_interfaces and last_error is not None:
-            raise last_error
+        if normalized_failed_labels:
+            failure = RuntimeError(
+                f"Meshtastic-Datenpaket konnte nicht an alle verbundenen Ports gesendet werden: "
+                f"{', '.join(normalized_failed_labels)}"
+            )
+            raise failure from last_error
         return sent_interfaces
 
     def _get_relay_targets(self, source_interface, interfaces=None):
