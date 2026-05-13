@@ -3236,14 +3236,15 @@ class TAKMeshtasticGateway:
             return None
         raw_host = host[1:-1] if host.startswith("[") and host.endswith("]") else host
         try:
-            if isinstance(ipaddress.ip_address(raw_host), ipaddress.IPv6Address):
+            parsed_host = ipaddress.ip_address(raw_host)
+            if isinstance(parsed_host, ipaddress.IPv6Address):
                 host = f"[{raw_host}]"
         except ValueError:
             host = raw_host
         return f"{protocol}://{host}:{self.server_port}"
 
     def _should_use_pytak_remote(self):
-        return pytak is not None and self.server_protocol in {"TCP", "UDP"} and bool(self.remote_cot_url)
+        return pytak is not None and self.server_protocol in {"TCP", "UDP"} and self.remote_cot_url is not None
 
     def _reset_remote_pytak_state(self):
         with self.server_lock:
@@ -3324,9 +3325,11 @@ class TAKMeshtasticGateway:
 
         if self._should_use_pytak_remote():
             # PyTAK replaces the legacy remote socket path when available so packets
-            # are not sent twice to the same remote TAK endpoint.
-            self._send_remote_packet_via_pytak(packet_xml, label)
-            return
+            # are not sent twice to the same remote TAK endpoint unless PyTAK is
+            # currently unavailable, in which case we fall back to the legacy socket.
+            if self._send_remote_packet_via_pytak(packet_xml, label):
+                return
+            self.logger.debug("PyTAK-Remote nicht verfügbar, verwende Remote-Socket-Fallback.")
 
         if self.server_protocol == "UDP":
             with self.server_lock:
