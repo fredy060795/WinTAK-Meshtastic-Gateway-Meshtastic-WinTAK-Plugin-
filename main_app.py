@@ -2683,7 +2683,10 @@ class TAKMeshtasticGateway:
         return "unbekannt"
 
     def _get_interface_label_key(self, interface):
-        return self._get_interface_label(interface).strip().upper()
+        return self._normalize_interface_label_key(self._get_interface_label(interface))
+
+    def _normalize_interface_label_key(self, label):
+        return str(label or "").strip().upper()
 
     def _format_interface_labels(self, labels):
         normalized = []
@@ -2696,6 +2699,13 @@ class TAKMeshtasticGateway:
             seen.add(key)
             normalized.append(text)
         return normalized
+
+    def _get_interface_label_keys(self, labels):
+        return {
+            self._normalize_interface_label_key(label)
+            for label in labels or []
+            if self._normalize_interface_label_key(label)
+        }
 
     def _merge_interfaces_by_label(self, interfaces, additional_interfaces):
         merged = list(interfaces or [])
@@ -2913,11 +2923,11 @@ class TAKMeshtasticGateway:
         if failed_labels and allow_reconnect:
             retry_interfaces = self._ensure_meshtastic_interfaces(reconnect=True, reason=str(last_error))
             retry_targets = self._get_interfaces_by_labels(failed_labels, retry_interfaces)
-            retry_target_labels = {
-                self._get_interface_label_key(iface) for iface in retry_targets
-            }
+            retry_target_labels = self._get_interface_label_keys(
+                self._get_interface_label(iface) for iface in retry_targets
+            )
             missing_retry_labels = [
-                label for label in failed_labels if label.upper() not in retry_target_labels
+                label for label in failed_labels if self._normalize_interface_label_key(label) not in retry_target_labels
             ]
             if missing_retry_labels:
                 failure = RuntimeError(
@@ -2982,11 +2992,11 @@ class TAKMeshtasticGateway:
         if should_retry:
             retry_interfaces = self._ensure_meshtastic_interfaces(reconnect=True, reason=str(last_error))
             retry_targets = self._get_interfaces_by_labels(failed_labels, retry_interfaces)
-            retry_target_labels = {
-                self._get_interface_label_key(iface) for iface in retry_targets
-            }
+            retry_target_labels = self._get_interface_label_keys(
+                self._get_interface_label(iface) for iface in retry_targets
+            )
             missing_retry_labels = [
-                label for label in failed_labels if label.upper() not in retry_target_labels
+                label for label in failed_labels if self._normalize_interface_label_key(label) not in retry_target_labels
             ]
             if missing_retry_labels:
                 failure = RuntimeError(
