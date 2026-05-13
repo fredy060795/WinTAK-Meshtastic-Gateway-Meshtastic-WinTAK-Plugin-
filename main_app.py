@@ -87,6 +87,7 @@ INBOUND_TAK_DEBUG_SNIPPET_CHARS = 240
 UTF8_BOM_CHAR = "\ufeff"
 RECENT_CHAT_CACHE_TTL_SECONDS = 30
 RECENT_CHAT_CACHE_MAX_ENTRIES = 256
+EMPTY_MESHTASTIC_COT_ERROR = "Leere CoT-Nachricht kann nicht ins Mesh gesendet werden."
 MESHTASTIC_TEXT_CHUNK_MAX_BYTES = 180
 MESHTASTIC_DATA_PAYLOAD_MAX_BYTES = 180
 MESHTASTIC_COT_FRAGMENT_PREFIX = "COTM"
@@ -3934,7 +3935,7 @@ class TAKMeshtasticGateway:
         try:
             cot_chunks = self._prepare_meshtastic_cot_chunks(normalized_packet)
             if not cot_chunks:
-                raise ValueError("Leere CoT-Nachricht kann nicht ins Mesh gesendet werden.")
+                raise ValueError(EMPTY_MESHTASTIC_COT_ERROR)
             self.logger.debug(
                 f"Generic-CoT als Legacy-COTM-Kurztext fragmentiert: paketanzahl={len(cot_chunks)}"
             )
@@ -3951,7 +3952,7 @@ class TAKMeshtasticGateway:
 
         forwarder_payload = self._prepare_meshtastic_forwarder_payload(normalized_packet)
         if not forwarder_payload:
-            raise ValueError("Leere CoT-Nachricht kann nicht ins Mesh gesendet werden.")
+            raise ValueError(EMPTY_MESHTASTIC_COT_ERROR)
         self.logger.debug(
             f"Generic-CoT via ATAK_FORWARDER komprimiert: xml_bytes={len(_ensure_bytes(normalized_packet))} "
             f"compressed_bytes={len(forwarder_payload)}"
