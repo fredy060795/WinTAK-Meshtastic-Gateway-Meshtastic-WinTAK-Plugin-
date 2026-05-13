@@ -166,7 +166,9 @@ def _resolve_meshtastic_portnum(primary_name, fallback, *alternate_names):
         *alternate_names: Additional enum attribute names checked in order.
 
     Returns:
-        int: The first matching enum value, otherwise the provided fallback.
+        int: The first matching enum value, or the provided fallback when
+        ``portnums_pb2`` is unavailable or none of the requested enum names
+        exist in the installed Meshtastic version.
     """
     if portnums_pb2 is None:
         return fallback
@@ -2744,12 +2746,8 @@ class TAKMeshtasticGateway:
             return True
         if portnums_pb2 is not None:
             try:
-                atak_forwarder = getattr(portnums_pb2.PortNum, "ATAK_FORWARDER", None)
                 numeric_portnum = int(portnum)
-                return (
-                    numeric_portnum == MESHTASTIC_ATAK_FORWARDER_PORTNUM
-                    or (atak_forwarder is not None and numeric_portnum == int(atak_forwarder))
-                )
+                return numeric_portnum == MESHTASTIC_ATAK_FORWARDER_PORTNUM
             except (TypeError, ValueError):
                 return False
         try:
