@@ -69,7 +69,7 @@ DEFAULT_CHATROOM_NAME = "All Chat Rooms"
 DEFAULT_CHAT_LISTEN_PORT = 4242
 TCP_LISTENER_DEFAULT_PORT = 8088
 WINTAK_REQUIRED_HOST = "127.0.0.1"
-WINTAK_MONITOR_MAX_LINES = 150
+MAX_WINTAK_MONITOR_DISPLAY_LINES = 150
 DEFAULT_TAK_MULTICAST_GROUPS = (
     "224.10.10.1:17012",
     "239.2.3.1:6969",
@@ -1150,10 +1150,10 @@ class GatewayApp:
         FG_SUB    = "#9ec3b6"   # Subtle helper text
         ACCENT    = "#3fd48b"   # Primary accent
         ACCENT_H  = "#69e8a5"   # Hover
-        SUCCESS   = "#63e6af"   # Grün
-        WARNING   = "#f2d16b"   # Amber
-        DANGER    = "#ff7b72"   # Rot
-        TEXT_BG   = "#0b1916"   # Text-/Log-Hintergrund
+        SUCCESS   = "#63e6af"   # Success
+        WARNING   = "#f2d16b"   # Warning
+        DANGER    = "#ff7b72"   # Danger
+        TEXT_BG   = "#0b1916"   # Text/log background
 
         # ── Allgemein ──
         style.configure(".",
@@ -1349,7 +1349,7 @@ class GatewayApp:
         ).pack(fill="x")
         tk.Label(
             title_block,
-            text="Live gateway operations with direct mesh text and WinTAK CoT send controls.",
+            text="Live Gateway operations with direct mesh text and WinTAK CoT send controls.",
             bg=C["panel"],
             fg=C["fg_sub"],
             font=("Segoe UI", 10),
@@ -2274,9 +2274,10 @@ class GatewayApp:
             level if level in ("INFO", "WARNING", "ERROR") else "INFO",
         )
         current_lines = int(self._wintak_monitor_text.index("end-1c").split(".")[0])
-        if current_lines > WINTAK_MONITOR_MAX_LINES:
+        if current_lines > MAX_WINTAK_MONITOR_DISPLAY_LINES:
             # Keep only the newest monitor rows once the text widget grows past the cap.
-            self._wintak_monitor_text.delete("1.0", f"{current_lines - WINTAK_MONITOR_MAX_LINES}.0")
+            excess_lines = current_lines - MAX_WINTAK_MONITOR_DISPLAY_LINES
+            self._wintak_monitor_text.delete("1.0", f"{excess_lines}.0")
         self._wintak_monitor_text.see("end")
         self._wintak_monitor_text.configure(state="disabled")
 
@@ -3935,6 +3936,11 @@ class TAKMeshtasticGateway:
         return {"transport": "LEGACY_COTM", "count": len(cot_chunks)}
 
     def send_cot_to_meshtastic(self, packet_xml):
+        """Send a full TAK/CoT ``<event>`` XML payload into the Meshtastic pipeline.
+
+        Returns the same result dictionary as ``_forward_cot_to_meshtastic()``, including
+        the selected transport and emitted packet count.
+        """
         return self._forward_cot_to_meshtastic(packet_xml)
 
     def _handle_meshtastic_legacy_cot_text(self, message, from_id):
