@@ -173,6 +173,7 @@ _WINTAK_CHAT_FIELD_PATTERN = re.compile(
     r"^(?:message|text|note|remarks|body|content)(?P<index>\d+)?$",
     re.IGNORECASE,
 )
+_TAK_CHAT_MESSAGE_FIELD_NAMES = frozenset({"message", "text", "body", "content", "note", "_chat"})
 
 
 def _resolve_meshtastic_portnum(primary_name, fallback, *alternate_names):
@@ -441,6 +442,31 @@ def _looks_like_tak_chat_remarks(remarks):
     for attr_name in ("source", "sourceID", "sourceId", "to"):
         if str(remarks.get(attr_name) or "").strip():
             return True
+    return False
+
+
+def _has_tak_chat_message_fields(element):
+    """Return True when detail XML contains message-like nodes/attributes.
+
+    The attribute fallback reuses ``_WINTAK_CHAT_FIELD_PATTERN`` so WinTAK exports
+    such as ``message1``/``text2``/``note`` are recognized even without GeoChat
+    wrapper elements like ``<chat>`` or ``<__chat>``.
+    """
+    if element is None:
+        return False
+    for node in element.iter():
+        local_name = _xml_local_name(node.tag).lower()
+        if local_name in _TAK_CHAT_MESSAGE_FIELD_NAMES:
+            node_text = _collect_xml_text(node).strip()
+            if node_text:
+                return True
+            if any(str(value or "").strip() for value in node.attrib.values()):
+                return True
+        for attr_name, attr_value in node.attrib.items():
+            if not str(attr_value or "").strip():
+                continue
+            if _WINTAK_CHAT_FIELD_PATTERN.match(attr_name):
+                return True
     return False
 
 
@@ -3803,7 +3829,20 @@ class TAKMeshtasticGateway:
         for iface in interfaces:
             try:
                 kwargs = self._build_meshtastic_send_data_kwargs(iface, portnum)
-                iface.sendData(payload, **kwargs)
+                try:
+                    iface.sendData(payload, **kwargs)
+                except Exception as exc:
+                    compatibility_kwargs = dict(kwargs)
+                    removed_destination = compatibility_kwargs.pop("destinationId", None)
+                    if removed_destination is None:
+                        removed_destination = compatibility_kwargs.pop("destination_id", None)
+                    if removed_destination is None:
+                        raise
+                    self.logger.debug(
+                        "Meshtastic-sendData-Broadcast wird ohne destinationId erneut versucht: "
+                        f"iface={self._get_interface_label(iface)} port={portnum} previous_destination={removed_destination}"
+                    )
+                    iface.sendData(payload, **compatibility_kwargs)
                 sent_interfaces.append(iface)
             except Exception as exc:
                 last_error = exc
@@ -4159,14 +4198,43 @@ class TAKMeshtasticGateway:
                     return {"transport": "ATAK_PLUGIN_DETAIL", "count": 1}
                 except Exception as exc:
                     self.logger.warning(
-                        "ATAK_PLUGIN-detail=7-Senden fehlgeschlagen, versuche Legacy-COTM/ATAK_FORWARDER-Fallback: "
+                        "ATAK_PLUGIN-detail=7-Senden fehlgeschlagen, versuche ATAK_FORWARDER/COTM-Fallback: "
                         f"{exc}"
                     )
             else:
                 self.logger.debug(
                     f"Generic-CoT-Typ {metadata['type']} passt nicht in ATAK_PLUGIN-detail=7 und versucht "
-                    "Legacy-COTM-Kurztext mit ATAK_FORWARDER-Fallback."
+                    "ATAK_FORWARDER mit Legacy-COTM-Fallback."
                 )
+
+        forwarder_payload = self._prepare_meshtastic_forwarder_payload(normalized_packet)
+        if not forwarder_payload:
+            raise ValueError(EMPTY_MESHTASTIC_COT_ERROR)
+        try:
+            self.logger.debug(
+                f"Generic-CoT via ATAK_FORWARDER komprimiert: xml_bytes={len(_ensure_bytes(normalized_packet))} "
+                f"compressed_bytes={len(forwarder_payload)}"
+            )
+            forwarder_packets = self._prepare_meshtastic_forwarder_packets(forwarder_payload)
+            self.logger.debug(
+                f"Generic-CoT via ATAK_FORWARDER verpackt: paketanzahl={len(forwarder_packets)} "
+                f"modus={'direkt' if len(forwarder_packets) == 1 else 'fragmentiert'}"
+            )
+            for forwarder_packet in forwarder_packets:
+                self._send_data_to_interfaces(
+                    forwarder_packet,
+                    interfaces,
+                    MESHTASTIC_ATAK_FORWARDER_PORTNUM,
+                )
+                interfaces = self._get_interfaces_snapshot()
+            transport = "ATAK_FORWARDER" if len(forwarder_packets) == 1 else "ATAK_FORWARDER_FRAGMENTS"
+            return {"transport": transport, "count": len(forwarder_packets)}
+        except Exception as exc:
+            self.logger.warning(
+                "ATAK_FORWARDER-Senden fehlgeschlagen, versuche Legacy-COTM-Kurztext-Fallback: "
+                f"{exc}"
+            )
+
         try:
             cot_chunks = self._prepare_meshtastic_cot_chunks(normalized_packet)
             if not cot_chunks:
@@ -4181,31 +4249,10 @@ class TAKMeshtasticGateway:
             return {"transport": "LEGACY_COTM", "count": len(cot_chunks)}
         except Exception as exc:
             self.logger.warning(
-                "Legacy-COTM-Kurztext-Senden fehlgeschlagen, versuche ATAK_FORWARDER-Fallback: "
+                "Legacy-COTM-Kurztext-Senden als letzter Fallback fehlgeschlagen: "
                 f"{exc}"
             )
-
-        forwarder_payload = self._prepare_meshtastic_forwarder_payload(normalized_packet)
-        if not forwarder_payload:
-            raise ValueError(EMPTY_MESHTASTIC_COT_ERROR)
-        self.logger.debug(
-            f"Generic-CoT via ATAK_FORWARDER komprimiert: xml_bytes={len(_ensure_bytes(normalized_packet))} "
-            f"compressed_bytes={len(forwarder_payload)}"
-        )
-        forwarder_packets = self._prepare_meshtastic_forwarder_packets(forwarder_payload)
-        self.logger.debug(
-            f"Generic-CoT via ATAK_FORWARDER verpackt: paketanzahl={len(forwarder_packets)} "
-            f"modus={'direkt' if len(forwarder_packets) == 1 else 'fragmentiert'}"
-        )
-        for forwarder_packet in forwarder_packets:
-            self._send_data_to_interfaces(
-                forwarder_packet,
-                interfaces,
-                MESHTASTIC_ATAK_FORWARDER_PORTNUM,
-            )
-            interfaces = self._get_interfaces_snapshot()
-        transport = "ATAK_FORWARDER" if len(forwarder_packets) == 1 else "ATAK_FORWARDER_FRAGMENTS"
-        return {"transport": transport, "count": len(forwarder_packets)}
+            raise
 
     def send_cot_to_meshtastic(self, packet_xml):
         """Send a full TAK/CoT ``<event>`` XML payload into the Meshtastic pipeline.
@@ -4384,6 +4431,7 @@ class TAKMeshtasticGateway:
         has_chat_identity = event_uid.startswith(GEOCHAT_UID_PREFIX) or event_type.startswith("b-t-f")
         has_chat_elements = any(element is not None for element in (chat, chat_note, chatgrp))
         has_chat_remarks = _looks_like_tak_chat_remarks(remarks)
+        has_chat_message_fields = _has_tak_chat_message_fields(detail)
         generic_message_nodes = []
         for element in detail.iter():
             if element is detail:
@@ -4410,7 +4458,7 @@ class TAKMeshtasticGateway:
             message = _extract_latest_wintak_chat_attribute_message(detail)
         if not message:
             return None
-        if not (has_chat_identity or has_chat_elements or has_chat_remarks):
+        if not (has_chat_identity or has_chat_elements or has_chat_remarks or has_chat_message_fields):
             return None
 
         link = _find_descendant_by_local_name(detail, "link")
