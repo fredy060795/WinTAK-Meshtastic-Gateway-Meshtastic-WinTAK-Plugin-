@@ -2744,12 +2744,6 @@ class TAKMeshtasticGateway:
             return False
         if str(portnum).upper() == "ATAK_FORWARDER":
             return True
-        if portnums_pb2 is not None:
-            try:
-                numeric_portnum = int(portnum)
-                return numeric_portnum == MESHTASTIC_ATAK_FORWARDER_PORTNUM
-            except (TypeError, ValueError):
-                return False
         try:
             return int(portnum) == MESHTASTIC_ATAK_FORWARDER_PORTNUM
         except (TypeError, ValueError):
