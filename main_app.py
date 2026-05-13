@@ -127,6 +127,16 @@ MESHTASTIC_ROLE_NAME_TO_ENUM = {
     "RTO": 7,
     "K9": 8,
 }
+MESHTASTIC_TEAM_ENUM_TO_NAME = {value: key.title() for key, value in MESHTASTIC_TEAM_NAME_TO_ENUM.items()}
+MESHTASTIC_ROLE_ENUM_TO_NAME = {
+    value: (
+        "Team Member" if key == "TEAMMEMBER"
+        else "Team Lead" if key == "TEAMLEAD"
+        else "Forward Observer" if key == "FORWARDOBSERVER"
+        else key.title()
+    )
+    for key, value in MESHTASTIC_ROLE_NAME_TO_ENUM.items()
+}
 TAK_EVENT_PATTERN = re.compile(r"<event\b[^>]*>.*?</event>", re.DOTALL)
 TAK_PING_EVENT_TYPE = "t-x-c-t"
 TAK_PONG_EVENT_TYPE = "t-x-c-t-r"
@@ -579,6 +589,13 @@ def _decode_protobuf_string(value):
     return bytes(value).decode("utf-8", errors="ignore").strip()
 
 
+def _decode_protobuf_sfixed32(value):
+    value = bytes(value or b"")
+    if len(value) != 4:
+        raise ValueError("Ungültige Länge für protobuf sfixed32")
+    return int.from_bytes(value, byteorder="little", signed=True)
+
+
 def _read_protobuf_length_delimited(buffer, offset):
     """Read a protobuf length-delimited field and return its bytes and next offset."""
     length, offset = _read_protobuf_varint(buffer, offset)
@@ -636,11 +653,82 @@ def _parse_meshtastic_atak_chat(payload):
     return chat
 
 
+def _parse_meshtastic_atak_group(payload):
+    group = {}
+    offset = 0
+    payload = bytes(payload or b"")
+    while offset < len(payload):
+        key, offset = _read_protobuf_varint(payload, offset)
+        field_number = key >> 3
+        wire_type = key & 0x07
+        if wire_type != 0:
+            offset = _skip_protobuf_field(payload, offset, wire_type)
+            continue
+        value, offset = _read_protobuf_varint(payload, offset)
+        if field_number == 1:
+            group["role"] = value
+        elif field_number == 2:
+            group["team"] = value
+    return group
+
+
+def _parse_meshtastic_atak_status(payload):
+    status = {}
+    offset = 0
+    payload = bytes(payload or b"")
+    while offset < len(payload):
+        key, offset = _read_protobuf_varint(payload, offset)
+        field_number = key >> 3
+        wire_type = key & 0x07
+        if wire_type != 0:
+            offset = _skip_protobuf_field(payload, offset, wire_type)
+            continue
+        value, offset = _read_protobuf_varint(payload, offset)
+        if field_number == 1:
+            status["battery"] = value
+    return status
+
+
+def _parse_meshtastic_atak_pli(payload):
+    pli = {}
+    offset = 0
+    payload = bytes(payload or b"")
+    while offset < len(payload):
+        key, offset = _read_protobuf_varint(payload, offset)
+        field_number = key >> 3
+        wire_type = key & 0x07
+        if wire_type == 5:
+            field_bytes = payload[offset:offset + 4]
+            offset += 4
+            if len(field_bytes) != 4:
+                raise ValueError("Unvollständiges protobuf sfixed32-Feld im PLI-Payload")
+            value = _decode_protobuf_sfixed32(field_bytes)
+            if field_number == 1:
+                pli["latitude_i"] = value
+            elif field_number == 2:
+                pli["longitude_i"] = value
+            continue
+        if wire_type == 0:
+            value, offset = _read_protobuf_varint(payload, offset)
+            if field_number == 3:
+                pli["altitude"] = value
+            elif field_number == 4:
+                pli["speed"] = value
+            elif field_number == 5:
+                pli["course"] = value
+            continue
+        offset = _skip_protobuf_field(payload, offset, wire_type)
+    return pli
+
+
 def _parse_meshtastic_atak_payload(payload):
-    """Decode the chat-related subset of Meshtastic ATAK plugin payloads."""
+    """Decode the ATAK plugin fields needed for TAK chat and marker forwarding."""
     decoded = {
         "is_compressed": False,
         "contact": {},
+        "group": {},
+        "status": {},
+        "pli": {},
         "chat": {},
     }
     offset = 0
@@ -659,6 +747,12 @@ def _parse_meshtastic_atak_payload(payload):
         field_bytes, offset = _read_protobuf_length_delimited(payload, offset)
         if field_number == 2:
             decoded["contact"] = _parse_meshtastic_atak_contact(field_bytes)
+        elif field_number == 3:
+            decoded["group"] = _parse_meshtastic_atak_group(field_bytes)
+        elif field_number == 4:
+            decoded["status"] = _parse_meshtastic_atak_status(field_bytes)
+        elif field_number == 5:
+            decoded["pli"] = _parse_meshtastic_atak_pli(field_bytes)
         elif field_number == 6:
             decoded["chat"] = _parse_meshtastic_atak_chat(field_bytes)
     return decoded
@@ -666,6 +760,11 @@ def _parse_meshtastic_atak_payload(payload):
 
 def _normalize_meshtastic_enum_key(value):
     return re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
+
+
+def _is_meshtastic_pli_event_type(event_type):
+    normalized = str(event_type or "").strip().lower()
+    return normalized == "a-f-g-u-c" or normalized.startswith("a-f-g-u-c-")
 
 
 def _clamp_battery_percentage(value):
@@ -2360,7 +2459,7 @@ class TAKMeshtasticGateway:
             return None
 
         event_type = (root.get("type") or "").strip()
-        if event_type != "a-f-G-U-C":
+        if not _is_meshtastic_pli_event_type(event_type):
             return None
 
         point = _find_child_by_local_name(root, "point")
@@ -2656,6 +2755,99 @@ class TAKMeshtasticGateway:
             "sender_uid": sender_uid,
             "chatroom": chatroom,
         }
+
+    def _build_meshtastic_pli_cot_xml(self, packet, node=None):
+        decoded = packet.get("decoded") or {}
+        if not isinstance(decoded, dict):
+            return None
+        if not self._is_atak_plugin_packet(packet):
+            return None
+        payload = decoded.get("payload")
+        if not isinstance(payload, (bytes, bytearray)):
+            return None
+        try:
+            atak_payload = _parse_meshtastic_atak_payload(payload)
+        except Exception:
+            self.logger.debug("ATAK-Plugin-PLI konnte nicht dekodiert werden:\n" + traceback.format_exc())
+            return None
+
+        pli = atak_payload.get("pli") or {}
+        lat_i = pli.get("latitude_i")
+        lon_i = pli.get("longitude_i")
+        if lat_i is None or lon_i is None:
+            return None
+        normalized_coords = normalize_coordinates(lat_i * 1e-7, lon_i * 1e-7)
+        if normalized_coords is None:
+            return None
+        lat, lon = normalized_coords
+
+        user = node.get("user", {}) if node else {}
+        contact = atak_payload.get("contact") or {}
+        group = atak_payload.get("group") or {}
+        status = atak_payload.get("status") or {}
+
+        sender_uid = str(
+            contact.get("device_callsign")
+            or user.get("id")
+            or packet.get("fromId")
+            or packet.get("from")
+            or "MESH-UNKNOWN"
+        ).strip()
+        if not sender_uid:
+            sender_uid = "MESH-UNKNOWN"
+        sender_uid = _strip_tak_sender_prefix(normalize_meshtastic_uid(sender_uid))
+        callsign = str(
+            contact.get("callsign")
+            or user.get("longName")
+            or user.get("shortName")
+            or sender_uid
+        ).strip() or sender_uid
+
+        team_name = MESHTASTIC_TEAM_ENUM_TO_NAME.get(
+            int(group.get("team") or MESHTASTIC_DEFAULT_TEAM_ENUM),
+            MESHTASTIC_TEAM_ENUM_TO_NAME.get(MESHTASTIC_DEFAULT_TEAM_ENUM, "White"),
+        )
+        role_name = MESHTASTIC_ROLE_ENUM_TO_NAME.get(
+            int(group.get("role") or MESHTASTIC_DEFAULT_ROLE_ENUM),
+            MESHTASTIC_ROLE_ENUM_TO_NAME.get(MESHTASTIC_DEFAULT_ROLE_ENUM, "Team Member"),
+        )
+        battery = _clamp_battery_percentage(status.get("battery", 0))
+        altitude = max(0, int(pli.get("altitude") or 0))
+        speed = max(0, int(pli.get("speed") or 0))
+        course = max(0, int(pli.get("course") or 0)) % 360
+
+        timestamp = get_tak_timestamp()
+        stale = (
+            datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=10)
+        ).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+        event = Element("event", {
+            "version": "2.0",
+            "uid": sender_uid,
+            "type": "a-f-G-U-C",
+            "how": "m-g",
+            "start": timestamp,
+            "time": timestamp,
+            "stale": stale,
+        })
+        SubElement(event, "point", {
+            "lat": f"{lat:.6f}",
+            "lon": f"{lon:.6f}",
+            "hae": str(altitude),
+            "ce": "9999999.0",
+            "le": "9999999.0",
+        })
+        detail = SubElement(event, "detail")
+        SubElement(detail, "contact", {"callsign": callsign})
+        SubElement(detail, "link", {
+            "uid": sender_uid,
+            "relation": "p-p",
+            "type": "a-f-G-U-C",
+        })
+        SubElement(detail, "__group", {"name": team_name, "role": role_name})
+        SubElement(detail, "status", {"battery": str(battery)})
+        SubElement(detail, "track", {"speed": str(speed), "course": str(course)})
+        SubElement(detail, "precisionlocation", {"geopointsrc": "GPS"})
+        return tostring(event, encoding="utf-8")
 
     def _resolve_chat_position(self, uid, node=None):
         alt = 0.0
@@ -3502,7 +3694,7 @@ class TAKMeshtasticGateway:
     def process_meshtastic_text_message(self, packet, node=None, source_interface=None):
         chat_payload = self._extract_meshtastic_chat_payload(packet, node=node)
         if not chat_payload:
-            return
+            return False
         message = chat_payload["message"]
 
         from_id = packet.get('fromId') or packet.get('from')
@@ -3511,13 +3703,13 @@ class TAKMeshtasticGateway:
             self.recent_meshtastic_outbound_texts, message
         ):
             self.logger.debug("Echo einer gerade vom Gateway gesendeten Chatnachricht ignoriert.")
-            return
+            return True
 
         message_id = packet.get('id')
         message_hash = hashlib.sha256(message.encode("utf-8", errors="ignore")).hexdigest()
         dedupe_key = f"mesh:{message_id}" if message_id is not None else f"mesh:{from_id}:{message_hash}"
         if self._was_seen_recently(self.recent_meshtastic_chat_ids, dedupe_key):
-            return
+            return True
         self._remember_recent_chat(self.recent_meshtastic_chat_ids, dedupe_key)
 
         available_interfaces = self._ensure_meshtastic_interfaces()
@@ -3541,6 +3733,18 @@ class TAKMeshtasticGateway:
         lat, lon, alt = self._resolve_chat_position(sender_uid, node=node)
         self.send_chat_to_tak(sender_uid, callsign, message, lat, lon, alt, chatroom=chatroom)
         self.logger.info(f"Meshtastic-Chat nach TAK weitergeleitet: {callsign}: {message}")
+        return True
+
+    def process_meshtastic_pli_message(self, packet, node=None):
+        packet_xml = self._build_meshtastic_pli_cot_xml(packet, node=node)
+        if not packet_xml:
+            return False
+        from_id = packet.get("fromId") or packet.get("from") or "MESH-UNKNOWN"
+        self.logger.debug(
+            "ATAK_PLUGIN-PLI aus dem Mesh erkannt und als CoT rekonstruiert: "
+            f"from={from_id} payload={_build_safe_payload_snippet(packet_xml)}"
+        )
+        return self._forward_meshtastic_cot_xml_to_tak(packet_xml, from_id, source_label="ATAK_PLUGIN-PLI")
 
     def _extract_tak_chat_payload(self, packet_xml):
         try:
@@ -4341,7 +4545,13 @@ class TAKMeshtasticGateway:
                 if not handled_legacy_cot:
                     self.process_meshtastic_text_message(packet, node=node, source_interface=interface)
             elif self._is_atak_plugin_packet(packet):
-                self.process_meshtastic_text_message(packet, node=node, source_interface=interface)
+                handled_chat = self.process_meshtastic_text_message(
+                    packet,
+                    node=node,
+                    source_interface=interface,
+                )
+                if not handled_chat:
+                    self.process_meshtastic_pli_message(packet, node=node)
             if from_id and node:
                 # Force update für Live-Events
                 self.process_node(node, 0, force_update=True)
