@@ -498,6 +498,8 @@ def _encode_protobuf_varint(value):
     """Encode an integer as protobuf varint bytes."""
     value = int(value)
     if value < 0:
+        # Protobuf int32/int64 fields use two's complement varints for negative values.
+        # (Only sint32/sint64 use zig-zag encoding.)
         value += 1 << 64
     encoded = bytearray()
     while value > 0x7F:
@@ -646,6 +648,13 @@ def _parse_meshtastic_atak_payload(payload):
 
 def _normalize_meshtastic_enum_key(value):
     return re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
+
+
+def _clamp_battery_percentage(value):
+    battery_value = to_float_or_none(value)
+    if battery_value is None or math.isnan(battery_value):
+        return 0
+    return max(0, min(100, int(round(battery_value))))
 
 
 def load_config():
@@ -2277,9 +2286,7 @@ class TAKMeshtasticGateway:
 
         battery = 0
         if status is not None:
-            battery_value = to_float_or_none(status.get("battery"))
-            if battery_value is not None and not math.isnan(battery_value):
-                battery = max(0, min(100, int(round(battery_value))))
+            battery = _clamp_battery_percentage(status.get("battery"))
 
         speed = 0
         course = 0
@@ -2326,13 +2333,18 @@ class TAKMeshtasticGateway:
             _normalize_meshtastic_enum_key(pli_candidate.get("team")),
             MESHTASTIC_DEFAULT_TEAM_ENUM,
         )
-        return (
-            _encode_protobuf_varint_field(1, role_enum)
-            + _encode_protobuf_varint_field(2, team_enum)
+        return b"".join(
+            (
+                _encode_protobuf_varint_field(1, role_enum),
+                _encode_protobuf_varint_field(2, team_enum),
+            )
         )
 
     def _build_meshtastic_status_payload(self, pli_candidate):
-        return _encode_protobuf_varint_field(1, max(0, int(pli_candidate.get("battery", 0) or 0)))
+        return _encode_protobuf_varint_field(
+            1,
+            _clamp_battery_percentage(pli_candidate.get("battery", 0)),
+        )
 
     def _build_meshtastic_pli_payload(self, pli_candidate):
         return b"".join(
