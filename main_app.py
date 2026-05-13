@@ -813,6 +813,7 @@ def _parse_meshtastic_atak_payload(payload):
         "status": {},
         "pli": {},
         "chat": {},
+        "detail": b"",
     }
     offset = 0
     payload = bytes(payload or b"")
@@ -838,6 +839,8 @@ def _parse_meshtastic_atak_payload(payload):
             decoded["pli"] = _parse_meshtastic_atak_pli(field_bytes)
         elif field_number == 6:
             decoded["chat"] = _parse_meshtastic_atak_chat(field_bytes)
+        elif field_number == 7:
+            decoded["detail"] = bytes(field_bytes)
     return decoded
 
 
@@ -2926,6 +2929,65 @@ class TAKMeshtasticGateway:
             )
         )
 
+    def _extract_meshtastic_atak_detail_candidate(self, packet_xml):
+        try:
+            root = fromstring(packet_xml)
+        except (ParseError, TypeError, ValueError):
+            return None
+        if _xml_local_name(root.tag) != "event":
+            return None
+
+        event_type = (root.get("type") or "").strip()
+        if _is_meshtastic_pli_event_type(event_type):
+            return None
+
+        metadata = self._extract_cot_event_metadata(packet_xml)
+        if metadata is None:
+            return None
+
+        detail = _find_child_by_local_name(root, "detail")
+        contact = _find_child_by_local_name(detail, "contact")
+        link = _find_child_by_local_name(detail, "link")
+        group = _find_child_by_local_name(detail, "__group")
+        status = _find_child_by_local_name(detail, "status")
+
+        uid = (root.get("uid") or "").strip()
+        callsign = ""
+        if contact is not None:
+            callsign = str(contact.get("callsign") or "").strip()
+        if not callsign:
+            callsign = uid or self.gateway_callsign
+
+        device_callsign = ""
+        if link is not None:
+            device_callsign = str(link.get("uid") or "").strip()
+        if not device_callsign:
+            device_callsign = uid or callsign or self.gateway_uid
+
+        team_name = ""
+        role_name = ""
+        if group is not None:
+            team_name = str(group.get("name") or "").strip()
+            role_name = str(group.get("role") or "").strip()
+
+        battery = 0
+        if status is not None:
+            battery = _clamp_battery_percentage(status.get("battery"))
+
+        detail_payload = _ensure_bytes(packet_xml).strip()
+        if not detail_payload:
+            return None
+
+        return {
+            "uid": uid,
+            "callsign": callsign,
+            "device_callsign": device_callsign,
+            "team": team_name,
+            "role": role_name,
+            "battery": battery,
+            "detail": detail_payload,
+        }
+
     def _prepare_meshtastic_pli_packet(self, packet_xml):
         pli_candidate = self._extract_meshtastic_pli_candidate(packet_xml)
         if pli_candidate is None:
@@ -2945,6 +3007,46 @@ class TAKMeshtasticGateway:
             "callsign": pli_candidate["callsign"],
             "payload": payload,
         }
+
+    def _prepare_meshtastic_detail_packet(self, packet_xml):
+        detail_candidate = self._extract_meshtastic_atak_detail_candidate(packet_xml)
+        if detail_candidate is None:
+            return None
+
+        compressed_detail = zlib.compress(detail_candidate["detail"])
+        payload_variants = (
+            {"compressed": False, "contact": True, "group": True, "status": True},
+            {"compressed": True, "contact": True, "group": True, "status": True},
+            {"compressed": True, "contact": True, "group": False, "status": False},
+            {"compressed": True, "contact": False, "group": False, "status": False},
+        )
+        for variant in payload_variants:
+            detail_payload = compressed_detail if variant["compressed"] else detail_candidate["detail"]
+            payload_parts = []
+            if variant["compressed"]:
+                payload_parts.append(_encode_protobuf_varint_field(1, 1))
+            if variant["contact"]:
+                payload_parts.append(
+                    _encode_protobuf_message_field(2, self._build_meshtastic_contact_payload(detail_candidate))
+                )
+            if variant["group"]:
+                payload_parts.append(
+                    _encode_protobuf_message_field(3, self._build_meshtastic_group_payload(detail_candidate))
+                )
+            if variant["status"]:
+                payload_parts.append(
+                    _encode_protobuf_message_field(4, self._build_meshtastic_status_payload(detail_candidate))
+                )
+            payload_parts.append(_encode_protobuf_message_field(7, detail_payload))
+            payload = b"".join(payload_parts)
+            if payload and len(payload) <= MESHTASTIC_DATA_PAYLOAD_MAX_BYTES:
+                return {
+                    "uid": detail_candidate["uid"],
+                    "callsign": detail_candidate["callsign"],
+                    "payload": payload,
+                    "is_compressed": variant["compressed"],
+                }
+        return None
 
     def _build_cot_dedupe_key(self, packet_xml):
         packet_bytes = _ensure_bytes(packet_xml).strip()
@@ -4041,9 +4143,29 @@ class TAKMeshtasticGateway:
                     f"{exc}"
                 )
         else:
-            self.logger.debug(
-                f"Generic-CoT-Typ {metadata['type']} versucht zuerst Legacy-COTM-Kurztext mit ATAK_FORWARDER-Fallback."
-            )
+            detail_packet = self._prepare_meshtastic_detail_packet(normalized_packet)
+            if detail_packet is not None:
+                try:
+                    self.logger.debug(
+                        f"Generic-CoT wird als ATAK_PLUGIN-detail=7 gesendet: uid={detail_packet['uid']} "
+                        f"compressed={detail_packet['is_compressed']} payload_bytes={len(detail_packet['payload'])}"
+                    )
+                    self._send_data_to_interfaces(
+                        detail_packet["payload"],
+                        interfaces,
+                        MESHTASTIC_ATAK_PLUGIN_PORTNUM,
+                    )
+                    return {"transport": "ATAK_PLUGIN_DETAIL", "count": 1}
+                except Exception as exc:
+                    self.logger.warning(
+                        "ATAK_PLUGIN-detail=7-Senden fehlgeschlagen, versuche Legacy-COTM/ATAK_FORWARDER-Fallback: "
+                        f"{exc}"
+                    )
+            else:
+                self.logger.debug(
+                    f"Generic-CoT-Typ {metadata['type']} passt nicht in ATAK_PLUGIN-detail=7 und versucht "
+                    "Legacy-COTM-Kurztext mit ATAK_FORWARDER-Fallback."
+                )
         try:
             cot_chunks = self._prepare_meshtastic_cot_chunks(normalized_packet)
             if not cot_chunks:
@@ -4196,6 +4318,37 @@ class TAKMeshtasticGateway:
         return True
 
     def process_meshtastic_pli_message(self, packet, node=None):
+        decoded = packet.get("decoded") or {}
+        if not isinstance(decoded, dict):
+            return False
+        payload = decoded.get("payload")
+        if not isinstance(payload, (bytes, bytearray)):
+            return False
+        try:
+            atak_payload = _parse_meshtastic_atak_payload(payload)
+        except Exception:
+            self.logger.debug("ATAK-Plugin-Payload konnte nicht dekodiert werden:\n" + traceback.format_exc())
+            return False
+
+        detail_payload = bytes(atak_payload.get("detail") or b"").strip()
+        if detail_payload:
+            detail_xml = detail_payload
+            if atak_payload.get("is_compressed"):
+                detail_xml = self._decode_meshtastic_forwarder_payload(detail_payload)
+            normalized_packet = _normalize_tak_xml_payload(detail_xml)
+            if normalized_packet:
+                from_id = packet.get("fromId") or packet.get("from") or "MESH-UNKNOWN"
+                self.logger.debug(
+                    "ATAK_PLUGIN-detail=7 aus dem Mesh erkannt und als CoT rekonstruiert: "
+                    f"from={from_id} compressed={atak_payload.get('is_compressed')} "
+                    f"payload={_build_safe_payload_snippet(normalized_packet)}"
+                )
+                return self._forward_meshtastic_cot_xml_to_tak(
+                    normalized_packet,
+                    from_id,
+                    source_label="ATAK_PLUGIN-detail=7",
+                )
+
         packet_xml = self._build_meshtastic_pli_cot_xml(packet, node=node)
         if not packet_xml:
             return False
@@ -4640,6 +4793,8 @@ class TAKMeshtasticGateway:
         transport_count = int(send_result.get("count") or 0)
         if transport == "ATAK_PLUGIN":
             transport_label = "ATAK_PLUGIN-PLI"
+        elif transport == "ATAK_PLUGIN_DETAIL":
+            transport_label = "ATAK_PLUGIN-detail=7"
         elif transport == "ATAK_FORWARDER_FRAGMENTS":
             transport_label = (
                 f"{transport_count} ATAK_FORWARDER-Fragment{'e' if transport_count != 1 else ''}"
