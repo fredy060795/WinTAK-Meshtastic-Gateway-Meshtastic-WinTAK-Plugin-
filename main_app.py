@@ -70,6 +70,9 @@ DEFAULT_CHAT_LISTEN_PORT = 4242
 TCP_LISTENER_DEFAULT_PORT = 8088
 WINTAK_REQUIRED_HOST = "127.0.0.1"
 MAX_WINTAK_MONITOR_LINES = 150
+DETECTED_PORTS_SUMMARY_DEFAULT_WRAP = 520
+DETECTED_PORTS_SUMMARY_WRAP_PADDING = 32
+DETECTED_PORTS_SUMMARY_MIN_WRAP = 240
 DEFAULT_TAK_MULTICAST_GROUPS = (
     "224.10.10.1:17012",
     "239.2.3.1:6969",
@@ -1493,7 +1496,7 @@ class GatewayApp:
             textvariable=self._detected_ports_var,
             style="Sub.TLabel",
             justify="left",
-            wraplength=520,
+            wraplength=DETECTED_PORTS_SUMMARY_DEFAULT_WRAP,
         )
         self._detected_ports_label.grid(row=1, column=0, columnspan=5, sticky="ew", pady=(0, 2))
         cfg_frame.bind("<Configure>", self._on_cfg_frame_configure)
@@ -1876,7 +1879,9 @@ class GatewayApp:
         if not hasattr(self, "_detected_ports_label"):
             return
         frame_width = getattr(event, "width", 0) or self._detected_ports_label.winfo_width()
-        self._detected_ports_label.configure(wraplength=max(frame_width - 32, 240))
+        self._detected_ports_label.configure(
+            wraplength=max(frame_width - DETECTED_PORTS_SUMMARY_WRAP_PADDING, DETECTED_PORTS_SUMMARY_MIN_WRAP)
+        )
 
     def _on_scrollable_canvas_configure(self, event=None):
         canvas_width = getattr(event, "width", None)
