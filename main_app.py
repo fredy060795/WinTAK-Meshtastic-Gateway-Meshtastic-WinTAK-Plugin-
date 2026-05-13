@@ -173,6 +173,7 @@ _WINTAK_CHAT_FIELD_PATTERN = re.compile(
     r"^(?:message|text|note|remarks|body|content)(?P<index>\d+)?$",
     re.IGNORECASE,
 )
+_TAK_CHAT_MESSAGE_FIELD_NAMES = frozenset({"message", "text", "body", "content", "note", "_chat"})
 
 
 def _resolve_meshtastic_portnum(primary_name, fallback, *alternate_names):
@@ -445,13 +446,19 @@ def _looks_like_tak_chat_remarks(remarks):
 
 
 def _has_tak_chat_message_fields(element):
-    """Return True when detail XML contains message-like nodes/attributes."""
+    """Return True when detail XML contains message-like nodes/attributes.
+
+    The attribute fallback reuses ``_WINTAK_CHAT_FIELD_PATTERN`` so WinTAK exports
+    such as ``message1``/``text2``/``note`` are recognized even without GeoChat
+    wrapper elements like ``<chat>`` or ``<__chat>``.
+    """
     if element is None:
         return False
     for node in element.iter():
         local_name = _xml_local_name(node.tag).lower()
-        if local_name in {"message", "text", "body", "content", "note", "_chat"}:
-            if _collect_xml_text(node).strip():
+        if local_name in _TAK_CHAT_MESSAGE_FIELD_NAMES:
+            node_text = _collect_xml_text(node).strip()
+            if node_text:
                 return True
             if any(str(value or "").strip() for value in node.attrib.values()):
                 return True
