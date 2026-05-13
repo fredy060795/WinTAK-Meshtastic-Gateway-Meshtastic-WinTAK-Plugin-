@@ -3931,11 +3931,7 @@ class TAKMeshtasticGateway:
             self.logger.debug(
                 f"Generic-CoT-Typ {metadata['type']} wird bevorzugt als Legacy-COTM-Kurztext gesendet."
             )
-
         try:
-            self.logger.debug(
-                "Generic-CoT wird als Legacy-COTM-Kurztext gesendet."
-            )
             cot_chunks = self._prepare_meshtastic_cot_chunks(normalized_packet)
             if not cot_chunks:
                 raise ValueError("Leere CoT-Nachricht kann nicht ins Mesh gesendet werden.")
