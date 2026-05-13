@@ -69,6 +69,7 @@ DEFAULT_CHATROOM_NAME = "All Chat Rooms"
 DEFAULT_CHAT_LISTEN_PORT = 4242
 TCP_LISTENER_DEFAULT_PORT = 8088
 WINTAK_REQUIRED_HOST = "127.0.0.1"
+MAX_WINTAK_MONITOR_LINES = 150
 DEFAULT_TAK_MULTICAST_GROUPS = (
     "224.10.10.1:17012",
     "239.2.3.1:6969",
@@ -1117,6 +1118,8 @@ class GatewayApp:
         self._scroll_canvas = None
         self._scrollable_body = None
         self._scroll_window_id = None
+        self._wintak_monitor_text = None
+        self._cot_input_text = None
 
         try:
             self._root = tk.Tk()
@@ -1139,17 +1142,18 @@ class GatewayApp:
         style.theme_use("clam")
 
         # ── Farben ──
-        BG        = "#1f2937"   # Dunkelblau-Grau (Fenster-Hintergrund)
-        PANEL     = "#111827"   # Noch dunklerer Hintergrund für Panels
-        CARD      = "#374151"   # Karten-/Rahmen-Hintergrund
-        BORDER    = "#4b5563"   # Rahmenfarbe
-        FG        = "#f9fafb"   # Heller Text
-        FG_SUB    = "#9ca3af"   # Dezenter Hilfstext
-        ACCENT    = "#3b82f6"   # Blau (Akzent)
-        ACCENT_H  = "#2563eb"   # Blau Hover
-        SUCCESS   = "#22c55e"   # Grün
-        WARNING   = "#f59e0b"   # Amber
-        DANGER    = "#ef4444"   # Rot
+        BG        = "#081311"   # Window background
+        PANEL     = "#12231f"   # Header/panel background
+        CARD      = "#17302a"   # Card/frame background
+        BORDER    = "#2f5b4e"   # Border color
+        FG        = "#effaf4"   # Main text
+        FG_SUB    = "#9ec3b6"   # Subtle helper text
+        ACCENT    = "#3fd48b"   # Primary accent
+        ACCENT_H  = "#69e8a5"   # Hover
+        SUCCESS   = "#63e6af"   # Success
+        WARNING   = "#f2d16b"   # Warning
+        DANGER    = "#ff7b72"   # Danger
+        TEXT_BG   = "#0b1916"   # Text/log background
 
         # ── Allgemein ──
         style.configure(".",
@@ -1290,6 +1294,7 @@ class GatewayApp:
             "bg": BG, "panel": PANEL, "card": CARD, "border": BORDER,
             "fg": FG, "fg_sub": FG_SUB, "accent": ACCENT,
             "success": SUCCESS, "warning": WARNING, "danger": DANGER,
+            "text_bg": TEXT_BG,
         }
 
         # Font-Verfügbarkeit einmalig prüfen und cachen
@@ -1308,79 +1313,129 @@ class GatewayApp:
         root = self._root
         C = self._colors
 
-        # ── Header-Banner ──
-        header = tk.Frame(root, bg=C["panel"], height=56)
-        header.pack(fill="x")
+        header = tk.Frame(root, bg=C["panel"], height=96, bd=0, highlightthickness=1,
+                          highlightbackground=C["border"], highlightcolor=C["border"])
+        header.pack(fill="x", padx=10, pady=(10, 0))
         header.pack_propagate(False)
 
-        # Logo
+        header_left = tk.Frame(header, bg=C["panel"])
+        header_left.pack(side="left", fill="both", expand=True, padx=(12, 8), pady=10)
+        header_right = tk.Frame(header, bg=C["panel"])
+        header_right.pack(side="right", fill="y", padx=(8, 12), pady=10)
+
         try:
             _logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.png")
             self._logo_image = tk.PhotoImage(file=_logo_path)
-            _logo_h = 40
+            _logo_h = 54
             _orig_h = self._logo_image.height()
-            _orig_w = self._logo_image.width()
             if _orig_h > _logo_h:
                 _subsample = max(1, round(_orig_h / _logo_h))
                 self._logo_image = self._logo_image.subsample(_subsample, _subsample)
-            tk.Label(
-                header,
-                image=self._logo_image,
-                bg=C["panel"],
-                anchor="w",
-            ).pack(side="left", padx=(8, 0), pady=6)
+            tk.Label(header_left, image=self._logo_image, bg=C["panel"], anchor="w").pack(
+                side="left", padx=(0, 12)
+            )
         except Exception:
             self._logo_image = None
 
+        title_block = tk.Frame(header_left, bg=C["panel"])
+        title_block.pack(side="left", fill="both", expand=True)
         tk.Label(
-            header,
+            title_block,
             text="WinTAK Meshtastic Gateway",
-            bg=C["panel"], fg=C["fg"],
-            font=("Segoe UI", 14, "bold"),
+            bg=C["panel"],
+            fg=C["fg"],
+            font=("Segoe UI", 18, "bold"),
             anchor="w",
-        ).pack(side="left", padx=12, pady=0, fill="y")
+        ).pack(fill="x")
         tk.Label(
-            header,
-            text="Meshtastic → TAK Bridge",
-            bg=C["panel"], fg=C["fg_sub"],
-            font=("Segoe UI", 9),
-            anchor="e",
-        ).pack(side="right", padx=12, pady=0)
+            title_block,
+            text="Live gateway operations with direct mesh text and WinTAK CoT send controls.",
+            bg=C["panel"],
+            fg=C["fg_sub"],
+            font=("Segoe UI", 10),
+            anchor="w",
+        ).pack(fill="x", pady=(2, 8))
+        tk.Label(
+            title_block,
+            text="MESH <-> TAK CONTROL SURFACE",
+            bg=C["panel"],
+            fg=C["accent"],
+            font=("Segoe UI", 9, "bold"),
+            anchor="w",
+        ).pack(fill="x")
 
-        ttk.Separator(root, orient="horizontal").pack(fill="x")
+        endpoint_items = [
+            ("WinTAK UDP", f"{self.cfg.get('local_tak_ip', WINTAK_REQUIRED_HOST)}:{self.cfg.get('local_tak_port', 4242)}"),
+            ("WinTAK TCP", f"0.0.0.0:{self.cfg.get('local_tak_tcp_listen_port', TCP_LISTENER_DEFAULT_PORT)}"),
+            ("Remote TAK", f"{self.cfg.get('tak_server_protocol', 'TCP')} {self.cfg.get('tak_server_host', '82.165.11.84')}:{self.cfg.get('tak_server_port', 8088)}"),
+        ]
+        for title, value in endpoint_items:
+            card = tk.Frame(
+                header_right,
+                bg=C["bg"],
+                bd=1,
+                highlightthickness=1,
+                highlightbackground=C["border"],
+                highlightcolor=C["border"],
+                padx=10,
+                pady=6,
+            )
+            card.pack(fill="x", pady=2)
+            tk.Label(card, text=title, bg=C["bg"], fg=C["fg_sub"], font=("Segoe UI", 8, "bold")).pack(anchor="w")
+            tk.Label(card, text=value, bg=C["bg"], fg=C["fg"], font=("Segoe UI", 9)).pack(anchor="w", pady=(2, 0))
 
         content_host = tk.Frame(root, bg=C["bg"])
-        content_host.pack(fill="both", expand=True)
+        content_host.pack(fill="both", expand=True, padx=10, pady=(10, 0))
 
-        self._scroll_canvas = tk.Canvas(
-            content_host,
-            bg=C["bg"],
-            highlightthickness=0,
-            bd=0,
-        )
+        self._scroll_canvas = tk.Canvas(content_host, bg=C["bg"], highlightthickness=0, bd=0)
         self._scroll_canvas.pack(side="left", fill="both", expand=True)
 
-        content_scrollbar = ttk.Scrollbar(
-            content_host,
-            orient="vertical",
-            command=self._scroll_canvas.yview,
-        )
+        content_scrollbar = ttk.Scrollbar(content_host, orient="vertical", command=self._scroll_canvas.yview)
         content_scrollbar.pack(side="right", fill="y")
         self._scroll_canvas.configure(yscrollcommand=content_scrollbar.set)
 
         self._scrollable_body = ttk.Frame(self._scroll_canvas)
-        self._scroll_window_id = self._scroll_canvas.create_window(
-            (0, 0),
-            window=self._scrollable_body,
-            anchor="nw",
-        )
+        self._scroll_window_id = self._scroll_canvas.create_window((0, 0), window=self._scrollable_body, anchor="nw")
         self._scrollable_body.bind("<Configure>", self._on_scrollable_body_configure)
         self._scroll_canvas.bind("<Configure>", self._on_scrollable_canvas_configure)
 
         body = self._scrollable_body
 
-        wintak_hint_frame = ttk.LabelFrame(body, text=" REQUIRED: WinTAK Connection ", padding=(12, 8))
-        wintak_hint_frame.pack(fill="x", padx=10, pady=(10, 4))
+        overview_frame = ttk.LabelFrame(body, text=" OVERVIEW ", padding=(14, 12))
+        overview_frame.pack(fill="x", padx=0, pady=(0, 8))
+        tk.Label(
+            overview_frame,
+            text="Configuration, live operations, and manual testing tools are grouped below. All existing gateway behavior is preserved.",
+            bg=C["card"],
+            fg=C["fg"],
+            font=("Segoe UI", 10),
+            justify="left",
+            anchor="w",
+            wraplength=980,
+        ).pack(fill="x")
+        tk.Label(
+            overview_frame,
+            text="Use the operations panel on the right to send direct Meshtastic text or paste a full WinTAK CoT <event> XML into the mesh for testing.",
+            bg=C["card"],
+            fg=C["fg_sub"],
+            font=("Segoe UI", 9),
+            justify="left",
+            anchor="w",
+            wraplength=980,
+        ).pack(fill="x", pady=(8, 0))
+
+        main_grid = tk.Frame(body, bg=C["bg"])
+        main_grid.pack(fill="both", expand=True)
+        main_grid.columnconfigure(0, weight=5)
+        main_grid.columnconfigure(1, weight=3)
+
+        left_col = tk.Frame(main_grid, bg=C["bg"])
+        left_col.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        right_col = tk.Frame(main_grid, bg=C["bg"])
+        right_col.grid(row=0, column=1, sticky="nsew")
+
+        wintak_hint_frame = ttk.LabelFrame(left_col, text=" WINTAK LINK ", padding=(14, 10))
+        wintak_hint_frame.pack(fill="x", pady=(0, 8))
         self._wintak_banner_var = tk.StringVar()
         tk.Label(
             wintak_hint_frame,
@@ -1390,28 +1445,27 @@ class GatewayApp:
             font=("Segoe UI", 10, "bold"),
             anchor="w",
             justify="left",
+            wraplength=620,
         ).pack(fill="x")
         tk.Label(
             wintak_hint_frame,
-            text="Without this local TCP server, WinTAK will not connect to the gateway.",
+            text="This TCP listener is required so WinTAK can reach the gateway locally before traffic is forwarded to the mesh or remote TAK.",
             bg=C["card"],
             fg=C["fg_sub"],
             font=("Segoe UI", 9),
             anchor="w",
             justify="left",
-        ).pack(fill="x", pady=(4, 0))
+            wraplength=620,
+        ).pack(fill="x", pady=(6, 0))
 
-        # ── Einstellungen ──
-        cfg_frame = ttk.LabelFrame(body, text=" ⚙  Main Settings ", padding=(12, 8))
-        cfg_frame.pack(fill="x", padx=10, pady=(10, 4))
+        cfg_frame = ttk.LabelFrame(left_col, text=" GATEWAY SETTINGS ", padding=(14, 10))
+        cfg_frame.pack(fill="x")
 
-        # Hilfsfunktion für einheitliche Labels in cfg_frame
         def cfg_label(text, row, col, **kw):
             lbl = ttk.Label(cfg_frame, text=text, style="Card.TLabel")
             lbl.grid(row=row, column=col, sticky="w", **kw)
             return lbl
 
-        # ── Zeile 0: Ports ──
         cfg_label("Meshtastic Port(s):", row=0, col=0, pady=(0, 4))
         cfg_port = self.cfg.get("meshtastic_port", "")
         if isinstance(cfg_port, list):
@@ -1423,118 +1477,120 @@ class GatewayApp:
             default_ports = ", ".join(detected_init) if detected_init else ""
         self._ports_var = tk.StringVar(value=default_ports)
         ttk.Entry(cfg_frame, textvariable=self._ports_var, width=28).grid(
-            row=0, column=1, sticky="ew", padx=(6, 12), pady=(0, 4))
+            row=0, column=1, sticky="ew", padx=(6, 12), pady=(0, 4)
+        )
         self._ports_var.trace_add("write", self._on_ports_var_changed)
 
-        # ── Zeile 1: Erkannte Ports-Liste ──
         detected_details = detect_serial_port_details()
         self._detected_port_details = detected_details
         detected = [entry["device"] for entry in detected_details]
         self._detected_ports = detected
-        self._detected_ports_var = tk.StringVar(
-            value=self._build_detected_ports_summary(detected_details)
-        )
+        self._detected_ports_var = tk.StringVar(value=self._build_detected_ports_summary(detected_details))
         ttk.Label(cfg_frame, textvariable=self._detected_ports_var, style="Sub.TLabel").grid(
-            row=1, column=0, columnspan=4, sticky="w", pady=(0, 2))
+            row=1, column=0, columnspan=5, sticky="w", pady=(0, 2)
+        )
         self._detected_ports_list = tk.Listbox(
             cfg_frame,
             height=min(max(len(detected), 1), MAX_DETECTED_PORTS_DISPLAY),
             selectmode="extended",
             exportselection=False,
+            bg=C["text_bg"],
+            fg=C["fg"],
+            selectbackground=C["accent"],
+            selectforeground="#ffffff",
+            relief="flat",
         )
         self._detected_ports_list.grid(row=2, column=1, sticky="ew", padx=(6, 4), pady=(0, 6))
-        detected_scrollbar = ttk.Scrollbar(cfg_frame, orient="vertical",
-                                            command=self._detected_ports_list.yview)
+        detected_scrollbar = ttk.Scrollbar(cfg_frame, orient="vertical", command=self._detected_ports_list.yview)
         self._detected_ports_list.configure(yscrollcommand=detected_scrollbar.set)
         detected_scrollbar.grid(row=2, column=2, sticky="nsw", padx=(0, 8), pady=(0, 6))
         for entry in detected_details:
             self._detected_ports_list.insert("end", entry["label"])
-        ttk.Button(
-            cfg_frame, text="↩ Use selected ports",
-            command=self._apply_selected_ports_from_list
-        ).grid(row=2, column=3, sticky="w", pady=(0, 6))
-        ttk.Button(
-            cfg_frame, text="🔄 Refresh ports",
-            command=self._refresh_detected_ports
-        ).grid(row=2, column=4, sticky="w", padx=(8, 0), pady=(0, 6))
+        ttk.Button(cfg_frame, text="Use selected ports", command=self._apply_selected_ports_from_list).grid(
+            row=2, column=3, sticky="ew", pady=(0, 6)
+        )
+        ttk.Button(cfg_frame, text="Refresh ports", command=self._refresh_detected_ports).grid(
+            row=2, column=4, sticky="ew", padx=(8, 0), pady=(0, 6)
+        )
 
-        ttk.Separator(cfg_frame, orient="horizontal").grid(
-            row=3, column=0, columnspan=6, sticky="ew", pady=(2, 8))
+        ttk.Separator(cfg_frame, orient="horizontal").grid(row=3, column=0, columnspan=6, sticky="ew", pady=(4, 10))
 
-        # ── Zeile 4: Remote TAK ──
         cfg_label("Remote TAK Host:", row=4, col=0, pady=(0, 4))
         self._server_host_var = tk.StringVar(value=str(self.cfg.get("tak_server_host", "82.165.11.84")))
         ttk.Entry(cfg_frame, textvariable=self._server_host_var, width=28).grid(
-            row=4, column=1, sticky="ew", padx=(6, 12), pady=(0, 4))
+            row=4, column=1, sticky="ew", padx=(6, 12), pady=(0, 4)
+        )
         cfg_label("Remote Port:", row=4, col=2, padx=(8, 6), pady=(0, 4))
         self._server_port_var = tk.StringVar(value=str(self.cfg.get("tak_server_port", 8088)))
         ttk.Entry(cfg_frame, textvariable=self._server_port_var, width=10).grid(
-            row=4, column=3, sticky="w", pady=(0, 4))
+            row=4, column=3, sticky="w", pady=(0, 4)
+        )
 
-        # ── Zeile 5: Remote Protokoll + WinTAK UDP ──
         cfg_label("Remote Protocol:", row=5, col=0, pady=(0, 4))
         server_protocol = str(self.cfg.get("tak_server_protocol", "TCP")).upper()
         if server_protocol not in ("TCP", "UDP"):
             server_protocol = "TCP"
         self._server_protocol_var = tk.StringVar(value=server_protocol)
         ttk.Combobox(
-            cfg_frame, textvariable=self._server_protocol_var,
-            state="readonly", values=["TCP", "UDP"], width=10
+            cfg_frame,
+            textvariable=self._server_protocol_var,
+            state="readonly",
+            values=["TCP", "UDP"],
+            width=10,
         ).grid(row=5, column=1, sticky="w", padx=(6, 12), pady=(0, 4))
         cfg_label("WinTAK UDP Target IP:", row=5, col=2, padx=(8, 6), pady=(0, 4))
         self._local_tak_ip_var = tk.StringVar(value=str(self.cfg.get("local_tak_ip", WINTAK_REQUIRED_HOST)))
         ttk.Entry(cfg_frame, textvariable=self._local_tak_ip_var, width=16).grid(
-            row=5, column=3, sticky="w", pady=(0, 4))
+            row=5, column=3, sticky="w", pady=(0, 4)
+        )
 
-        # ── Zeile 6: WinTAK UDP Port + WinTAK TCP Server ──
         cfg_label("WinTAK UDP Port:", row=6, col=0, pady=(0, 4))
         self._local_tak_port_var = tk.StringVar(value=str(self.cfg.get("local_tak_port", 4242)))
         ttk.Entry(cfg_frame, textvariable=self._local_tak_port_var, width=10).grid(
-            row=6, column=1, sticky="w", padx=(6, 12), pady=(0, 4))
+            row=6, column=1, sticky="w", padx=(6, 12), pady=(0, 4)
+        )
         cfg_label("WinTAK TCP Port:", row=6, col=2, padx=(8, 6), pady=(0, 4))
         self._local_tak_tcp_listen_port_var = tk.StringVar(
             value=str(self.cfg.get("local_tak_tcp_listen_port", TCP_LISTENER_DEFAULT_PORT))
         )
         ttk.Entry(cfg_frame, textvariable=self._local_tak_tcp_listen_port_var, width=10).grid(
-            row=6, column=3, sticky="w", pady=(0, 4))
+            row=6, column=3, sticky="w", pady=(0, 4)
+        )
 
-        # ── Zeile 7: Log-Level + Sync ──
         cfg_label("Log-Level:", row=7, col=0, pady=(0, 4))
         log_default = str(self.cfg.get("log_level", "INFO")).upper()
         if log_default not in ("DEBUG", "INFO", "WARNING", "ERROR"):
             log_default = "INFO"
         self._log_level_var = tk.StringVar(value=log_default)
         log_combo = ttk.Combobox(
-            cfg_frame, textvariable=self._log_level_var,
-            state="readonly", values=["DEBUG", "INFO", "WARNING", "ERROR"], width=10
+            cfg_frame,
+            textvariable=self._log_level_var,
+            state="readonly",
+            values=["DEBUG", "INFO", "WARNING", "ERROR"],
+            width=10,
         )
         log_combo.grid(row=7, column=1, sticky="w", padx=(6, 12), pady=(0, 4))
         log_combo.bind("<<ComboboxSelected>>", self._on_log_level_change)
         cfg_label("Sync Interval (s):", row=7, col=2, padx=(8, 6), pady=(0, 4))
         self._sync_interval_var = tk.StringVar(value=str(self.cfg.get("sync_interval_seconds", 300)))
         ttk.Entry(cfg_frame, textvariable=self._sync_interval_var, width=10).grid(
-            row=7, column=3, sticky="w", pady=(0, 4))
-
-        # ── Rows 8-10: Relay mode ──
-        self._relay_text_messages_var = tk.BooleanVar(
-            value=as_bool(self.cfg.get("relay_text_messages", True))
+            row=7, column=3, sticky="w", pady=(0, 4)
         )
+
+        self._relay_text_messages_var = tk.BooleanVar(value=as_bool(self.cfg.get("relay_text_messages", True)))
         ttk.Checkbutton(
             cfg_frame,
             text="Enable relay between selected COM ports",
             variable=self._relay_text_messages_var,
         ).grid(row=8, column=0, columnspan=2, sticky="w", pady=(0, 4))
         cfg_label("Relay From COM Port(s):", row=8, col=2, padx=(8, 6), pady=(0, 4))
-        self._relay_text_from_ports_var = tk.StringVar(
-            value=_format_ports_for_entry(self.cfg.get("relay_text_from_ports"))
-        )
+        self._relay_text_from_ports_var = tk.StringVar(value=_format_ports_for_entry(self.cfg.get("relay_text_from_ports")))
         ttk.Entry(cfg_frame, textvariable=self._relay_text_from_ports_var, width=16).grid(
-            row=8, column=3, sticky="ew", pady=(0, 4))
+            row=8, column=3, sticky="ew", pady=(0, 4)
+        )
 
         cfg_label("Relay To COM Port(s):", row=9, col=2, padx=(8, 6), pady=(0, 4))
-        self._relay_text_to_ports_var = tk.StringVar(
-            value=_format_ports_for_entry(self.cfg.get("relay_text_to_ports"))
-        )
+        self._relay_text_to_ports_var = tk.StringVar(value=_format_ports_for_entry(self.cfg.get("relay_text_to_ports")))
         self._relay_text_to_ports_var.trace_add("write", self._on_relay_to_ports_changed)
         relay_to_frame = ttk.Frame(cfg_frame)
         relay_to_frame.grid(row=9, column=3, columnspan=2, sticky="ew", pady=(0, 4))
@@ -1547,24 +1603,20 @@ class GatewayApp:
             width=28,
         )
         self._relay_text_to_picker.grid(row=0, column=0, sticky="ew", padx=(0, 6))
-        ttk.Button(
-            relay_to_frame,
-            text="Use",
-            command=self._apply_relay_to_picker_selection,
-        ).grid(row=0, column=1, sticky="ew")
+        ttk.Button(relay_to_frame, text="Use", command=self._apply_relay_to_picker_selection).grid(
+            row=0, column=1, sticky="ew"
+        )
         ttk.Entry(relay_to_frame, textvariable=self._relay_text_to_ports_var, width=16).grid(
-            row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+            row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0)
+        )
         ttk.Label(
             cfg_frame,
-            text="Leave Relay From blank to relay from any selected port. For Relay To, choose 'All other selected ports' in the dropdown or list custom ports in the field.",
+            text="Leave Relay From blank to relay from any selected port. For Relay To, choose 'All other selected ports' or list custom ports.",
             style="Sub.TLabel",
         ).grid(row=10, column=0, columnspan=5, sticky="w", pady=(0, 4))
         self._refresh_relay_to_picker_options()
 
-        # ── Row 11: GPS fallback ──
-        self._send_nodes_without_gps_var = tk.BooleanVar(
-            value=as_bool(self.cfg.get("send_nodes_without_gps", True))
-        )
+        self._send_nodes_without_gps_var = tk.BooleanVar(value=as_bool(self.cfg.get("send_nodes_without_gps", True)))
         ttk.Checkbutton(
             cfg_frame,
             text="Send nodes without GPS fix",
@@ -1576,21 +1628,22 @@ class GatewayApp:
         park_lat_val = "" if raw_park_lat is None else f"{float(raw_park_lat):.6f}".rstrip("0").rstrip(".")
         self._park_lat_var = tk.StringVar(value=park_lat_val)
         ttk.Entry(cfg_frame, textvariable=self._park_lat_var, width=16).grid(
-            row=11, column=3, sticky="w", pady=(0, 4))
+            row=11, column=3, sticky="w", pady=(0, 4)
+        )
 
-        # ── Row 12: WinTAK hint + fallback lon ──
         self._wintak_setup_var = tk.StringVar()
         ttk.Label(cfg_frame, textvariable=self._wintak_setup_var, style="Hint.TLabel").grid(
-            row=12, column=0, columnspan=2, sticky="w", pady=(0, 4))
+            row=12, column=0, columnspan=2, sticky="w", pady=(0, 4)
+        )
         cfg_label("Fallback Lon:", row=12, col=2, padx=(8, 6), pady=(0, 4))
         raw_park_lon = self.cfg.get("park_lon")
         park_lon_val = "" if raw_park_lon is None else f"{float(raw_park_lon):.6f}".rstrip("0").rstrip(".")
         self._park_lon_var = tk.StringVar(value=park_lon_val)
         ttk.Entry(cfg_frame, textvariable=self._park_lon_var, width=16).grid(
-            row=12, column=3, sticky="w", pady=(0, 4))
+            row=12, column=3, sticky="w", pady=(0, 4)
+        )
         self._local_tak_tcp_listen_port_var.trace_add("write", self._update_wintak_setup_hint)
 
-        # ── Hidden/legacy options kept for existing config behavior ──
         self._local_tak_chat_listen_port_var = tk.StringVar(
             value=str(self.cfg.get("local_tak_chat_listen_port", DEFAULT_CHAT_LISTEN_PORT))
         )
@@ -1601,79 +1654,205 @@ class GatewayApp:
         self._park_lon_var.trace_add("write", lambda *_: self._update_no_gps_hint())
         self._no_gps_hint_var = tk.StringVar()
         ttk.Label(cfg_frame, textvariable=self._no_gps_hint_var, style="Hint.TLabel").grid(
-            row=13, column=0, columnspan=6, sticky="w", pady=(0, 2))
+            row=13, column=0, columnspan=6, sticky="w", pady=(0, 2)
+        )
         self._update_no_gps_hint()
 
         cfg_frame.columnconfigure(1, weight=1)
         cfg_frame.columnconfigure(3, weight=1)
+        cfg_frame.columnconfigure(4, weight=1)
 
-        # ── Toolbar / Steuerleiste ──
-        toolbar = tk.Frame(body, bg=C["panel"], pady=6)
-        toolbar.pack(fill="x", padx=0)
+        ops_frame = ttk.LabelFrame(right_col, text=" OPERATIONS ", padding=(14, 10))
+        ops_frame.pack(fill="x", pady=(0, 8))
+        ops_toolbar = tk.Frame(ops_frame, bg=C["card"])
+        ops_toolbar.pack(fill="x")
 
-        self._start_btn = ttk.Button(
-            toolbar, text="▶  Start", command=self._on_start, style="Accent.TButton", width=10)
-        self._start_btn.pack(side="left", padx=(10, 4))
+        self._start_btn = ttk.Button(ops_toolbar, text="Start Gateway", command=self._on_start, style="Accent.TButton")
+        self._start_btn.pack(side="left", padx=(0, 6))
         self._stop_btn = ttk.Button(
-            toolbar, text="⏹  Stop", command=self._on_stop, state="disabled",
-            style="Danger.TButton", width=10)
-        self._stop_btn.pack(side="left", padx=(0, 4))
-        ttk.Button(
-            toolbar, text="🔄  Sync", command=self._on_manual_sync, width=10
-        ).pack(side="left", padx=(0, 4))
+            ops_toolbar,
+            text="Stop Gateway",
+            command=self._on_stop,
+            state="disabled",
+            style="Danger.TButton",
+        )
+        self._stop_btn.pack(side="left", padx=(0, 6))
+        ttk.Button(ops_toolbar, text="Manual Sync", command=self._on_manual_sync).pack(side="left")
 
-        self._status_var = tk.StringVar(value="⬛  Stopped")
-        ttk.Label(
-            toolbar, textvariable=self._status_var,
-            font=("Segoe UI", 9, "bold"),
-        ).pack(side="left", padx=(16, 0))
+        self._status_var = tk.StringVar(value="⬛ Stopped")
+        tk.Label(
+            ops_frame,
+            textvariable=self._status_var,
+            bg=C["card"],
+            fg=C["accent"],
+            font=("Segoe UI", 10, "bold"),
+            anchor="w",
+        ).pack(fill="x", pady=(10, 6))
 
+        tk.Label(
+            ops_frame,
+            text="Quick command console",
+            bg=C["card"],
+            fg=C["fg_sub"],
+            font=("Segoe UI", 8, "bold"),
+            anchor="w",
+        ).pack(fill="x")
+        self._input_var = tk.StringVar()
+        command_row = tk.Frame(ops_frame, bg=C["card"])
+        command_row.pack(fill="x", pady=(4, 0))
+        command_entry = ttk.Entry(command_row, textvariable=self._input_var)
+        command_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
+        command_entry.bind("<Return>", lambda _event: self._on_send_command())
+        ttk.Button(command_row, text="Run", command=self._on_send_command).pack(side="right")
+
+        mesh_send_frame = ttk.LabelFrame(right_col, text=" DIRECT TEXT -> MESH ", padding=(14, 10))
+        mesh_send_frame.pack(fill="x", pady=(0, 8))
+        tk.Label(
+            mesh_send_frame,
+            text="Send a plain text message directly to the connected Meshtastic interfaces.",
+            bg=C["card"],
+            fg=C["fg_sub"],
+            font=("Segoe UI", 9),
+            anchor="w",
+            justify="left",
+            wraplength=360,
+        ).pack(fill="x")
         self._mesh_test_message_var = tk.StringVar()
+        mesh_entry = ttk.Entry(mesh_send_frame, textvariable=self._mesh_test_message_var)
+        mesh_entry.pack(fill="x", pady=(8, 6))
+        mesh_entry.bind("<Return>", lambda _event: self._on_send_mesh_test_message())
         self._send_mesh_test_btn = ttk.Button(
-            body,
-            text="Send to Mesh",
+            mesh_send_frame,
+            text="Send Text",
             command=self._on_send_mesh_test_message,
             state="disabled",
             style="Accent.TButton",
         )
+        self._send_mesh_test_btn.pack(anchor="e")
         self._mesh_test_status_var = tk.StringVar(value="Gateway not started.")
+        tk.Label(
+            mesh_send_frame,
+            textvariable=self._mesh_test_status_var,
+            bg=C["card"],
+            fg=C["fg_sub"],
+            font=("Segoe UI", 9),
+            anchor="w",
+            justify="left",
+            wraplength=360,
+        ).pack(fill="x", pady=(8, 0))
 
-        self._input_var = tk.StringVar()
-
-        # ── Log output ──
-        log_frame = ttk.LabelFrame(body, text=" 📋  Log Output ", padding=4)
-        log_frame.pack(fill="both", expand=True, padx=10, pady=(6, 0))
-
-        self._log_text = tk.Text(
-            log_frame, wrap="word", state="disabled",
-            bg="#0d1117", fg="#c9d1d9",
+        cot_frame = ttk.LabelFrame(right_col, text=" WINTAK COT -> MESH ", padding=(14, 10))
+        cot_frame.pack(fill="both", expand=False, pady=(0, 8))
+        tk.Label(
+            cot_frame,
+            text="Paste a full WinTAK/ATAK <event> XML packet here to inject it into the mesh path for testing.",
+            bg=C["card"],
+            fg=C["fg_sub"],
+            font=("Segoe UI", 9),
+            anchor="w",
+            justify="left",
+            wraplength=360,
+        ).pack(fill="x")
+        self._cot_input_text = tk.Text(
+            cot_frame,
+            height=10,
+            wrap="word",
+            bg=C["text_bg"],
+            fg=C["fg"],
+            insertbackground=C["fg"],
+            selectbackground=C["accent"],
+            relief="flat",
+            bd=0,
             font=self._log_font,
-            relief="flat", bd=0,
-            insertbackground="#c9d1d9",
-            selectbackground="#264f78",
+        )
+        self._cot_input_text.pack(fill="both", expand=True, pady=(8, 6))
+        cot_scrollbar = ttk.Scrollbar(cot_frame, command=self._cot_input_text.yview)
+        cot_scrollbar.pack(side="right", fill="y")
+        self._cot_input_text.configure(yscrollcommand=cot_scrollbar.set)
+        self._send_cot_btn = ttk.Button(
+            cot_frame,
+            text="Send CoT",
+            command=self._on_send_cot_to_mesh,
+            state="disabled",
+            style="Accent.TButton",
+        )
+        self._send_cot_btn.pack(anchor="e")
+        self._cot_status_var = tk.StringVar(value="Gateway not started.")
+        tk.Label(
+            cot_frame,
+            textvariable=self._cot_status_var,
+            bg=C["card"],
+            fg=C["fg_sub"],
+            font=("Segoe UI", 9),
+            anchor="w",
+            justify="left",
+            wraplength=360,
+        ).pack(fill="x", pady=(8, 0))
+
+        monitor_frame = ttk.LabelFrame(right_col, text=" WINTAK MONITOR ", padding=(14, 10))
+        monitor_frame.pack(fill="both", expand=True)
+        tk.Label(
+            monitor_frame,
+            text="Recent WinTAK TCP listener activity appears here for quick situational awareness.",
+            bg=C["card"],
+            fg=C["fg_sub"],
+            font=("Segoe UI", 9),
+            anchor="w",
+            justify="left",
+            wraplength=360,
+        ).pack(fill="x")
+        self._wintak_monitor_text = tk.Text(
+            monitor_frame,
+            height=9,
+            wrap="word",
+            state="disabled",
+            bg=C["text_bg"],
+            fg=C["fg"],
+            font=self._log_font,
+            relief="flat",
+            bd=0,
+            insertbackground=C["fg"],
+            selectbackground=C["accent"],
+        )
+        self._wintak_monitor_text.pack(fill="both", expand=True, pady=(8, 0))
+        self._wintak_monitor_text.tag_configure("INFO", foreground=C["fg"])
+        self._wintak_monitor_text.tag_configure("WARNING", foreground=C["warning"])
+        self._wintak_monitor_text.tag_configure("ERROR", foreground=C["danger"])
+
+        log_frame = ttk.LabelFrame(body, text=" EVENT LOG ", padding=6)
+        log_frame.pack(fill="both", expand=True, pady=(10, 0))
+        self._log_text = tk.Text(
+            log_frame,
+            wrap="word",
+            state="disabled",
+            bg=C["text_bg"],
+            fg=C["fg"],
+            font=self._log_font,
+            relief="flat",
+            bd=0,
+            insertbackground=C["fg"],
+            selectbackground=C["accent"],
         )
         scrollbar = ttk.Scrollbar(log_frame, command=self._log_text.yview)
         self._log_text.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
         self._log_text.pack(fill="both", expand=True, padx=2, pady=2)
+        self._log_text.tag_configure("DEBUG", foreground="#78a69a")
+        self._log_text.tag_configure("INFO", foreground=C["fg"])
+        self._log_text.tag_configure("WARNING", foreground=C["warning"])
+        self._log_text.tag_configure("ERROR", foreground=C["danger"])
+        self._log_text.tag_configure("CRITICAL", foreground="#ffb4ad", font=("Consolas", 9, "bold"))
+        self._log_text.tag_configure("CMD", foreground=C["accent"])
 
-        # Farb-Tags je Log-Level
-        self._log_text.tag_configure("DEBUG",    foreground="#6e7681")
-        self._log_text.tag_configure("INFO",     foreground="#c9d1d9")
-        self._log_text.tag_configure("WARNING",  foreground="#d29922")
-        self._log_text.tag_configure("ERROR",    foreground="#f85149")
-        self._log_text.tag_configure("CRITICAL", foreground="#ff7b72", font=("Consolas", 9, "bold"))
-        self._log_text.tag_configure("CMD",      foreground="#79c0ff")
-
-        # ── Statusleiste unten ──
-        status_bar = tk.Frame(root, bg=C["panel"], height=22)
-        status_bar.pack(fill="x", side="bottom")
+        status_bar = tk.Frame(root, bg=C["panel"], height=26)
+        status_bar.pack(fill="x", side="bottom", padx=10, pady=(10, 10))
         status_bar.pack_propagate(False)
         self._bottom_wintak_hint_var = tk.StringVar()
         tk.Label(
             status_bar,
             textvariable=self._bottom_wintak_hint_var,
-            bg=C["panel"], fg=C["fg_sub"],
+            bg=C["panel"],
+            fg=C["fg_sub"],
             font=("Segoe UI", 8),
             anchor="w",
         ).pack(side="left", padx=10, fill="y")
@@ -1936,6 +2115,7 @@ class GatewayApp:
         )
         self._gateway_thread.start()
         self._mesh_test_status_var.set("Gateway starting …")
+        self._cot_status_var.set("Gateway starting …")
 
     def _run_gateway(self, ports):
         try:
@@ -1945,7 +2125,9 @@ class GatewayApp:
             gw.wintak_tcp_chat_callback = self._on_wintak_tcp_chat
             self._root.after(0, lambda: self._status_var.set(f"🟢 Running  –  {', '.join(ports)}"))
             self._root.after(0, lambda: self._send_mesh_test_btn.configure(state="normal"))
+            self._root.after(0, lambda: self._send_cot_btn.configure(state="normal"))
             self._root.after(0, lambda: self._mesh_test_status_var.set("Ready for manual mesh test sending."))
+            self._root.after(0, lambda: self._cot_status_var.set("Ready for manual CoT injection."))
             gw.run()
         except Exception:
             err = traceback.format_exc()
@@ -1960,7 +2142,9 @@ class GatewayApp:
         self._stop_btn.configure(state="disabled")
         self._status_var.set("🟡 Stopping …")
         self._send_mesh_test_btn.configure(state="disabled")
+        self._send_cot_btn.configure(state="disabled")
         self._mesh_test_status_var.set("Gateway stopping …")
+        self._cot_status_var.set("Gateway stopping …")
 
     def _on_gateway_stopped(self):
         if self._gui_handler:
@@ -1971,7 +2155,9 @@ class GatewayApp:
         self._stop_btn.configure(state="disabled")
         self._status_var.set("⬛ Stopped")
         self._send_mesh_test_btn.configure(state="disabled")
+        self._send_cot_btn.configure(state="disabled")
         self._mesh_test_status_var.set("Gateway not started.")
+        self._cot_status_var.set("Gateway not started.")
 
     def _on_manual_sync(self):
         gw = self._gateway
@@ -2017,6 +2203,44 @@ class GatewayApp:
         self._root.after(0, lambda: self._mesh_test_status_var.set(f"✅ Sent (interfaces: {total_sent})."))
         self._root.after(0, lambda: self._mesh_test_message_var.set(""))
 
+    def _on_send_cot_to_mesh(self):
+        packet_xml = self._cot_input_text.get("1.0", "end").strip()
+        if not packet_xml:
+            self._cot_status_var.set("⚠ Please paste a CoT <event> XML first.")
+            self._append_log("Manual CoT send canceled: empty payload.", "WARNING")
+            return
+
+        gw = self._gateway
+        if not gw:
+            self._cot_status_var.set("⚠ Gateway is not running.")
+            self._append_log("Manual CoT send is not possible: gateway is not running.", "WARNING")
+            return
+
+        self._cot_status_var.set("🟡 Sending CoT to mesh …")
+        threading.Thread(
+            target=self._send_cot_to_mesh_worker,
+            args=(gw, packet_xml),
+            daemon=True,
+        ).start()
+
+    def _send_cot_to_mesh_worker(self, gw, packet_xml):
+        try:
+            send_result = gw.send_cot_to_meshtastic(packet_xml)
+        except Exception as exc:
+            self._queue_log(f"Manual CoT send failed: {exc}", "ERROR")
+            self._queue_log("Manual CoT send error details:\n" + traceback.format_exc(), "DEBUG")
+            self._root.after(0, lambda: self._cot_status_var.set(f"❌ Send failed: {exc}"))
+            return
+
+        transport = send_result.get("transport", "UNKNOWN")
+        count = send_result.get("count", 0)
+        self._queue_log(
+            f"Manual CoT sent to the mesh successfully (transport: {transport}, packets: {count}).",
+            "INFO",
+        )
+        self._root.after(0, lambda: self._cot_status_var.set(f"✅ Sent via {transport} ({count} packet(s))."))
+        self._root.after(0, lambda: self._cot_input_text.delete("1.0", "end"))
+
     # ─────────────────────────── WinTAK TCP Events ───────────────────────────
 
     def _get_wintak_tcp_listener_endpoint(self):
@@ -2031,15 +2255,31 @@ class GatewayApp:
         if kind == "connect":
             ip = addr[0] if addr else "?"
             listen_ip, listen_port = self._get_wintak_tcp_listener_endpoint()
-            self._append_log(
-                f"WinTAK connected from {ip} to TCP listener {listen_ip}:{listen_port}.",
-                "INFO",
-            )
+            monitor_line = f"LINK UP  {ip} -> {listen_ip}:{listen_port}"
+            self._append_log(f"WinTAK connected from {ip} to TCP listener {listen_ip}:{listen_port}.", "INFO")
+            self._append_wintak_monitor(monitor_line, "INFO")
         elif kind == "disconnect":
             self._append_log("WinTAK TCP connection closed.", "INFO")
+            self._append_wintak_monitor("LINK DOWN  WinTAK TCP connection closed.", "WARNING")
         elif kind == "chat":
             ts = datetime.datetime.now().strftime("%H:%M:%S")
             self._append_log(f"[WinTAK {ts}] {sender}: {message}", "INFO")
+            self._append_wintak_monitor(f"[{ts}] {sender}: {message}", "INFO")
+
+    def _append_wintak_monitor(self, msg, level="INFO"):
+        self._wintak_monitor_text.configure(state="normal")
+        self._wintak_monitor_text.insert(
+            "end",
+            msg + "\n",
+            level if level in ("INFO", "WARNING", "ERROR") else "INFO",
+        )
+        current_lines = int(self._wintak_monitor_text.index("end-1c").split(".")[0])
+        if current_lines > MAX_WINTAK_MONITOR_LINES:
+            # Keep only the newest monitor rows once the text widget grows past the cap.
+            excess_lines = current_lines - MAX_WINTAK_MONITOR_LINES
+            self._wintak_monitor_text.delete("1.0", f"{excess_lines + 1}.0")
+        self._wintak_monitor_text.see("end")
+        self._wintak_monitor_text.configure(state="disabled")
 
     def _on_log_level_change(self, _event=None):
         level_str = self._log_level_var.get()
@@ -3694,6 +3934,14 @@ class TAKMeshtasticGateway:
             interfaces = self._get_interfaces_snapshot()
             self._remember_recent_chat(self.recent_meshtastic_outbound_texts, chunk)
         return {"transport": "LEGACY_COTM", "count": len(cot_chunks)}
+
+    def send_cot_to_meshtastic(self, packet_xml):
+        """Send a full TAK/CoT ``<event>`` XML payload into the Meshtastic pipeline.
+
+        Returns the same result dictionary as ``_forward_cot_to_meshtastic()``, including
+        the selected transport and emitted packet count.
+        """
+        return self._forward_cot_to_meshtastic(packet_xml)
 
     def _handle_meshtastic_legacy_cot_text(self, message, from_id):
         return self._handle_meshtastic_cot_chunk(message, from_id)
