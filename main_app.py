@@ -2191,11 +2191,12 @@ class GatewayApp:
         try:
             total_sent = gw._send_text_to_meshtastic(message)
         except Exception as exc:
+            error_message = f"❌ Send failed: {exc}"
             self._queue_log(f"Manual mesh send failed: {exc}", "ERROR")
             self._queue_log("Manual mesh send error details:\n" + traceback.format_exc(), "DEBUG")
             self._root.after(
                 0,
-                lambda: self._mesh_test_status_var.set(f"❌ Send failed: {exc}"),
+                lambda: self._mesh_test_status_var.set(error_message),
             )
             return
 
@@ -2227,9 +2228,10 @@ class GatewayApp:
         try:
             send_result = gw.send_cot_to_meshtastic(packet_xml)
         except Exception as exc:
+            error_message = f"❌ Send failed: {exc}"
             self._queue_log(f"Manual CoT send failed: {exc}", "ERROR")
             self._queue_log("Manual CoT send error details:\n" + traceback.format_exc(), "DEBUG")
-            self._root.after(0, lambda: self._cot_status_var.set(f"❌ Send failed: {exc}"))
+            self._root.after(0, lambda: self._cot_status_var.set(error_message))
             return
 
         transport = send_result.get("transport", "UNKNOWN")
