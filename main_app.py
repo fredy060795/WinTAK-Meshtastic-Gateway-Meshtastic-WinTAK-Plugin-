@@ -4185,53 +4185,54 @@ class TAKMeshtasticGateway:
                     return {"transport": "ATAK_PLUGIN_DETAIL", "count": 1}
                 except Exception as exc:
                     self.logger.warning(
-                        "ATAK_PLUGIN-detail=7-Senden fehlgeschlagen, versuche Legacy-COTM/ATAK_FORWARDER-Fallback: "
+                        "ATAK_PLUGIN-detail=7-Senden fehlgeschlagen, versuche ATAK_FORWARDER/COTM-Fallback: "
                         f"{exc}"
                     )
             else:
                 self.logger.debug(
                     f"Generic-CoT-Typ {metadata['type']} passt nicht in ATAK_PLUGIN-detail=7 und versucht "
-                    "Legacy-COTM-Kurztext mit ATAK_FORWARDER-Fallback."
+                    "ATAK_FORWARDER mit Legacy-COTM-Fallback."
                 )
-        try:
-            cot_chunks = self._prepare_meshtastic_cot_chunks(normalized_packet)
-            if not cot_chunks:
-                raise ValueError(EMPTY_MESHTASTIC_COT_ERROR)
-            self.logger.debug(
-                f"Generic-CoT als Legacy-COTM-Kurztext fragmentiert: paketanzahl={len(cot_chunks)}"
-            )
-            for chunk in cot_chunks:
-                self._send_text_to_interfaces(chunk, interfaces)
-                interfaces = self._get_interfaces_snapshot()
-                self._remember_recent_chat(self.recent_meshtastic_outbound_texts, chunk)
-            return {"transport": "LEGACY_COTM", "count": len(cot_chunks)}
-        except Exception as exc:
-            self.logger.warning(
-                "Legacy-COTM-Kurztext-Senden fehlgeschlagen, versuche ATAK_FORWARDER-Fallback: "
-                f"{exc}"
-            )
 
         forwarder_payload = self._prepare_meshtastic_forwarder_payload(normalized_packet)
         if not forwarder_payload:
             raise ValueError(EMPTY_MESHTASTIC_COT_ERROR)
-        self.logger.debug(
-            f"Generic-CoT via ATAK_FORWARDER komprimiert: xml_bytes={len(_ensure_bytes(normalized_packet))} "
-            f"compressed_bytes={len(forwarder_payload)}"
-        )
-        forwarder_packets = self._prepare_meshtastic_forwarder_packets(forwarder_payload)
-        self.logger.debug(
-            f"Generic-CoT via ATAK_FORWARDER verpackt: paketanzahl={len(forwarder_packets)} "
-            f"modus={'direkt' if len(forwarder_packets) == 1 else 'fragmentiert'}"
-        )
-        for forwarder_packet in forwarder_packets:
-            self._send_data_to_interfaces(
-                forwarder_packet,
-                interfaces,
-                MESHTASTIC_ATAK_FORWARDER_PORTNUM,
+        try:
+            self.logger.debug(
+                f"Generic-CoT via ATAK_FORWARDER komprimiert: xml_bytes={len(_ensure_bytes(normalized_packet))} "
+                f"compressed_bytes={len(forwarder_payload)}"
             )
+            forwarder_packets = self._prepare_meshtastic_forwarder_packets(forwarder_payload)
+            self.logger.debug(
+                f"Generic-CoT via ATAK_FORWARDER verpackt: paketanzahl={len(forwarder_packets)} "
+                f"modus={'direkt' if len(forwarder_packets) == 1 else 'fragmentiert'}"
+            )
+            for forwarder_packet in forwarder_packets:
+                self._send_data_to_interfaces(
+                    forwarder_packet,
+                    interfaces,
+                    MESHTASTIC_ATAK_FORWARDER_PORTNUM,
+                )
+                interfaces = self._get_interfaces_snapshot()
+            transport = "ATAK_FORWARDER" if len(forwarder_packets) == 1 else "ATAK_FORWARDER_FRAGMENTS"
+            return {"transport": transport, "count": len(forwarder_packets)}
+        except Exception as exc:
+            self.logger.warning(
+                "ATAK_FORWARDER-Senden fehlgeschlagen, versuche Legacy-COTM-Kurztext-Fallback: "
+                f"{exc}"
+            )
+
+        cot_chunks = self._prepare_meshtastic_cot_chunks(normalized_packet)
+        if not cot_chunks:
+            raise ValueError(EMPTY_MESHTASTIC_COT_ERROR)
+        self.logger.debug(
+            f"Generic-CoT als Legacy-COTM-Kurztext fragmentiert: paketanzahl={len(cot_chunks)}"
+        )
+        for chunk in cot_chunks:
+            self._send_text_to_interfaces(chunk, interfaces)
             interfaces = self._get_interfaces_snapshot()
-        transport = "ATAK_FORWARDER" if len(forwarder_packets) == 1 else "ATAK_FORWARDER_FRAGMENTS"
-        return {"transport": transport, "count": len(forwarder_packets)}
+            self._remember_recent_chat(self.recent_meshtastic_outbound_texts, chunk)
+        return {"transport": "LEGACY_COTM", "count": len(cot_chunks)}
 
     def send_cot_to_meshtastic(self, packet_xml):
         """Send a full TAK/CoT ``<event>`` XML payload into the Meshtastic pipeline.
