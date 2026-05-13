@@ -444,6 +444,25 @@ def _looks_like_tak_chat_remarks(remarks):
     return False
 
 
+def _has_tak_chat_message_fields(element):
+    """Return True when detail XML contains message-like nodes/attributes."""
+    if element is None:
+        return False
+    for node in element.iter():
+        local_name = _xml_local_name(node.tag).lower()
+        if local_name in {"message", "text", "body", "content", "note", "_chat"}:
+            if _collect_xml_text(node).strip():
+                return True
+            if any(str(value or "").strip() for value in node.attrib.values()):
+                return True
+        for attr_name, attr_value in node.attrib.items():
+            if not str(attr_value or "").strip():
+                continue
+            if _WINTAK_CHAT_FIELD_PATTERN.match(attr_name):
+                return True
+    return False
+
+
 def _format_network_endpoint(address):
     """Render IPv4/IPv6 socket addresses in a compact log-friendly form."""
     if not address:
@@ -4384,6 +4403,7 @@ class TAKMeshtasticGateway:
         has_chat_identity = event_uid.startswith(GEOCHAT_UID_PREFIX) or event_type.startswith("b-t-f")
         has_chat_elements = any(element is not None for element in (chat, chat_note, chatgrp))
         has_chat_remarks = _looks_like_tak_chat_remarks(remarks)
+        has_chat_message_fields = _has_tak_chat_message_fields(detail)
         generic_message_nodes = []
         for element in detail.iter():
             if element is detail:
@@ -4410,7 +4430,7 @@ class TAKMeshtasticGateway:
             message = _extract_latest_wintak_chat_attribute_message(detail)
         if not message:
             return None
-        if not (has_chat_identity or has_chat_elements or has_chat_remarks):
+        if not (has_chat_identity or has_chat_elements or has_chat_remarks or has_chat_message_fields):
             return None
 
         link = _find_descendant_by_local_name(detail, "link")
