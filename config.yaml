@@ -19,7 +19,7 @@ tak_server_host: 123.12.12.12
 # WICHTIG: Port 8088 nutzen (das ist der Eingang unserer Bridge)
 tak_server_port: 8088
 
-tak_server_protocol: TCP                               
+tak_server_protocol: TCP                               # TCP/UDP; falls pytak installiert ist, nutzt der Remote-Uplink PyTAK
 
 # Lokales WinTAK-Ziel für Positions- und Chat-CoT
 local_tak_ip: 127.0.0.1

@@ -1,7 +1,7 @@
 # WinTAK Meshtastic Gateway
 
 A stable bridge between **Meshtastic** mesh radios and the **TAK ecosystem** (WinTAK, ATAK, iTAK).  
-The gateway reads position data and text messages from Meshtastic nodes over a serial connection and forwards them as Cursor on Target (CoT) XML — both to a local WinTAK instance (UDP) and optionally to a remote TAK Server (TCP or UDP). It can also accept outgoing WinTAK CoT packets and send them into the Meshtastic mesh.
+The gateway reads position data and text messages from Meshtastic nodes over a serial connection and forwards them as Cursor on Target (CoT) XML — both to a local WinTAK instance (UDP) and optionally to a remote TAK Server (TCP or UDP). When `pytak` is installed, the remote TAK uplink uses PyTAK for the TCP/UDP transport. It can also accept outgoing WinTAK CoT packets and send them into the Meshtastic mesh.
 
 ---
 
@@ -11,7 +11,7 @@ The gateway reads position data and text messages from Meshtastic nodes over a s
 |---|---|
 | **Dual-Streaming** | Sends CoT data simultaneously to local WinTAK (UDP 4242) and a remote TAK Server (TCP/UDP). |
 | **Chat Bridging** | Forwards Meshtastic text messages to TAK GeoChat and can relay GeoChat messages from WinTAK back into the mesh. |
-| **CoT over Mesh** | Generic WinTAK CoT/marker events now follow the Meshtastic ATAK plugin split: PLI stays on `ATAK_PLUGIN`, other CoT uses zlib-compressed `ATAK_FORWARDER`, is reassembled on receipt, validated as CoT, and then forwarded back to TAK. |
+| **CoT over Mesh** | Generic WinTAK CoT/marker events prefer mesh-safe short-text `COTM:` fragments, while friendly position markers still use `ATAK_PLUGIN` PLI packets; if short-text delivery fails, the gateway falls back to zlib-compressed `ATAK_FORWARDER`. |
 | **COM Relay Mode** | Incoming Meshtastic text from one selected COM port can be forwarded automatically to the other selected COM ports. |
 | **Automatic Reconnect** | Maintains the remote TAK Server connection with automatic retry on disconnect. |
 | **All-Nodes Visibility** | All nodes are forwarded to TAK by default. Nodes with valid GPS (including phone GPS shared over mesh) appear at their real position; nodes without current GPS use their last known position when available, otherwise configurable fallback coordinates. |
@@ -45,13 +45,14 @@ meshtastic
 pypubsub
 pyserial
 pyyaml
+pytak      # recommended – remote TAK uplink uses PyTAK when available
 colorlog   # optional – enables colored console output
 ```
 
 Install all at once:
 
 ```bash
-pip install meshtastic pypubsub pyserial pyyaml colorlog
+pip install meshtastic pypubsub pyserial pyyaml pytak colorlog
 ```
 
 ---
@@ -78,7 +79,7 @@ tak_multicast_groups:               # Optional extra TAK multicast groups to lis
 
 tak_server_host: 123.123.123.123    # Remote TAK Server IP
 tak_server_port: 8088               # Remote TAK Server port (8088 is the default bridge input port)
-tak_server_protocol: TCP            # TCP or UDP
+tak_server_protocol: TCP            # TCP or UDP (remote uplink uses PyTAK when installed)
 relay_text_messages: true           # Relay incoming mesh text to the other selected COM ports
 # relay_text_from_ports: COM7       # Optional: only relay texts received on these COM ports
 # relay_text_to_ports:              # Optional: only relay texts to these COM ports
@@ -112,7 +113,7 @@ send_nodes_without_gps: true
 - **Required in WinTAK:** create a **local server** with `127.0.0.1`, port `8088`, protocol `TCP`; otherwise no connection to the gateway is established.
 - **Additional TAK inputs:** if your TAK setup distributes GeoChat/SA via multicast instead of direct unicast, configure `tak_multicast_groups` (defaults include `224.10.10.1:17012` and `239.2.3.1:6969`) so the gateway also joins those multicast streams. The gateway accepts common WinTAK GeoChat CoT variants including `<chat>` / `<__chat>` payloads with nested numbered message elements, normalizes multiline messages, collapses WinTAK transcript/history exports down to the newest typed message, and splits oversized TAK chat text into multiple mesh-safe messages when needed.
 - **WinTAK TCP Monitor (GUI):** the gateway UI shows a dedicated **WinTAK-Nachrichten** panel that displays every GeoChat/text message received over the configured TCP listener in real time (timestamp, sender, message). The panel header/status now reflects the active bind IP and port (default `0.0.0.0:8088`). A **Letzte Nachricht → Mesh** button lets you manually re-forward the most recently received WinTAK message into the Meshtastic mesh — useful for confirming the receive path without relying on auto-relay. The TCP listener now also responds to WinTAK keepalive pings (`t-x-c-t`) with a proper pong (`t-x-c-t-r`) so that long-lived WinTAK connections stay open and messages are reliably delivered.
-- **WinTAK → Meshtastic (generic CoT / PLI):** friendly position CoT events (`a-f-G-U-C` plus WinTAK/iTAK marker variants such as `a-f-G-U-C-*`) are encoded as Meshtastic `ATAK_PLUGIN` PLI packets on port `72`, matching the official ATAK plugin format for contact markers. Incoming Meshtastic `ATAK_PLUGIN` PLI markers are reconstructed back into CoT and forwarded to TAK. All other CoT events use `ATAK_FORWARDER` on port `257` with zlib-compressed CoT XML on main channel `0`; oversized payloads are automatically split into mesh-safe ATAK_FORWARDER fragments before the gateway falls back to older legacy `COTM:` text fragments.
+- **WinTAK → Meshtastic (generic CoT / PLI):** friendly position CoT events (`a-f-G-U-C` plus WinTAK/iTAK marker variants such as `a-f-G-U-C-*`) are encoded as Meshtastic `ATAK_PLUGIN` PLI packets on port `72`, matching the official ATAK plugin format for contact markers. Incoming Meshtastic `ATAK_PLUGIN` PLI markers are reconstructed back into CoT and forwarded to TAK. All other CoT events are split into mesh-safe legacy `COTM:` short-text fragments on main channel `0`; if that short-text send path fails, the gateway falls back to `ATAK_FORWARDER` on port `257` with zlib-compressed CoT XML and automatic fragment reassembly on receipt.
 - **Inbound troubleshooting:** set `log_level: DEBUG` in `config.yaml` (or via the GUI) to log inbound WinTAK/TAK packet source, transport, listener port, packet size, normalization status, CoT/chat detection, and a shortened payload snippet whenever a packet cannot be recognized as CoT/GeoChat.
 
 ---
@@ -192,7 +193,7 @@ If Meshtastic nodes appear in your local WinTAK but **not** on ATAK/iTAK devices
 | **WinTAK/ATAK chat reaches other TAK clients but not the gateway** | Enable/check `tak_multicast_groups` in `config.yaml`. Some TAK setups distribute GeoChat/SA over multicast (`224.10.10.1:17012`, `239.2.3.1:6969`) instead of sending directly to the gateway's UDP port. |
 | **Nodes visible in WinTAK but missing in ATAK/iTAK** | See [Channel Routing](#important-channel-routing-for-atak--itak) above. |
 | **Certificate / connection errors after a Windows update** | Delete the TAK Server connection in WinTAK and re-add it. Certificates may need to be re-imported. |
-| **Missing Python dependencies** | Run `pip install meshtastic pypubsub pyserial pyyaml colorlog`. |
+| **Missing Python dependencies** | Run `pip install meshtastic pypubsub pyserial pyyaml pytak colorlog`. |
 | **No-fix nodes are missing** | Set `park_lat` and `park_lon` in `config.yaml` to your base or site coordinates. A startup warning is shown when this is misconfigured. |
 
 ---

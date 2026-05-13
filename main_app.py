@@ -11,11 +11,13 @@ TAK Meshtastic Gateway - vollständige, robuste Version
 
 import os
 import sys
+import asyncio
 import argparse
 import base64
 import codecs
 import datetime
 import hashlib
+import ipaddress
 import inspect
 import math
 import re
@@ -27,6 +29,7 @@ import threading
 import traceback
 import uuid
 import zlib
+import warnings
 from xml.etree.ElementTree import Element, ParseError, SubElement, tostring, fromstring
 try:
     import tkinter as tk
@@ -45,6 +48,17 @@ try:
     import colorlog
 except Exception:
     colorlog = None
+
+try:
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"The 'aiohttp' package is required but not installed\..*",
+            category=UserWarning,
+        )
+        import pytak
+except Exception:
+    pytak = None
 
 try:
     import serial.tools.list_ports
@@ -87,6 +101,9 @@ INBOUND_TAK_DEBUG_SNIPPET_CHARS = 240
 UTF8_BOM_CHAR = "\ufeff"
 RECENT_CHAT_CACHE_TTL_SECONDS = 30
 RECENT_CHAT_CACHE_MAX_ENTRIES = 256
+EMPTY_MESHTASTIC_COT_ERROR = "Leere CoT-Nachricht kann nicht ins Mesh gesendet werden."
+PYTAK_REMOTE_QUEUE_TIMEOUT_SECONDS = 2.0
+PYTAK_REMOTE_RECONNECT_SECONDS = 10
 MESHTASTIC_TEXT_CHUNK_MAX_BYTES = 180
 MESHTASTIC_DATA_PAYLOAD_MAX_BYTES = 180
 MESHTASTIC_COT_FRAGMENT_PREFIX = "COTM"
@@ -2512,6 +2529,10 @@ class TAKMeshtasticGateway:
 
         # Remote server socket(s)
         self.sock_remote = None  # für TCP: persistent socket; für UDP: socket used for sendto
+        self.remote_pytak_loop = None
+        self.remote_pytak_queue = None
+        self.remote_pytak_ready = threading.Event()
+        self.remote_cot_url = self._build_remote_cot_url()
 
         # interne State
         self.logger = self.setup_logging()
@@ -3208,6 +3229,90 @@ class TAKMeshtasticGateway:
             return self.park_coords[0], self.park_coords[1], 0
         return 0.0, 0.0, 0.0
 
+    def _build_remote_cot_url(self):
+        protocol = str(self.server_protocol or "TCP").strip().lower()
+        host = str(self.server_ip or "").strip()
+        if not protocol or not host:
+            return None
+        raw_host = host[1:-1] if host.startswith("[") and host.endswith("]") else host
+        try:
+            parsed_host = ipaddress.ip_address(raw_host)
+            if isinstance(parsed_host, ipaddress.IPv6Address):
+                host = f"[{raw_host}]"
+        except ValueError:
+            host = raw_host
+        return f"{protocol}://{host}:{self.server_port}"
+
+    def _should_use_pytak_remote(self):
+        return pytak is not None and self.server_protocol in {"TCP", "UDP"} and self.remote_cot_url is not None
+
+    def _reset_remote_pytak_state(self):
+        with self.server_lock:
+            self.remote_pytak_loop = None
+            self.remote_pytak_queue = None
+            self.remote_pytak_ready.clear()
+
+    async def _wait_for_remote_pytak_shutdown(self):
+        while not self.shutdown_flag.is_set():
+            await asyncio.sleep(0.25)
+
+    async def _run_remote_pytak_client(self):
+        if not self.remote_cot_url:
+            raise ValueError("Remote-TAK-URL konnte nicht aus Host/Port/Protokoll erstellt werden.")
+
+        config = {
+            "COT_URL": self.remote_cot_url,
+            "PYTAK_NO_HELLO": "1",
+        }
+        if self.logger.getEffectiveLevel() <= logging.DEBUG:
+            config["DEBUG"] = "1"
+
+        clitool = pytak.CLITool(config)
+        await clitool.setup()
+        with self.server_lock:
+            self.remote_pytak_loop = asyncio.get_running_loop()
+            self.remote_pytak_queue = clitool.tx_queue
+            self.remote_pytak_ready.set()
+        self.logger.info(f"PyTAK-Remote aktiv: {self.remote_cot_url}")
+
+        run_task = asyncio.create_task(clitool.run())
+        stop_task = asyncio.create_task(self._wait_for_remote_pytak_shutdown())
+        try:
+            done, pending = await asyncio.wait(
+                {run_task, stop_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            for task in done:
+                error = task.exception()
+                if error is not None and task is run_task:
+                    raise error
+        finally:
+            run_task.cancel()
+            stop_task.cancel()
+            await asyncio.gather(run_task, stop_task, return_exceptions=True)
+            self._reset_remote_pytak_state()
+
+    def _send_remote_packet_via_pytak(self, packet_xml, label):
+        with self.server_lock:
+            loop = self.remote_pytak_loop
+            queue = self.remote_pytak_queue
+            is_ready = self.remote_pytak_ready.is_set()
+        if not is_ready or loop is None or queue is None:
+            self.logger.debug("PyTAK-Remote ist noch nicht bereit, Remote-CoT wird derzeit übersprungen.")
+            return False
+        try:
+            future = asyncio.run_coroutine_threadsafe(queue.put(packet_xml), loop)
+            future.result(timeout=PYTAK_REMOTE_QUEUE_TIMEOUT_SECONDS)
+            self.logger.info(f"Remote-PyTAK in Queue gestellt: {self.remote_cot_url} ({label})")
+            return True
+        except Exception as exc:
+            self.logger.warning(f"Fehler beim Einreihen an Remote-PyTAK ({type(exc).__name__}): {exc}")
+            self._reset_remote_pytak_state()
+            return False
+
     def _send_packet_to_tak(self, packet_xml, label):
         cot_dedupe_key = self._build_cot_dedupe_key(packet_xml)
         if cot_dedupe_key:
@@ -3217,6 +3322,14 @@ class TAKMeshtasticGateway:
             self.logger.debug(f"Lokales UDP gesendet an {self.tak_ip}:{self.tak_port} ({label})")
         except Exception as e:
             self.logger.warning(f"Fehler beim Senden an lokales TAK (UDP): {e}")
+
+        if self._should_use_pytak_remote():
+            # PyTAK replaces the legacy remote socket path when available so packets
+            # are not sent twice to the same remote TAK endpoint unless PyTAK is
+            # currently unavailable, in which case we fall back to the legacy socket.
+            if self._send_remote_packet_via_pytak(packet_xml, label):
+                return
+            self.logger.debug("PyTAK-Remote nicht verfügbar, verwende Remote-Socket-Fallback.")
 
         if self.server_protocol == "UDP":
             with self.server_lock:
@@ -3929,46 +4042,47 @@ class TAKMeshtasticGateway:
                 )
         else:
             self.logger.debug(
-                f"Generic-CoT-Typ {metadata['type']} wird wie im LPU5-Flow per ATAK_FORWARDER gesendet."
+                f"Generic-CoT-Typ {metadata['type']} versucht zuerst Legacy-COTM-Kurztext mit ATAK_FORWARDER-Fallback."
             )
+        try:
+            cot_chunks = self._prepare_meshtastic_cot_chunks(normalized_packet)
+            if not cot_chunks:
+                raise ValueError(EMPTY_MESHTASTIC_COT_ERROR)
+            self.logger.debug(
+                f"Generic-CoT als Legacy-COTM-Kurztext fragmentiert: paketanzahl={len(cot_chunks)}"
+            )
+            for chunk in cot_chunks:
+                self._send_text_to_interfaces(chunk, interfaces)
+                interfaces = self._get_interfaces_snapshot()
+                self._remember_recent_chat(self.recent_meshtastic_outbound_texts, chunk)
+            return {"transport": "LEGACY_COTM", "count": len(cot_chunks)}
+        except Exception as exc:
+            self.logger.warning(
+                "Legacy-COTM-Kurztext-Senden fehlgeschlagen, versuche ATAK_FORWARDER-Fallback: "
+                f"{exc}"
+            )
+
         forwarder_payload = self._prepare_meshtastic_forwarder_payload(normalized_packet)
         if not forwarder_payload:
-            raise ValueError("Leere CoT-Nachricht kann nicht ins Mesh gesendet werden.")
+            raise ValueError(EMPTY_MESHTASTIC_COT_ERROR)
         self.logger.debug(
             f"Generic-CoT via ATAK_FORWARDER komprimiert: xml_bytes={len(_ensure_bytes(normalized_packet))} "
             f"compressed_bytes={len(forwarder_payload)}"
         )
         forwarder_packets = self._prepare_meshtastic_forwarder_packets(forwarder_payload)
-        try:
-            self.logger.debug(
-                f"Generic-CoT via ATAK_FORWARDER verpackt: paketanzahl={len(forwarder_packets)} "
-                f"modus={'direkt' if len(forwarder_packets) == 1 else 'fragmentiert'}"
-            )
-            for forwarder_packet in forwarder_packets:
-                self._send_data_to_interfaces(
-                    forwarder_packet,
-                    interfaces,
-                    MESHTASTIC_ATAK_FORWARDER_PORTNUM,
-                )
-                interfaces = self._get_interfaces_snapshot()
-            transport = "ATAK_FORWARDER" if len(forwarder_packets) == 1 else "ATAK_FORWARDER_FRAGMENTS"
-            return {"transport": transport, "count": len(forwarder_packets)}
-        except Exception as exc:
-            self.logger.warning(
-                "ATAK_FORWARDER-Senden fehlgeschlagen, versuche Legacy-CoT-Fragmente als Fallback: "
-                f"{exc}"
-            )
-        cot_chunks = self._prepare_meshtastic_cot_chunks(normalized_packet)
-        if not cot_chunks:
-            raise ValueError("Leere CoT-Nachricht kann nicht ins Mesh gesendet werden.")
         self.logger.debug(
-            f"Generic-CoT fällt auf Legacy-COTM-Fragmente zurück: paketanzahl={len(cot_chunks)}"
+            f"Generic-CoT via ATAK_FORWARDER verpackt: paketanzahl={len(forwarder_packets)} "
+            f"modus={'direkt' if len(forwarder_packets) == 1 else 'fragmentiert'}"
         )
-        for chunk in cot_chunks:
-            self._send_text_to_interfaces(chunk, interfaces)
+        for forwarder_packet in forwarder_packets:
+            self._send_data_to_interfaces(
+                forwarder_packet,
+                interfaces,
+                MESHTASTIC_ATAK_FORWARDER_PORTNUM,
+            )
             interfaces = self._get_interfaces_snapshot()
-            self._remember_recent_chat(self.recent_meshtastic_outbound_texts, chunk)
-        return {"transport": "LEGACY_COTM", "count": len(cot_chunks)}
+        transport = "ATAK_FORWARDER" if len(forwarder_packets) == 1 else "ATAK_FORWARDER_FRAGMENTS"
+        return {"transport": transport, "count": len(forwarder_packets)}
 
     def send_cot_to_meshtastic(self, packet_xml):
         """Send a full TAK/CoT ``<event>`` XML payload into the Meshtastic pipeline.
@@ -4828,6 +4942,20 @@ class TAKMeshtasticGateway:
         Führt Wiederverbindungen durch.
         """
         self.logger.info(f"Server-Mode: {self.server_protocol} -> {self.server_ip}:{self.server_port}")
+        if self._should_use_pytak_remote():
+            self.logger.info(f"PyTAK-Transport aktiviert für Remote-TAK: {self.remote_cot_url}")
+            while not self.shutdown_flag.is_set():
+                try:
+                    asyncio.run(self._run_remote_pytak_client())
+                except Exception as e:
+                    self.logger.warning(f"PyTAK-Remote-Verbindung fehlgeschlagen: {e}")
+                finally:
+                    self._reset_remote_pytak_state()
+                if not self.shutdown_flag.is_set():
+                    self.shutdown_flag.wait(PYTAK_REMOTE_RECONNECT_SECONDS)
+            return
+        if pytak is None:
+            self.logger.info("PyTAK nicht verfügbar, verwende klassischen Remote-Socket-Transport.")
         if self.server_protocol == "UDP":
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -5112,6 +5240,7 @@ class TAKMeshtasticGateway:
         """
         Cleanup remote server socket
         """
+        self._reset_remote_pytak_state()
         with self.server_lock:
             if self.sock_remote:
                 try:
@@ -5300,7 +5429,7 @@ def _run_terminal_mode(cfg, args):
         print("WARNUNG: Folgende Python-Pakete fehlen oder konnten nicht importiert werden:")
         for m in missing:
             print(" - " + m)
-        print("Bitte installiere sie (z.B. pip install meshtastic pypubsub pyserial colorlog pyyaml).")
+        print("Bitte installiere sie (z.B. pip install meshtastic pypubsub pyserial colorlog pyyaml pytak).")
         print("Fortfahren? (Enter=ja, Ctrl-C zum Abbrechen)")
         input()
 
