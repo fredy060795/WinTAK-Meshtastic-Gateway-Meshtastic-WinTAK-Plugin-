@@ -1,7 +1,7 @@
 # WinTAK Meshtastic Gateway
 
 A stable bridge between **Meshtastic** mesh radios and the **TAK ecosystem** (WinTAK, ATAK, iTAK).  
-The gateway reads position data and text messages from Meshtastic nodes over a serial connection and forwards them as Cursor on Target (CoT) XML — both to a local WinTAK instance (UDP) and optionally to a remote TAK Server (TCP or UDP). It can also accept outgoing WinTAK CoT packets and send them into the Meshtastic mesh.
+The gateway reads position data and text messages from Meshtastic nodes over a serial connection and forwards them as Cursor on Target (CoT) XML — both to a local WinTAK instance (UDP) and optionally to a remote TAK Server (TCP or UDP). When `pytak` is installed, the remote TAK uplink uses PyTAK for the TCP/UDP transport. It can also accept outgoing WinTAK CoT packets and send them into the Meshtastic mesh.
 
 ---
 
@@ -45,13 +45,14 @@ meshtastic
 pypubsub
 pyserial
 pyyaml
+pytak      # recommended – remote TAK uplink uses PyTAK when available
 colorlog   # optional – enables colored console output
 ```
 
 Install all at once:
 
 ```bash
-pip install meshtastic pypubsub pyserial pyyaml colorlog
+pip install meshtastic pypubsub pyserial pyyaml pytak colorlog
 ```
 
 ---
@@ -78,7 +79,7 @@ tak_multicast_groups:               # Optional extra TAK multicast groups to lis
 
 tak_server_host: 123.123.123.123    # Remote TAK Server IP
 tak_server_port: 8088               # Remote TAK Server port (8088 is the default bridge input port)
-tak_server_protocol: TCP            # TCP or UDP
+tak_server_protocol: TCP            # TCP or UDP (remote uplink uses PyTAK when installed)
 relay_text_messages: true           # Relay incoming mesh text to the other selected COM ports
 # relay_text_from_ports: COM7       # Optional: only relay texts received on these COM ports
 # relay_text_to_ports:              # Optional: only relay texts to these COM ports
@@ -192,7 +193,7 @@ If Meshtastic nodes appear in your local WinTAK but **not** on ATAK/iTAK devices
 | **WinTAK/ATAK chat reaches other TAK clients but not the gateway** | Enable/check `tak_multicast_groups` in `config.yaml`. Some TAK setups distribute GeoChat/SA over multicast (`224.10.10.1:17012`, `239.2.3.1:6969`) instead of sending directly to the gateway's UDP port. |
 | **Nodes visible in WinTAK but missing in ATAK/iTAK** | See [Channel Routing](#important-channel-routing-for-atak--itak) above. |
 | **Certificate / connection errors after a Windows update** | Delete the TAK Server connection in WinTAK and re-add it. Certificates may need to be re-imported. |
-| **Missing Python dependencies** | Run `pip install meshtastic pypubsub pyserial pyyaml colorlog`. |
+| **Missing Python dependencies** | Run `pip install meshtastic pypubsub pyserial pyyaml pytak colorlog`. |
 | **No-fix nodes are missing** | Set `park_lat` and `park_lon` in `config.yaml` to your base or site coordinates. A startup warning is shown when this is misconfigured. |
 
 ---
