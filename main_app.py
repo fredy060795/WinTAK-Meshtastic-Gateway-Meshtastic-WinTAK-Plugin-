@@ -96,8 +96,6 @@ MESHTASTIC_FORWARDER_FRAGMENT_PAYLOAD_BYTES = (
     MESHTASTIC_DATA_PAYLOAD_MAX_BYTES - MESHTASTIC_FORWARDER_FRAGMENT_HEADER_BYTES
 )
 DEFAULT_MESHTASTIC_CHANNEL_INDEX = 0
-MESHTASTIC_ATAK_PLUGIN_PORTNUM = 72
-MESHTASTIC_ATAK_FORWARDER_PORTNUM = 257
 GEOCHAT_UID_PREFIX = "GeoChat."
 MESHTASTIC_DEFAULT_TEAM_ENUM = 1  # White
 MESHTASTIC_DEFAULT_ROLE_ENUM = 1  # TeamMember
@@ -153,6 +151,31 @@ _WINTAK_CHAT_TRANSCRIPT_LINE_PATTERN = re.compile(
 _WINTAK_CHAT_FIELD_PATTERN = re.compile(
     r"^(?:message|text|note|remarks|body|content)(?P<index>\d+)?$",
     re.IGNORECASE,
+)
+
+
+def _resolve_meshtastic_portnum(primary_name, fallback, *alternate_names):
+    """Resolve Meshtastic PortNum enums dynamically, falling back to legacy values."""
+    if portnums_pb2 is None:
+        return fallback
+    for name in (primary_name,) + tuple(alternate_names):
+        try:
+            value = getattr(portnums_pb2.PortNum, name, None)
+            if value is not None:
+                return int(value)
+        except (AttributeError, TypeError, ValueError):
+            continue
+    return fallback
+
+
+MESHTASTIC_ATAK_PLUGIN_PORTNUM = _resolve_meshtastic_portnum(
+    "ATAK_PLUGIN_V2",
+    72,
+    "ATAK_PLUGIN",
+)
+MESHTASTIC_ATAK_FORWARDER_PORTNUM = _resolve_meshtastic_portnum(
+    "ATAK_FORWARDER",
+    257,
 )
 
 
@@ -760,6 +783,19 @@ def _parse_meshtastic_atak_payload(payload):
 
 def _normalize_meshtastic_enum_key(value):
     return re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
+
+
+def _is_persistable_cot_type(event_type):
+    normalized = str(event_type or "").strip().lower()
+    return normalized.startswith((
+        "b-m",
+        "u-d",
+        "a-f",
+        "a-h",
+        "a-n",
+        "a-u",
+        "a-p",
+    ))
 
 
 def _is_meshtastic_pli_event_type(event_type):
@@ -2443,6 +2479,8 @@ class TAKMeshtasticGateway:
             detail = SubElement(root, "detail")
         if add_meshtastic_marker and _find_child_by_local_name(detail, "__meshtastic") is None:
             SubElement(detail, "__meshtastic")
+        if _is_persistable_cot_type(event_type) and _find_child_by_local_name(detail, "archive") is None:
+            SubElement(detail, "archive")
 
         normalized_packet = tostring(root, encoding="utf-8")
         metadata = self._extract_cot_event_metadata(normalized_packet)
@@ -2685,6 +2723,15 @@ class TAKMeshtasticGateway:
             return False
         if str(portnum).upper() == "ATAK_FORWARDER":
             return True
+        if portnums_pb2 is not None:
+            try:
+                portnum_values = {MESHTASTIC_ATAK_FORWARDER_PORTNUM}
+                atak_forwarder = getattr(portnums_pb2.PortNum, "ATAK_FORWARDER", None)
+                if atak_forwarder is not None:
+                    portnum_values.add(int(atak_forwarder))
+                return int(portnum) in portnum_values
+            except (TypeError, ValueError):
+                return False
         try:
             return int(portnum) == MESHTASTIC_ATAK_FORWARDER_PORTNUM
         except (TypeError, ValueError):
@@ -3593,6 +3640,10 @@ class TAKMeshtasticGateway:
                     "ATAK_PLUGIN-PLI-Senden fehlgeschlagen, versuche ATAK_FORWARDER-Fallback: "
                     f"{exc}"
                 )
+        else:
+            self.logger.debug(
+                f"Generic-CoT-Typ {metadata['type']} wird wie im LPU5-Flow per ATAK_FORWARDER gesendet."
+            )
         forwarder_payload = self._prepare_meshtastic_forwarder_payload(normalized_packet)
         if not forwarder_payload:
             raise ValueError("Leere CoT-Nachricht kann nicht ins Mesh gesendet werden.")
