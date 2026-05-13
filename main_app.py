@@ -1313,7 +1313,7 @@ class GatewayApp:
         root = self._root
         C = self._colors
 
-        header = tk.Frame(root, bg=C["panel"], height=96, bd=1, highlightthickness=1,
+        header = tk.Frame(root, bg=C["panel"], height=96, bd=0, highlightthickness=1,
                           highlightbackground=C["border"], highlightcolor=C["border"])
         header.pack(fill="x", padx=10, pady=(10, 0))
         header.pack_propagate(False)
@@ -1349,7 +1349,7 @@ class GatewayApp:
         ).pack(fill="x")
         tk.Label(
             title_block,
-            text="Live gateway operations with direct Mesh text and WinTAK CoT send controls.",
+            text="Live gateway operations with direct mesh text and WinTAK CoT send controls.",
             bg=C["panel"],
             fg=C["fg_sub"],
             font=("Segoe UI", 10),
@@ -2225,7 +2225,7 @@ class GatewayApp:
 
     def _send_cot_to_mesh_worker(self, gw, packet_xml):
         try:
-            send_result = gw._forward_cot_to_meshtastic(packet_xml)
+            send_result = gw.send_cot_to_meshtastic(packet_xml)
         except Exception as exc:
             self._queue_log(f"Manual CoT send failed: {exc}", "ERROR")
             self._queue_log("Manual CoT send error details:\n" + traceback.format_exc(), "DEBUG")
@@ -2275,6 +2275,7 @@ class GatewayApp:
         )
         current_lines = int(self._wintak_monitor_text.index("end-1c").split(".")[0])
         if current_lines > WINTAK_MONITOR_MAX_LINES:
+            # Keep only the newest monitor rows once the text widget grows past the cap.
             self._wintak_monitor_text.delete("1.0", f"{current_lines - WINTAK_MONITOR_MAX_LINES}.0")
         self._wintak_monitor_text.see("end")
         self._wintak_monitor_text.configure(state="disabled")
@@ -3932,6 +3933,9 @@ class TAKMeshtasticGateway:
             interfaces = self._get_interfaces_snapshot()
             self._remember_recent_chat(self.recent_meshtastic_outbound_texts, chunk)
         return {"transport": "LEGACY_COTM", "count": len(cot_chunks)}
+
+    def send_cot_to_meshtastic(self, packet_xml):
+        return self._forward_cot_to_meshtastic(packet_xml)
 
     def _handle_meshtastic_legacy_cot_text(self, message, from_id):
         return self._handle_meshtastic_cot_chunk(message, from_id)
