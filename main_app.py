@@ -2974,8 +2974,8 @@ class TAKMeshtasticGateway:
         if status is not None:
             battery = _clamp_battery_percentage(status.get("battery"))
 
-        detail_payload = _ensure_bytes(packet_xml).strip()
-        if not detail_payload:
+        full_cot_xml = _ensure_bytes(packet_xml).strip()
+        if not full_cot_xml:
             return None
 
         return {
@@ -2985,7 +2985,7 @@ class TAKMeshtasticGateway:
             "team": team_name,
             "role": role_name,
             "battery": battery,
-            "detail": detail_payload,
+            "detail": full_cot_xml,
         }
 
     def _prepare_meshtastic_pli_packet(self, packet_xml):
@@ -3013,7 +3013,6 @@ class TAKMeshtasticGateway:
         if detail_candidate is None:
             return None
 
-        compressed_detail = zlib.compress(detail_candidate["detail"])
         payload_variants = (
             {"compressed": False, "contact": True, "group": True, "status": True},
             {"compressed": True, "contact": True, "group": True, "status": True},
@@ -3021,7 +3020,9 @@ class TAKMeshtasticGateway:
             {"compressed": True, "contact": False, "group": False, "status": False},
         )
         for variant in payload_variants:
-            detail_payload = compressed_detail if variant["compressed"] else detail_candidate["detail"]
+            detail_payload = detail_candidate["detail"]
+            if variant["compressed"]:
+                detail_payload = zlib.compress(detail_payload)
             payload_parts = []
             if variant["compressed"]:
                 payload_parts.append(_encode_protobuf_varint_field(1, 1))
