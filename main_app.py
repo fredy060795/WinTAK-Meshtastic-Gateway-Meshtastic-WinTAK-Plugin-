@@ -69,6 +69,7 @@ DEFAULT_CHATROOM_NAME = "All Chat Rooms"
 DEFAULT_CHAT_LISTEN_PORT = 4242
 TCP_LISTENER_DEFAULT_PORT = 8088
 WINTAK_REQUIRED_HOST = "127.0.0.1"
+WINTAK_MONITOR_MAX_LINES = 150
 DEFAULT_TAK_MULTICAST_GROUPS = (
     "224.10.10.1:17012",
     "239.2.3.1:6969",
@@ -1141,13 +1142,13 @@ class GatewayApp:
         style.theme_use("clam")
 
         # ── Farben ──
-        BG        = "#081311"   # Fenster-Hintergrund
-        PANEL     = "#12231f"   # Header/Panel-Hintergrund
-        CARD      = "#17302a"   # Karten-/Rahmen-Hintergrund
-        BORDER    = "#2f5b4e"   # Rahmenfarbe
-        FG        = "#effaf4"   # Heller Text
-        FG_SUB    = "#9ec3b6"   # Dezenter Hilfstext
-        ACCENT    = "#3fd48b"   # Primärer Akzent
+        BG        = "#081311"   # Window background
+        PANEL     = "#12231f"   # Header/panel background
+        CARD      = "#17302a"   # Card/frame background
+        BORDER    = "#2f5b4e"   # Border color
+        FG        = "#effaf4"   # Main text
+        FG_SUB    = "#9ec3b6"   # Subtle helper text
+        ACCENT    = "#3fd48b"   # Primary accent
         ACCENT_H  = "#69e8a5"   # Hover
         SUCCESS   = "#63e6af"   # Grün
         WARNING   = "#f2d16b"   # Amber
@@ -1348,7 +1349,7 @@ class GatewayApp:
         ).pack(fill="x")
         tk.Label(
             title_block,
-            text="Structured command layout with direct Mesh text and WinTAK CoT send controls.",
+            text="Live gateway operations with direct Mesh text and WinTAK CoT send controls.",
             bg=C["panel"],
             fg=C["fg_sub"],
             font=("Segoe UI", 10),
@@ -1404,7 +1405,7 @@ class GatewayApp:
         overview_frame.pack(fill="x", padx=0, pady=(0, 8))
         tk.Label(
             overview_frame,
-            text="The gateway layout is grouped into connection setup, live operations, and manual test tools. Existing gateway behavior stays intact.",
+            text="Configuration, live operations, and manual testing tools are grouped below. All existing gateway behavior is preserved.",
             bg=C["card"],
             fg=C["fg"],
             font=("Segoe UI", 10),
@@ -1792,7 +1793,7 @@ class GatewayApp:
         monitor_frame.pack(fill="both", expand=True)
         tk.Label(
             monitor_frame,
-            text="Recent WinTAK TCP listener activity is mirrored here for quick situational awareness.",
+            text="Recent WinTAK TCP listener activity appears here for quick situational awareness.",
             bg=C["card"],
             fg=C["fg_sub"],
             font=("Segoe UI", 9),
@@ -2203,7 +2204,7 @@ class GatewayApp:
         self._root.after(0, lambda: self._mesh_test_message_var.set(""))
 
     def _on_send_cot_to_mesh(self):
-        packet_xml = self._cot_input_text.get("1.0", "end").strip() if self._cot_input_text is not None else ""
+        packet_xml = self._cot_input_text.get("1.0", "end").strip()
         if not packet_xml:
             self._cot_status_var.set("⚠ Please paste a CoT <event> XML first.")
             self._append_log("Manual CoT send canceled: empty payload.", "WARNING")
@@ -2266,16 +2267,17 @@ class GatewayApp:
             self._append_wintak_monitor(f"[{ts}] {sender}: {message}", "INFO")
 
     def _append_wintak_monitor(self, msg, level="INFO"):
-        widget = self._wintak_monitor_text
-        if widget is None:
-            return
-        widget.configure(state="normal")
-        widget.insert("end", msg + "\n", level if level in ("INFO", "WARNING", "ERROR") else "INFO")
-        current_lines = int(widget.index("end-1c").split(".")[0])
-        if current_lines > 150:
-            widget.delete("1.0", f"{current_lines - 150}.0")
-        widget.see("end")
-        widget.configure(state="disabled")
+        self._wintak_monitor_text.configure(state="normal")
+        self._wintak_monitor_text.insert(
+            "end",
+            msg + "\n",
+            level if level in ("INFO", "WARNING", "ERROR") else "INFO",
+        )
+        current_lines = int(self._wintak_monitor_text.index("end-1c").split(".")[0])
+        if current_lines > WINTAK_MONITOR_MAX_LINES:
+            self._wintak_monitor_text.delete("1.0", f"{current_lines - WINTAK_MONITOR_MAX_LINES}.0")
+        self._wintak_monitor_text.see("end")
+        self._wintak_monitor_text.configure(state="disabled")
 
     def _on_log_level_change(self, _event=None):
         level_str = self._log_level_var.get()
