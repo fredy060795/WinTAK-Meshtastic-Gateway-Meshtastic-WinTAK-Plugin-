@@ -3020,9 +3020,9 @@ class TAKMeshtasticGateway:
             {"compressed": True, "contact": False, "group": False, "status": False},
         )
         for variant in payload_variants:
-            detail_payload = detail_candidate["detail"]
+            processed_payload = detail_candidate["detail"]
             if variant["compressed"]:
-                detail_payload = zlib.compress(detail_payload)
+                processed_payload = zlib.compress(processed_payload)
             payload_parts = []
             if variant["compressed"]:
                 payload_parts.append(_encode_protobuf_varint_field(1, 1))
@@ -3038,7 +3038,7 @@ class TAKMeshtasticGateway:
                 payload_parts.append(
                     _encode_protobuf_message_field(4, self._build_meshtastic_status_payload(detail_candidate))
                 )
-            payload_parts.append(_encode_protobuf_message_field(7, detail_payload))
+            payload_parts.append(_encode_protobuf_message_field(7, processed_payload))
             payload = b"".join(payload_parts)
             if payload and len(payload) <= MESHTASTIC_DATA_PAYLOAD_MAX_BYTES:
                 return {
@@ -4333,10 +4333,10 @@ class TAKMeshtasticGateway:
 
         detail_payload = bytes(atak_payload.get("detail") or b"").strip()
         if detail_payload:
-            detail_xml = detail_payload
+            detail_data = detail_payload
             if atak_payload.get("is_compressed"):
-                detail_xml = self._decode_meshtastic_forwarder_payload(detail_payload)
-            normalized_packet = _normalize_tak_xml_payload(detail_xml)
+                detail_data = self._decode_meshtastic_forwarder_payload(detail_payload)
+            normalized_packet = _normalize_tak_xml_payload(detail_data)
             if normalized_packet:
                 from_id = packet.get("fromId") or packet.get("from") or "MESH-UNKNOWN"
                 self.logger.debug(
