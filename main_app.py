@@ -1148,6 +1148,7 @@ class GatewayApp:
         self._scroll_window_id = None
         self._wintak_monitor_text = None
         self._cot_input_text = None
+        self._detected_ports_wraplength = DETECTED_PORTS_SUMMARY_DEFAULT_WRAP
 
         try:
             self._root = tk.Tk()
@@ -1878,10 +1879,17 @@ class GatewayApp:
     def _on_cfg_frame_configure(self, event=None):
         if not hasattr(self, "_detected_ports_label"):
             return
-        frame_width = getattr(event, "width", 0) or self._detected_ports_label.winfo_width()
-        self._detected_ports_label.configure(
-            wraplength=max(frame_width - DETECTED_PORTS_SUMMARY_WRAP_PADDING, DETECTED_PORTS_SUMMARY_MIN_WRAP)
-        )
+        frame_width = getattr(event, "width", 0)
+        if not frame_width:
+            if self._detected_ports_label.winfo_ismapped():
+                frame_width = self._detected_ports_label.winfo_width()
+            else:
+                frame_width = DETECTED_PORTS_SUMMARY_DEFAULT_WRAP + DETECTED_PORTS_SUMMARY_WRAP_PADDING
+        wraplength = max(frame_width - DETECTED_PORTS_SUMMARY_WRAP_PADDING, DETECTED_PORTS_SUMMARY_MIN_WRAP)
+        if wraplength == self._detected_ports_wraplength:
+            return
+        self._detected_ports_wraplength = wraplength
+        self._detected_ports_label.configure(wraplength=wraplength)
 
     def _on_scrollable_canvas_configure(self, event=None):
         canvas_width = getattr(event, "width", None)
