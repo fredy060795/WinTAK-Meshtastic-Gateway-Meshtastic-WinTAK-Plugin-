@@ -906,7 +906,17 @@ def _classify_cot_event_type(event_type):
 
 
 def _is_meshtastic_pli_event_type(event_type):
-    return _classify_cot_event_type(event_type) == "pli"
+    return str(event_type or "").strip().lower() == "a-f-g-u-c"
+
+
+def _get_cot_subject_label(metadata):
+    if not isinstance(metadata, dict):
+        return "TAK-CoT"
+    if metadata.get("is_marker"):
+        return "Marker-CoT"
+    if metadata.get("is_pli"):
+        return "PLI-CoT"
+    return "Generic-CoT"
 
 
 def _clamp_battery_percentage(value):
@@ -4226,7 +4236,7 @@ class TAKMeshtasticGateway:
             detail_packet = self._prepare_meshtastic_detail_packet(normalized_packet)
             if detail_packet is not None:
                 try:
-                    transport_subject = "Marker-CoT" if cot_class == "marker" else "Generic-CoT"
+                    transport_subject = _get_cot_subject_label(metadata)
                     self.logger.debug(
                         f"{transport_subject} nutzt ATAK_PLUGIN-detail=7: uid={detail_packet['uid']} "
                         f"compressed={detail_packet['is_compressed']} payload_bytes={len(detail_packet['payload'])} "
@@ -4245,7 +4255,7 @@ class TAKMeshtasticGateway:
                     )
             else:
                 self.logger.debug(
-                    f"{'Marker-CoT' if cot_class == 'marker' else 'Generic-CoT'} Typ {metadata['type']} "
+                    f"{_get_cot_subject_label(metadata)} Typ {metadata['type']} "
                     "passt nicht in ATAK_PLUGIN-detail=7 und nutzt ATAK_FORWARDER."
                 )
 
@@ -4253,7 +4263,7 @@ class TAKMeshtasticGateway:
         if not forwarder_payload:
             raise ValueError(EMPTY_MESHTASTIC_COT_ERROR)
         try:
-            transport_subject = "Marker-CoT" if cot_class == "marker" else "Generic-CoT"
+            transport_subject = _get_cot_subject_label(metadata)
             self.logger.debug(
                 f"{transport_subject} via ATAK_FORWARDER komprimiert: "
                 f"xml_bytes={len(_ensure_bytes(normalized_packet))} compressed_bytes={len(forwarder_payload)} "
@@ -4447,10 +4457,11 @@ class TAKMeshtasticGateway:
                     from_id,
                     source_label="ATAK_PLUGIN-detail=7",
                 )
-            self.logger.debug(
-                "ATAK_PLUGIN-detail=7 konnte nach Decode/Reassembly nicht als valides CoT rekonstruiert werden: "
-                f"compressed={atak_payload.get('is_compressed')} payload={_build_safe_payload_snippet(detail_data)}"
-            )
+            else:
+                self.logger.debug(
+                    "ATAK_PLUGIN-detail=7 konnte nach Decode/Reassembly nicht als valides CoT rekonstruiert werden: "
+                    f"compressed={atak_payload.get('is_compressed')} payload={_build_safe_payload_snippet(detail_data)}"
+                )
 
         packet_xml = self._build_meshtastic_pli_cot_xml(packet, node=node)
         if not packet_xml:
@@ -4895,11 +4906,7 @@ class TAKMeshtasticGateway:
         transport_label = "ATAK_FORWARDER-Paket"
         transport = send_result.get("transport")
         transport_count = int(send_result.get("count") or 0)
-        cot_subject = "TAK-CoT"
-        if metadata.get("is_marker"):
-            cot_subject = "Marker-CoT"
-        elif metadata.get("is_pli"):
-            cot_subject = "PLI-CoT"
+        cot_subject = _get_cot_subject_label(metadata)
         if transport == "ATAK_PLUGIN":
             transport_label = "ATAK_PLUGIN-PLI"
         elif transport == "ATAK_PLUGIN_DETAIL":
