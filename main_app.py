@@ -26,6 +26,7 @@ import logging
 import threading
 import traceback
 import uuid
+import zlib
 from xml.etree.ElementTree import Element, ParseError, SubElement, tostring, fromstring
 try:
     import tkinter as tk
@@ -87,6 +88,8 @@ MESHTASTIC_COT_FRAGMENT_PREFIX = "COTM"
 MESHTASTIC_COT_FRAGMENT_PAYLOAD_BYTES = 140
 MESHTASTIC_COT_FRAGMENT_TTL_SECONDS = 120
 DEFAULT_MESHTASTIC_CHANNEL_INDEX = 0
+MESHTASTIC_ATAK_PLUGIN_PORTNUM = 72
+MESHTASTIC_ATAK_FORWARDER_PORTNUM = 257
 GEOCHAT_UID_PREFIX = "GeoChat."
 TAK_EVENT_PATTERN = re.compile(r"<event\b[^>]*>.*?</event>", re.DOTALL)
 TAK_PING_EVENT_TYPE = "t-x-c-t"
@@ -601,10 +604,36 @@ def save_config(cfg):
 
 def detect_serial_port_devices():
     """Return a list of detected serial port device names."""
+    return [entry["device"] for entry in detect_serial_port_details()]
+
+
+def detect_serial_port_details():
+    """Return detected serial ports with human-friendly labels."""
     if serial is None:
         return []
     try:
-        return [p.device for p in serial.tools.list_ports.comports()]
+        details = []
+        for port in serial.tools.list_ports.comports():
+            device = str(getattr(port, "device", "") or "").strip()
+            if not device:
+                continue
+            info_parts = []
+            for value in (
+                getattr(port, "description", None),
+                getattr(port, "manufacturer", None),
+                getattr(port, "product", None),
+            ):
+                text = str(value or "").strip()
+                if not text or text.lower() == "n/a" or text in info_parts:
+                    continue
+                info_parts.append(text)
+            details.append(
+                {
+                    "device": device,
+                    "label": f"{device} - {' | '.join(info_parts)}" if info_parts else device,
+                }
+            )
+        return details
     except Exception:
         return []
 
@@ -1132,12 +1161,15 @@ class GatewayApp:
         self._ports_var = tk.StringVar(value=default_ports)
         ttk.Entry(cfg_frame, textvariable=self._ports_var, width=28).grid(
             row=0, column=1, sticky="ew", padx=(6, 12), pady=(0, 4))
+        self._ports_var.trace_add("write", self._on_ports_var_changed)
 
         # ── Zeile 1: Erkannte Ports-Liste ──
-        detected = detect_serial_port_devices()
+        detected_details = detect_serial_port_details()
+        self._detected_port_details = detected_details
+        detected = [entry["device"] for entry in detected_details]
         self._detected_ports = detected
         self._detected_ports_var = tk.StringVar(
-            value=f"Detected ports: {', '.join(detected) if detected else '–'}"
+            value=self._build_detected_ports_summary(detected_details)
         )
         ttk.Label(cfg_frame, textvariable=self._detected_ports_var, style="Sub.TLabel").grid(
             row=1, column=0, columnspan=4, sticky="w", pady=(0, 2))
@@ -1152,8 +1184,8 @@ class GatewayApp:
                                             command=self._detected_ports_list.yview)
         self._detected_ports_list.configure(yscrollcommand=detected_scrollbar.set)
         detected_scrollbar.grid(row=2, column=2, sticky="nsw", padx=(0, 8), pady=(0, 6))
-        for port in detected:
-            self._detected_ports_list.insert("end", port)
+        for entry in detected_details:
+            self._detected_ports_list.insert("end", entry["label"])
         ttk.Button(
             cfg_frame, text="↩ Use selected ports",
             command=self._apply_selected_ports_from_list
@@ -1240,13 +1272,31 @@ class GatewayApp:
         self._relay_text_to_ports_var = tk.StringVar(
             value=_format_ports_for_entry(self.cfg.get("relay_text_to_ports"))
         )
-        ttk.Entry(cfg_frame, textvariable=self._relay_text_to_ports_var, width=16).grid(
-            row=9, column=3, sticky="ew", pady=(0, 4))
+        self._relay_text_to_ports_var.trace_add("write", self._on_relay_to_ports_changed)
+        relay_to_frame = ttk.Frame(cfg_frame)
+        relay_to_frame.grid(row=9, column=3, columnspan=2, sticky="ew", pady=(0, 4))
+        relay_to_frame.columnconfigure(0, weight=1)
+        self._relay_text_to_picker_var = tk.StringVar()
+        self._relay_text_to_picker = ttk.Combobox(
+            relay_to_frame,
+            textvariable=self._relay_text_to_picker_var,
+            state="readonly",
+            width=28,
+        )
+        self._relay_text_to_picker.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        ttk.Button(
+            relay_to_frame,
+            text="Use",
+            command=self._apply_relay_to_picker_selection,
+        ).grid(row=0, column=1, sticky="ew")
+        ttk.Entry(relay_to_frame, textvariable=self._relay_text_to_ports_var, width=16).grid(
+            row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         ttk.Label(
             cfg_frame,
-            text="Leave Relay From blank to relay from any selected port, and leave Relay To blank to relay to all other selected ports.",
+            text="Leave Relay From blank to relay from any selected port. For Relay To, choose 'All other selected ports' in the dropdown or list custom ports in the field.",
             style="Sub.TLabel",
-        ).grid(row=10, column=0, columnspan=4, sticky="w", pady=(0, 4))
+        ).grid(row=10, column=0, columnspan=5, sticky="w", pady=(0, 4))
+        self._refresh_relay_to_picker_options()
 
         # ── Row 11: GPS fallback ──
         self._send_nodes_without_gps_var = tk.BooleanVar(
@@ -1384,6 +1434,77 @@ class GatewayApp:
         if canvas_width > 1:
             self._scroll_canvas.itemconfigure(self._scroll_window_id, width=canvas_width)
 
+    def _build_detected_ports_summary(self, port_details):
+        if not port_details:
+            return "Detected ports: –"
+        return "Detected ports: " + ", ".join(entry["label"] for entry in port_details)
+
+    def _build_relay_to_picker_values(self):
+        selected_ports = _parse_ports_text(self._ports_var.get())
+        if not selected_ports:
+            selected_ports = list(self._detected_ports)
+        detail_map = {
+            entry["device"].upper(): entry["label"]
+            for entry in getattr(self, "_detected_port_details", [])
+        }
+        picker_values = ["All other selected ports", "Custom list below"]
+        self._relay_text_to_picker_map = {
+            "All other selected ports": "",
+            "Custom list below": None,
+        }
+        for port in selected_ports:
+            display = detail_map.get(port.upper(), port)
+            if display in self._relay_text_to_picker_map:
+                continue
+            self._relay_text_to_picker_map[display] = port
+            picker_values.append(display)
+        return picker_values
+
+    def _refresh_relay_to_picker_options(self):
+        if not hasattr(self, "_relay_text_to_picker"):
+            return
+        picker_values = self._build_relay_to_picker_values()
+        self._relay_text_to_picker.configure(values=picker_values)
+        current_choice = self._relay_text_to_picker_var.get().strip()
+        if current_choice not in picker_values:
+            if self._relay_text_to_ports_var.get().strip():
+                self._relay_text_to_picker_var.set("Custom list below")
+            else:
+                self._relay_text_to_picker_var.set("All other selected ports")
+
+    def _on_ports_var_changed(self, *_):
+        self._refresh_relay_to_picker_options()
+
+    def _on_relay_to_ports_changed(self, *_):
+        if not hasattr(self, "_relay_text_to_picker_var"):
+            return
+        relay_to_text = self._relay_text_to_ports_var.get().strip()
+        current_choice = self._relay_text_to_picker_var.get().strip()
+        if relay_to_text and current_choice == "All other selected ports":
+            self._relay_text_to_picker_var.set("Custom list below")
+        elif not relay_to_text and current_choice == "Custom list below":
+            self._relay_text_to_picker_var.set("All other selected ports")
+
+    def _apply_relay_to_picker_selection(self):
+        selected_display = self._relay_text_to_picker_var.get().strip()
+        if not selected_display:
+            return
+        selected_port = self._relay_text_to_picker_map.get(selected_display)
+        if selected_port == "":
+            self._relay_text_to_ports_var.set("")
+            return
+        if not selected_port:
+            return
+        merged = []
+        seen = set()
+        for port in _parse_ports_text(self._relay_text_to_ports_var.get()) + [selected_port]:
+            upper_port = port.upper()
+            if upper_port in seen:
+                continue
+            seen.add(upper_port)
+            merged.append(port)
+        self._relay_text_to_ports_var.set(", ".join(merged))
+
     def _apply_selected_ports_from_list(self):
         if not self._detected_ports:
             return
@@ -1404,16 +1525,16 @@ class GatewayApp:
             self._ports_var.set(", ".join(merged))
 
     def _refresh_detected_ports(self):
-        self._detected_ports = detect_serial_port_devices()
-        self._detected_ports_var.set(
-            f"Detected ports: {', '.join(self._detected_ports) if self._detected_ports else '–'}"
-        )
+        self._detected_port_details = detect_serial_port_details()
+        self._detected_ports = [entry["device"] for entry in self._detected_port_details]
+        self._detected_ports_var.set(self._build_detected_ports_summary(self._detected_port_details))
         self._detected_ports_list.delete(0, "end")
-        for port in self._detected_ports:
-            self._detected_ports_list.insert("end", port)
+        for entry in self._detected_port_details:
+            self._detected_ports_list.insert("end", entry["label"])
         self._detected_ports_list.configure(
             height=min(max(len(self._detected_ports), 1), MAX_DETECTED_PORTS_DISPLAY)
         )
+        self._refresh_relay_to_picker_options()
 
     def _get_wintak_tcp_port_text(self):
         return self._local_tak_tcp_listen_port_var.get().strip() or str(TCP_LISTENER_DEFAULT_PORT)
@@ -1466,7 +1587,11 @@ class GatewayApp:
         )
         self.cfg["relay_text_messages"] = bool(self._relay_text_messages_var.get())
         relay_from_ports = _parse_ports_text(self._relay_text_from_ports_var.get())
-        relay_to_ports = _parse_ports_text(self._relay_text_to_ports_var.get())
+        relay_to_choice = self._relay_text_to_picker_var.get().strip()
+        if relay_to_choice == "All other selected ports":
+            relay_to_ports = []
+        else:
+            relay_to_ports = _parse_ports_text(self._relay_text_to_ports_var.get())
         selected_ports_upper = {port.upper() for port in ports}
         unknown_relay_from = [port for port in relay_from_ports if port.upper() not in selected_ports_upper]
         unknown_relay_to = [port for port in relay_to_ports if port.upper() not in selected_ports_upper]
@@ -2111,6 +2236,20 @@ class TAKMeshtasticGateway:
                 return False
         return False
 
+    def _is_atak_forwarder_packet(self, packet):
+        decoded = packet.get("decoded") or {}
+        if not isinstance(decoded, dict):
+            return False
+        portnum = decoded.get("portnum")
+        if portnum is None:
+            return False
+        if str(portnum).upper() == "ATAK_FORWARDER":
+            return True
+        try:
+            return int(portnum) == MESHTASTIC_ATAK_FORWARDER_PORTNUM
+        except (TypeError, ValueError):
+            return False
+
     def _extract_meshtastic_chat_payload(self, packet, node=None):
         decoded = packet.get("decoded") or {}
         if not isinstance(decoded, dict):
@@ -2295,6 +2434,15 @@ class TAKMeshtasticGateway:
         with self.interface_lock:
             return list(self.interfaces)
 
+    def _get_missing_configured_ports(self, interfaces=None):
+        configured_ports = {str(port).strip().upper() for port in self.ports if str(port).strip()}
+        connected_ports = set()
+        for iface in interfaces or []:
+            label = self._get_interface_label(iface).strip().upper()
+            if label:
+                connected_ports.add(label)
+        return sorted(configured_ports - connected_ports)
+
     def _ensure_meshtastic_subscription(self):
         if self._meshtastic_pubsub_registered:
             return
@@ -2349,11 +2497,16 @@ class TAKMeshtasticGateway:
 
     def _ensure_meshtastic_interfaces(self, reconnect=False, raise_on_empty=False, reason=None):
         interfaces = self._get_interfaces_snapshot()
-        if reconnect or not interfaces:
+        missing_ports = self._get_missing_configured_ports(interfaces)
+        if reconnect or not interfaces or missing_ports:
             if reconnect:
                 self.logger.warning(
                     "Meshtastic-COM-Verbindung für ausgehende Nachrichten wird neu aufgebaut."
                     + (f" Grund: {reason}" if reason else "")
+                )
+            elif missing_ports:
+                self.logger.info(
+                    "Verbinde fehlende Meshtastic-COM-Ports neu: " + ", ".join(missing_ports)
                 )
             interfaces = self._connect_meshtastic_interfaces(force_reconnect=reconnect)
         if raise_on_empty and not interfaces:
@@ -2394,6 +2547,50 @@ class TAKMeshtasticGateway:
 
         return kwargs
 
+    def _build_meshtastic_send_data_kwargs(self, iface, portnum):
+        send_data = getattr(iface, "sendData", None)
+        if send_data is None:
+            raise AttributeError("Meshtastic-Interface unterstützt sendData nicht.")
+        try:
+            parameters = inspect.signature(send_data).parameters
+            supports_var_kwargs = any(
+                parameter.kind == inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters.values()
+            )
+        except (TypeError, ValueError):
+            parameters = {}
+            supports_var_kwargs = True
+
+        def supports(name):
+            return supports_var_kwargs or name in parameters
+
+        kwargs = {}
+        if supports("destinationId"):
+            kwargs["destinationId"] = "^all"
+        elif supports("destination_id"):
+            kwargs["destination_id"] = "^all"
+
+        if supports("wantAck"):
+            kwargs["wantAck"] = False
+        elif supports("want_ack"):
+            kwargs["want_ack"] = False
+
+        if supports("channelIndex"):
+            kwargs["channelIndex"] = DEFAULT_MESHTASTIC_CHANNEL_INDEX
+        elif supports("channel_index"):
+            kwargs["channel_index"] = DEFAULT_MESHTASTIC_CHANNEL_INDEX
+        elif supports("channel"):
+            kwargs["channel"] = DEFAULT_MESHTASTIC_CHANNEL_INDEX
+
+        if supports("portNum"):
+            kwargs["portNum"] = portnum
+        elif supports("portnum"):
+            kwargs["portnum"] = portnum
+        elif supports("port_num"):
+            kwargs["port_num"] = portnum
+
+        return kwargs
+
     def _send_text_to_interfaces(self, message, interfaces, allow_reconnect=True):
         interfaces = [iface for iface in (interfaces or []) if iface is not None]
         if not interfaces:
@@ -2429,15 +2626,49 @@ class TAKMeshtasticGateway:
             raise last_error
         return sent_interfaces
 
-    def _get_relay_targets(self, source_interface):
+    def _send_data_to_interfaces(self, payload, interfaces, portnum, allow_reconnect=True):
+        interfaces = [iface for iface in (interfaces or []) if iface is not None]
+        if not interfaces:
+            if allow_reconnect:
+                interfaces = self._ensure_meshtastic_interfaces(raise_on_empty=True)
+            else:
+                raise RuntimeError("Keine verbundenen Meshtastic-Interfaces verfügbar.")
+        sent_interfaces = []
+        last_error = None
+        for iface in interfaces:
+            try:
+                kwargs = self._build_meshtastic_send_data_kwargs(iface, portnum)
+                iface.sendData(payload, **kwargs)
+                sent_interfaces.append(iface)
+            except Exception as exc:
+                last_error = exc
+                self.logger.warning(
+                    f"Fehler beim Senden eines Meshtastic-Datenpakets auf {self._get_interface_label(iface)}: {exc}"
+                )
+        if not sent_interfaces and last_error is not None and allow_reconnect:
+            retry_interfaces = self._ensure_meshtastic_interfaces(reconnect=True, reason=str(last_error))
+            if retry_interfaces:
+                try:
+                    return self._send_data_to_interfaces(payload, retry_interfaces, portnum, allow_reconnect=False)
+                except Exception as retry_exc:
+                    self.logger.warning(
+                        "Meshtastic-Datensenden ist auch nach COM-Neuverbindung fehlgeschlagen: "
+                        f"erst '{last_error}', dann '{retry_exc}'"
+                    )
+                    raise retry_exc from last_error
+        if not sent_interfaces and last_error is not None:
+            raise last_error
+        return sent_interfaces
+
+    def _get_relay_targets(self, source_interface, interfaces=None):
         source_label = self._get_interface_label(source_interface).upper()
         if self.relay_text_from_ports and source_label not in self.relay_text_from_ports:
             return []
         relay_targets = []
-        for iface in self._get_interfaces_snapshot():
-            if iface is source_interface:
-                continue
+        for iface in (interfaces or self._ensure_meshtastic_interfaces()):
             target_label = self._get_interface_label(iface).upper()
+            if iface is source_interface or (source_label != "UNBEKANNT" and target_label == source_label):
+                continue
             if self.relay_text_to_ports and target_label not in self.relay_text_to_ports:
                 continue
             relay_targets.append(iface)
@@ -2514,8 +2745,67 @@ class TAKMeshtasticGateway:
             "payload": payload,
         }
 
+    def _prepare_meshtastic_forwarder_payload(self, packet_xml):
+        packet_bytes = _ensure_bytes(packet_xml).strip()
+        if not packet_bytes:
+            return b""
+        return zlib.compress(packet_bytes)
+
+    def _decode_meshtastic_forwarder_payload(self, payload):
+        payload_bytes = _ensure_bytes(payload).strip()
+        if not payload_bytes:
+            return None
+        for wbits in (zlib.MAX_WBITS, -zlib.MAX_WBITS):
+            try:
+                return zlib.decompress(payload_bytes, wbits)
+            except zlib.error:
+                continue
+        if payload_bytes.lstrip().startswith(b"<"):
+            return payload_bytes
+        return None
+
+    def _forward_meshtastic_cot_xml_to_tak(self, packet_xml, from_id, source_label="Mesh-CoT"):
+        cot_dedupe_key = self._build_cot_dedupe_key(packet_xml)
+        if cot_dedupe_key and self._was_seen_recently(self.recent_cot_ids, cot_dedupe_key):
+            return True
+
+        metadata = self._extract_cot_event_metadata(packet_xml)
+        if metadata is None:
+            self.logger.warning(f"{source_label} verworfen: empfangene Nachricht ist kein gültiges CoT-Event.")
+            return True
+
+        self._send_packet_to_tak(packet_xml, metadata["uid"] or f"{source_label} {from_id}")
+        self.logger.info(
+            f"CoT aus dem Mesh nach TAK weitergeleitet: {metadata['uid'] or f'ohne UID von {from_id}'}"
+        )
+        return True
+
+    def _handle_meshtastic_forwarder_packet(self, packet, from_id):
+        decoded = packet.get("decoded") or {}
+        if not isinstance(decoded, dict):
+            return False
+        payload = decoded.get("payload")
+        if not isinstance(payload, (bytes, bytearray)):
+            return False
+        packet_xml = self._decode_meshtastic_forwarder_payload(payload)
+        if not packet_xml:
+            self.logger.warning("ATAK_FORWARDER-Payload aus dem Mesh konnte nicht dekodiert werden.")
+            return True
+        return self._forward_meshtastic_cot_xml_to_tak(packet_xml, from_id, source_label="ATAK_FORWARDER")
+
     def _forward_cot_to_meshtastic(self, packet_xml):
         interfaces = self._ensure_meshtastic_interfaces(raise_on_empty=True)
+        forwarder_payload = self._prepare_meshtastic_forwarder_payload(packet_xml)
+        if not forwarder_payload:
+            raise ValueError("Leere CoT-Nachricht kann nicht ins Mesh gesendet werden.")
+        try:
+            self._send_data_to_interfaces(forwarder_payload, interfaces, MESHTASTIC_ATAK_FORWARDER_PORTNUM)
+            return ["ATAK_FORWARDER"]
+        except Exception as exc:
+            self.logger.warning(
+                "ATAK_FORWARDER-Senden fehlgeschlagen, versuche Legacy-CoT-Fragmente als Fallback: "
+                f"{exc}"
+            )
         cot_chunks = self._prepare_meshtastic_cot_chunks(packet_xml)
         if not cot_chunks:
             raise ValueError("Leere CoT-Nachricht kann nicht ins Mesh gesendet werden.")
@@ -2564,20 +2854,7 @@ class TAKMeshtasticGateway:
             self.logger.debug("Fehler beim Dekodieren einer Mesh-CoT-Nachricht:\n" + traceback.format_exc())
             return True
 
-        cot_dedupe_key = self._build_cot_dedupe_key(packet_xml)
-        if cot_dedupe_key and self._was_seen_recently(self.recent_cot_ids, cot_dedupe_key):
-            return True
-
-        metadata = self._extract_cot_event_metadata(packet_xml)
-        if metadata is None:
-            self.logger.warning("Mesh-CoT verworfen: empfangene Nachricht ist kein gültiges CoT-Event.")
-            return True
-
-        self._send_packet_to_tak(packet_xml, metadata["uid"] or f"Mesh-CoT {from_id}")
-        self.logger.info(
-            f"CoT aus dem Mesh nach TAK weitergeleitet: {metadata['uid'] or f'ohne UID von {from_id}'}"
-        )
-        return True
+        return self._forward_meshtastic_cot_xml_to_tak(packet_xml, from_id)
 
     def send_chat_to_tak(self, sender_uid, callsign, message, lat, lon, alt=0.0, chatroom=DEFAULT_CHATROOM_NAME):
         try:
@@ -2610,8 +2887,9 @@ class TAKMeshtasticGateway:
         if self._handle_meshtastic_cot_chunk(message, from_id or "MESH-UNKNOWN"):
             return
 
-        if self.relay_text_messages and len(self.interfaces) > 1:
-            relay_targets = self._get_relay_targets(source_interface)
+        available_interfaces = self._ensure_meshtastic_interfaces()
+        if self.relay_text_messages and len(available_interfaces) > 1:
+            relay_targets = self._get_relay_targets(source_interface, interfaces=available_interfaces)
             if relay_targets:
                 sent_interfaces = self._send_text_to_interfaces(message, relay_targets)
                 if sent_interfaces:
@@ -3058,10 +3336,10 @@ class TAKMeshtasticGateway:
             return
         if cot_dedupe_key:
             self._remember_recent_chat(self.recent_cot_ids, cot_dedupe_key)
-        self.logger.info(
-            f"TAK-CoT ins Mesh gesendet: {metadata['uid'] or 'ohne UID'} "
-            f"({len(sent_chunks)} Fragment{'e' if len(sent_chunks) != 1 else ''})"
-        )
+        transport_label = "ATAK_FORWARDER-Paket"
+        if sent_chunks != ["ATAK_FORWARDER"]:
+            transport_label = f"{len(sent_chunks)} Legacy-Fragment{'e' if len(sent_chunks) != 1 else ''}"
+        self.logger.info(f"TAK-CoT ins Mesh gesendet: {metadata['uid'] or 'ohne UID'} ({transport_label})")
 
     def handle_tak_chat_message(self, packet_xml, source_addr=None, source_protocol=None):
         """Backward-compatible alias for existing callers of the TAK listener packet handler."""
@@ -3399,6 +3677,8 @@ class TAKMeshtasticGateway:
             self.logger.debug(f"RAW Paket empfangen: {packet}")
             from_id = packet.get('fromId') or packet.get('from')
             node = self._find_node_for_packet(interface, from_id)
+            if self._is_atak_forwarder_packet(packet):
+                self._handle_meshtastic_forwarder_packet(packet, from_id or "MESH-UNKNOWN")
             if self._is_text_message_packet(packet) or self._is_atak_plugin_packet(packet):
                 self.process_meshtastic_text_message(packet, node=node, source_interface=interface)
             if from_id and node:
