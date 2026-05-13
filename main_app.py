@@ -2924,15 +2924,17 @@ class TAKMeshtasticGateway:
                 self.logger.warning(
                     f"Fehler beim Senden einer Meshtastic-Nachricht auf {self._get_interface_label(iface)}: {exc}"
                 )
-        failed_labels = self._format_interface_labels(failed_labels)
-        if failed_labels and allow_reconnect:
+        normalized_failed_labels = self._format_interface_labels(failed_labels)
+        if normalized_failed_labels and allow_reconnect:
             retry_interfaces = self._ensure_meshtastic_interfaces(reconnect=True, reason=str(last_error))
-            retry_targets = self._get_interfaces_by_labels(failed_labels, retry_interfaces)
+            retry_targets = self._get_interfaces_by_labels(normalized_failed_labels, retry_interfaces)
             retry_target_labels = {
                 self._get_interface_label_key(iface) for iface in retry_targets if iface is not None
             }
             missing_retry_labels = [
-                label for label in failed_labels if self._normalize_interface_label_key(label) not in retry_target_labels
+                label
+                for label in normalized_failed_labels
+                if self._normalize_interface_label_key(label) not in retry_target_labels
             ]
             if missing_retry_labels:
                 failure = RuntimeError(
@@ -2954,10 +2956,10 @@ class TAKMeshtasticGateway:
                         f"erst '{last_error}', dann '{retry_exc}'"
                     )
                     raise retry_exc from last_error
-        if failed_labels:
+        if normalized_failed_labels:
             failure = RuntimeError(
                 "Meshtastic-Nachricht konnte nicht an alle verbundenen Ports gesendet werden: "
-                + ", ".join(failed_labels)
+                + ", ".join(normalized_failed_labels)
             )
             self._raise_with_optional_cause(failure, last_error)
         return sent_interfaces
@@ -2989,15 +2991,17 @@ class TAKMeshtasticGateway:
             and failed_labels
             and not _is_meshtastic_payload_too_big_error(last_error)
         )
-        failed_labels = self._format_interface_labels(failed_labels)
+        normalized_failed_labels = self._format_interface_labels(failed_labels)
         if should_retry:
             retry_interfaces = self._ensure_meshtastic_interfaces(reconnect=True, reason=str(last_error))
-            retry_targets = self._get_interfaces_by_labels(failed_labels, retry_interfaces)
+            retry_targets = self._get_interfaces_by_labels(normalized_failed_labels, retry_interfaces)
             retry_target_labels = {
                 self._get_interface_label_key(iface) for iface in retry_targets if iface is not None
             }
             missing_retry_labels = [
-                label for label in failed_labels if self._normalize_interface_label_key(label) not in retry_target_labels
+                label
+                for label in normalized_failed_labels
+                if self._normalize_interface_label_key(label) not in retry_target_labels
             ]
             if missing_retry_labels:
                 failure = RuntimeError(
@@ -3020,10 +3024,10 @@ class TAKMeshtasticGateway:
                         f"erst '{last_error}', dann '{retry_exc}'"
                     )
                     raise retry_exc from last_error
-        if failed_labels:
+        if normalized_failed_labels:
             failure = RuntimeError(
                 "Meshtastic-Datenpaket konnte nicht an alle verbundenen Ports gesendet werden: "
-                + ", ".join(failed_labels)
+                + ", ".join(normalized_failed_labels)
             )
             self._raise_with_optional_cause(failure, last_error)
         return sent_interfaces
