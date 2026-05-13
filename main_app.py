@@ -155,7 +155,16 @@ _WINTAK_CHAT_FIELD_PATTERN = re.compile(
 
 
 def _resolve_meshtastic_portnum(primary_name, fallback, *alternate_names):
-    """Resolve Meshtastic PortNum enums dynamically, falling back to legacy values."""
+    """Resolve a Meshtastic PortNum enum name with legacy fallback values.
+
+    Args:
+        primary_name: Preferred enum attribute name from ``portnums_pb2.PortNum``.
+        fallback: Legacy numeric port number used when the enum is unavailable.
+        *alternate_names: Additional enum attribute names checked in order.
+
+    Returns:
+        int: The first matching enum value, otherwise the provided fallback.
+    """
     if portnums_pb2 is None:
         return fallback
     for name in (primary_name,) + tuple(alternate_names):
@@ -786,6 +795,13 @@ def _normalize_meshtastic_enum_key(value):
 
 
 def _is_persistable_cot_type(event_type):
+    """Return True for marker/drawing CoT types that should carry ``<archive/>``.
+
+    TAK clients keep these spot-map, drawing, and affiliation-style marker
+    events on the map when an ``archive`` detail is present. The prefixes match
+    LPU5's marker categories: ``b-m`` for spot-map markers, ``u-d`` for
+    drawings, and ``a-f/a-h/a-n/a-u/a-p`` for affiliation-based markers.
+    """
     normalized = str(event_type or "").strip().lower()
     return normalized.startswith((
         "b-m",
