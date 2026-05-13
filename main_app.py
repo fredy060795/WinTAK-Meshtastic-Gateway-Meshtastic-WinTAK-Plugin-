@@ -69,7 +69,7 @@ DEFAULT_CHATROOM_NAME = "All Chat Rooms"
 DEFAULT_CHAT_LISTEN_PORT = 4242
 TCP_LISTENER_DEFAULT_PORT = 8088
 WINTAK_REQUIRED_HOST = "127.0.0.1"
-MAX_WINTAK_MONITOR_DISPLAY_LINES = 150
+MAX_WINTAK_MONITOR_LINES = 150
 DEFAULT_TAK_MULTICAST_GROUPS = (
     "224.10.10.1:17012",
     "239.2.3.1:6969",
@@ -1349,7 +1349,7 @@ class GatewayApp:
         ).pack(fill="x")
         tk.Label(
             title_block,
-            text="Live Gateway operations with direct mesh text and WinTAK CoT send controls.",
+            text="Live gateway operations with direct mesh text and WinTAK CoT send controls.",
             bg=C["panel"],
             fg=C["fg_sub"],
             font=("Segoe UI", 10),
@@ -1415,7 +1415,7 @@ class GatewayApp:
         ).pack(fill="x")
         tk.Label(
             overview_frame,
-            text="Use the right side to send direct Meshtastic text or paste a full WinTAK CoT <event> XML into the mesh for testing.",
+            text="Use the operations panel on the right to send direct Meshtastic text or paste a full WinTAK CoT <event> XML into the mesh for testing.",
             bg=C["card"],
             fg=C["fg_sub"],
             font=("Segoe UI", 9),
@@ -2274,10 +2274,10 @@ class GatewayApp:
             level if level in ("INFO", "WARNING", "ERROR") else "INFO",
         )
         current_lines = int(self._wintak_monitor_text.index("end-1c").split(".")[0])
-        if current_lines > MAX_WINTAK_MONITOR_DISPLAY_LINES:
+        if current_lines > MAX_WINTAK_MONITOR_LINES:
             # Keep only the newest monitor rows once the text widget grows past the cap.
-            excess_lines = current_lines - MAX_WINTAK_MONITOR_DISPLAY_LINES
-            self._wintak_monitor_text.delete("1.0", f"{excess_lines}.0")
+            excess_lines = current_lines - MAX_WINTAK_MONITOR_LINES
+            self._wintak_monitor_text.delete("1.0", f"{excess_lines + 1}.0")
         self._wintak_monitor_text.see("end")
         self._wintak_monitor_text.configure(state="disabled")
 
