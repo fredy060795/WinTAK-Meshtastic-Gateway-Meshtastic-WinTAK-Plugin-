@@ -3929,8 +3929,30 @@ class TAKMeshtasticGateway:
                 )
         else:
             self.logger.debug(
-                f"Generic-CoT-Typ {metadata['type']} wird wie im LPU5-Flow per ATAK_FORWARDER gesendet."
+                f"Generic-CoT-Typ {metadata['type']} wird bevorzugt als Legacy-COTM-Kurztext gesendet."
             )
+
+        try:
+            self.logger.debug(
+                "Generic-CoT wird als Legacy-COTM-Kurztext gesendet."
+            )
+            cot_chunks = self._prepare_meshtastic_cot_chunks(normalized_packet)
+            if not cot_chunks:
+                raise ValueError("Leere CoT-Nachricht kann nicht ins Mesh gesendet werden.")
+            self.logger.debug(
+                f"Generic-CoT als Legacy-COTM-Kurztext fragmentiert: paketanzahl={len(cot_chunks)}"
+            )
+            for chunk in cot_chunks:
+                self._send_text_to_interfaces(chunk, interfaces)
+                interfaces = self._get_interfaces_snapshot()
+                self._remember_recent_chat(self.recent_meshtastic_outbound_texts, chunk)
+            return {"transport": "LEGACY_COTM", "count": len(cot_chunks)}
+        except Exception as exc:
+            self.logger.warning(
+                "Legacy-COTM-Kurztext-Senden fehlgeschlagen, versuche ATAK_FORWARDER-Fallback: "
+                f"{exc}"
+            )
+
         forwarder_payload = self._prepare_meshtastic_forwarder_payload(normalized_packet)
         if not forwarder_payload:
             raise ValueError("Leere CoT-Nachricht kann nicht ins Mesh gesendet werden.")
@@ -3939,36 +3961,19 @@ class TAKMeshtasticGateway:
             f"compressed_bytes={len(forwarder_payload)}"
         )
         forwarder_packets = self._prepare_meshtastic_forwarder_packets(forwarder_payload)
-        try:
-            self.logger.debug(
-                f"Generic-CoT via ATAK_FORWARDER verpackt: paketanzahl={len(forwarder_packets)} "
-                f"modus={'direkt' if len(forwarder_packets) == 1 else 'fragmentiert'}"
-            )
-            for forwarder_packet in forwarder_packets:
-                self._send_data_to_interfaces(
-                    forwarder_packet,
-                    interfaces,
-                    MESHTASTIC_ATAK_FORWARDER_PORTNUM,
-                )
-                interfaces = self._get_interfaces_snapshot()
-            transport = "ATAK_FORWARDER" if len(forwarder_packets) == 1 else "ATAK_FORWARDER_FRAGMENTS"
-            return {"transport": transport, "count": len(forwarder_packets)}
-        except Exception as exc:
-            self.logger.warning(
-                "ATAK_FORWARDER-Senden fehlgeschlagen, versuche Legacy-CoT-Fragmente als Fallback: "
-                f"{exc}"
-            )
-        cot_chunks = self._prepare_meshtastic_cot_chunks(normalized_packet)
-        if not cot_chunks:
-            raise ValueError("Leere CoT-Nachricht kann nicht ins Mesh gesendet werden.")
         self.logger.debug(
-            f"Generic-CoT fällt auf Legacy-COTM-Fragmente zurück: paketanzahl={len(cot_chunks)}"
+            f"Generic-CoT via ATAK_FORWARDER verpackt: paketanzahl={len(forwarder_packets)} "
+            f"modus={'direkt' if len(forwarder_packets) == 1 else 'fragmentiert'}"
         )
-        for chunk in cot_chunks:
-            self._send_text_to_interfaces(chunk, interfaces)
+        for forwarder_packet in forwarder_packets:
+            self._send_data_to_interfaces(
+                forwarder_packet,
+                interfaces,
+                MESHTASTIC_ATAK_FORWARDER_PORTNUM,
+            )
             interfaces = self._get_interfaces_snapshot()
-            self._remember_recent_chat(self.recent_meshtastic_outbound_texts, chunk)
-        return {"transport": "LEGACY_COTM", "count": len(cot_chunks)}
+        transport = "ATAK_FORWARDER" if len(forwarder_packets) == 1 else "ATAK_FORWARDER_FRAGMENTS"
+        return {"transport": transport, "count": len(forwarder_packets)}
 
     def send_cot_to_meshtastic(self, packet_xml):
         """Send a full TAK/CoT ``<event>`` XML payload into the Meshtastic pipeline.
