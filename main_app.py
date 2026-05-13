@@ -116,6 +116,10 @@ MESHTASTIC_FORWARDER_FRAGMENT_HEADER_BYTES = 13
 MESHTASTIC_FORWARDER_FRAGMENT_PAYLOAD_BYTES = (
     MESHTASTIC_DATA_PAYLOAD_MAX_BYTES - MESHTASTIC_FORWARDER_FRAGMENT_HEADER_BYTES
 )
+MESHTASTIC_TRANSFER_TYPE_COT = 0x00
+MESHTASTIC_TRANSFER_TYPE_FILE = 0x01
+MESHTASTIC_TRANSFER_TYPE_COT_ASCII = 0x30  # '0'
+MESHTASTIC_TRANSFER_TYPE_FILE_ASCII = 0x31  # '1'
 DEFAULT_MESHTASTIC_CHANNEL_INDEX = 0
 GEOCHAT_UID_PREFIX = "GeoChat."
 MESHTASTIC_PLI_COT_EVENT_TYPE = "a-f-G-U-C"
@@ -358,6 +362,15 @@ def _strip_tak_sender_prefix(value):
         if normalized.startswith(prefix):
             return normalized[len(prefix):]
     return normalized
+
+
+def _looks_like_valid_tak_uid(value):
+    uid = str(value or "").strip()
+    if not uid:
+        return False
+    if uid.startswith("<") or uid.startswith("<?xml"):
+        return False
+    return all(ch >= " " and ch != "\x7f" for ch in uid)
 
 
 def _extract_latest_wintak_chat_message(text):
@@ -3309,16 +3322,23 @@ class TAKMeshtasticGateway:
         group = atak_payload.get("group") or {}
         status = atak_payload.get("status") or {}
 
-        sender_uid = str(
+        raw_sender_uid = str(
             contact.get("device_callsign")
             or user.get("id")
             or packet.get("fromId")
             or packet.get("from")
             or "MESH-UNKNOWN"
         ).strip()
-        if not sender_uid:
-            sender_uid = "MESH-UNKNOWN"
-        sender_uid = _strip_tak_sender_prefix(normalize_meshtastic_uid(sender_uid))
+        fallback_sender_uid = normalize_meshtastic_uid(
+            packet.get("fromId") or packet.get("from") or "MESH-UNKNOWN"
+        )
+        sender_uid = _strip_tak_sender_prefix(normalize_meshtastic_uid(raw_sender_uid))
+        if not _looks_like_valid_tak_uid(sender_uid):
+            self.logger.debug(
+                "ATAK_PLUGIN-PLI UID wirkt ungültig/binär, nutze Fallback auf Mesh-Absender: "
+                f"raw={_build_safe_payload_snippet(raw_sender_uid)} fallback={fallback_sender_uid}"
+            )
+            sender_uid = fallback_sender_uid
         callsign = str(
             contact.get("callsign")
             or user.get("longName")
@@ -4095,13 +4115,37 @@ class TAKMeshtasticGateway:
         payload_bytes = _ensure_bytes(payload).strip()
         if not payload_bytes:
             return None
-        for wbits in (zlib.MAX_WBITS, -zlib.MAX_WBITS):
-            try:
-                return zlib.decompress(payload_bytes, wbits)
-            except zlib.error:
-                continue
-        if payload_bytes.lstrip().startswith(b"<"):
-            return payload_bytes
+
+        decode_candidates = [payload_bytes]
+        if payload_bytes and payload_bytes[0] in (
+            MESHTASTIC_TRANSFER_TYPE_COT,
+            MESHTASTIC_TRANSFER_TYPE_FILE,
+            MESHTASTIC_TRANSFER_TYPE_COT_ASCII,
+            MESHTASTIC_TRANSFER_TYPE_FILE_ASCII,
+        ):
+            transfer_type = payload_bytes[0]
+            stripped_payload = payload_bytes[1:].strip()
+            if stripped_payload:
+                if transfer_type in (MESHTASTIC_TRANSFER_TYPE_COT, MESHTASTIC_TRANSFER_TYPE_COT_ASCII):
+                    self.logger.debug(
+                        f"ATAK_FORWARDER-TransferType erkannt (CoT): 0x{transfer_type:02x}, "
+                        f"payload_bytes={len(stripped_payload)}"
+                    )
+                else:
+                    self.logger.debug(
+                        f"ATAK_FORWARDER-TransferType erkannt (Datei): 0x{transfer_type:02x}, "
+                        "Payload wird nicht als CoT weiterverarbeitet."
+                    )
+                decode_candidates.append(stripped_payload)
+
+        for candidate in decode_candidates:
+            for wbits in (zlib.MAX_WBITS, -zlib.MAX_WBITS):
+                try:
+                    return zlib.decompress(candidate, wbits)
+                except zlib.error:
+                    continue
+            if candidate.lstrip().startswith(b"<"):
+                return candidate
         return None
 
     def _forward_meshtastic_cot_xml_to_tak(self, packet_xml, from_id, source_label="Mesh-CoT"):
@@ -4465,10 +4509,14 @@ class TAKMeshtasticGateway:
                     source_label="ATAK_PLUGIN-detail=7",
                 )
             else:
-                self.logger.debug(
+                self.logger.warning(
                     "ATAK_PLUGIN-detail=7 konnte nach Decode/Reassembly nicht als valides CoT rekonstruiert werden: "
                     f"compressed={atak_payload.get('is_compressed')} payload={_build_safe_payload_snippet(detail_data)}"
                 )
+            self.logger.debug(
+                "ATAK_PLUGIN-Paket enthält detail=7 und wird NICHT als PLI fehlinterpretiert."
+            )
+            return True
 
         packet_xml = self._build_meshtastic_pli_cot_xml(packet, node=node)
         if not packet_xml:
