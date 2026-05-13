@@ -434,17 +434,6 @@ def _extract_latest_wintak_chat_attribute_message(element):
             return latest_message
     return ""
 
-
-def _looks_like_tak_chat_remarks(remarks):
-    """Return True when a TAK <remarks> element looks like a GeoChat payload."""
-    if remarks is None:
-        return False
-    for attr_name in ("source", "sourceID", "sourceId", "to"):
-        if str(remarks.get(attr_name) or "").strip():
-            return True
-    return False
-
-
 def _has_tak_chat_message_fields(element):
     """Return True when detail XML contains message-like nodes/attributes.
 
