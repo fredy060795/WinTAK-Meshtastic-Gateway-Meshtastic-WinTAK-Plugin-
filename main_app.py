@@ -70,6 +70,9 @@ DEFAULT_CHAT_LISTEN_PORT = 4242
 TCP_LISTENER_DEFAULT_PORT = 8088
 WINTAK_REQUIRED_HOST = "127.0.0.1"
 MAX_WINTAK_MONITOR_LINES = 150
+DETECTED_PORTS_SUMMARY_DEFAULT_WRAP = 520
+DETECTED_PORTS_SUMMARY_WRAP_PADDING = 32
+DETECTED_PORTS_SUMMARY_MIN_WRAP = 240
 DEFAULT_TAK_MULTICAST_GROUPS = (
     "224.10.10.1:17012",
     "239.2.3.1:6969",
@@ -1145,6 +1148,7 @@ class GatewayApp:
         self._scroll_window_id = None
         self._wintak_monitor_text = None
         self._cot_input_text = None
+        self._detected_ports_wraplength = DETECTED_PORTS_SUMMARY_DEFAULT_WRAP
 
         try:
             self._root = tk.Tk()
@@ -1152,8 +1156,8 @@ class GatewayApp:
             raise
 
         self._root.title("WinTAK Meshtastic Gateway")
-        self._root.geometry("980x700")
-        self._root.minsize(700, 480)
+        self._root.geometry("1100x760")
+        self._root.minsize(960, 700)
         self._root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._root.configure(bg="#1f2937")
 
@@ -1338,10 +1342,9 @@ class GatewayApp:
         root = self._root
         C = self._colors
 
-        header = tk.Frame(root, bg=C["panel"], height=96, bd=0, highlightthickness=1,
+        header = tk.Frame(root, bg=C["panel"], bd=0, highlightthickness=1,
                           highlightbackground=C["border"], highlightcolor=C["border"])
         header.pack(fill="x", padx=10, pady=(10, 0))
-        header.pack_propagate(False)
 
         header_left = tk.Frame(header, bg=C["panel"])
         header_left.pack(side="left", fill="both", expand=True, padx=(12, 8), pady=10)
@@ -1489,9 +1492,15 @@ class GatewayApp:
         detected = [entry["device"] for entry in detected_details]
         self._detected_ports = detected
         self._detected_ports_var = tk.StringVar(value=self._build_detected_ports_summary(detected_details))
-        ttk.Label(cfg_frame, textvariable=self._detected_ports_var, style="Sub.TLabel").grid(
-            row=1, column=0, columnspan=5, sticky="w", pady=(0, 2)
+        self._detected_ports_label = ttk.Label(
+            cfg_frame,
+            textvariable=self._detected_ports_var,
+            style="Sub.TLabel",
+            justify="left",
+            wraplength=DETECTED_PORTS_SUMMARY_DEFAULT_WRAP,
         )
+        self._detected_ports_label.grid(row=1, column=0, columnspan=5, sticky="ew", pady=(0, 2))
+        cfg_frame.bind("<Configure>", self._on_cfg_frame_configure)
         self._detected_ports_list = tk.Listbox(
             cfg_frame,
             height=min(max(len(detected), 1), MAX_DETECTED_PORTS_DISPLAY),
@@ -1866,6 +1875,21 @@ class GatewayApp:
             return
         self._scroll_canvas.configure(scrollregion=self._scroll_canvas.bbox("all"))
         self._sync_scrollable_body_width()
+
+    def _on_cfg_frame_configure(self, event=None):
+        if not hasattr(self, "_detected_ports_label"):
+            return
+        frame_width = getattr(event, "width", 0)
+        if not frame_width:
+            if self._detected_ports_label.winfo_ismapped():
+                frame_width = self._detected_ports_label.winfo_width()
+            else:
+                frame_width = DETECTED_PORTS_SUMMARY_DEFAULT_WRAP + DETECTED_PORTS_SUMMARY_WRAP_PADDING
+        wraplength = max(frame_width - DETECTED_PORTS_SUMMARY_WRAP_PADDING, DETECTED_PORTS_SUMMARY_MIN_WRAP)
+        if wraplength == self._detected_ports_wraplength:
+            return
+        self._detected_ports_wraplength = wraplength
+        self._detected_ports_label.configure(wraplength=wraplength)
 
     def _on_scrollable_canvas_configure(self, event=None):
         canvas_width = getattr(event, "width", None)
