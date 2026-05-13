@@ -84,9 +84,17 @@ UTF8_BOM_CHAR = "\ufeff"
 RECENT_CHAT_CACHE_TTL_SECONDS = 30
 RECENT_CHAT_CACHE_MAX_ENTRIES = 256
 MESHTASTIC_TEXT_CHUNK_MAX_BYTES = 180
+MESHTASTIC_DATA_PAYLOAD_MAX_BYTES = 180
 MESHTASTIC_COT_FRAGMENT_PREFIX = "COTM"
 MESHTASTIC_COT_FRAGMENT_PAYLOAD_BYTES = 140
 MESHTASTIC_COT_FRAGMENT_TTL_SECONDS = 120
+MESHTASTIC_FORWARDER_FRAGMENT_MAGIC = b"COTF"
+MESHTASTIC_FORWARDER_FRAGMENT_VERSION = 1
+MESHTASTIC_FORWARDER_FRAGMENT_MESSAGE_ID_BYTES = 6
+MESHTASTIC_FORWARDER_FRAGMENT_HEADER_BYTES = 13
+MESHTASTIC_FORWARDER_FRAGMENT_PAYLOAD_BYTES = (
+    MESHTASTIC_DATA_PAYLOAD_MAX_BYTES - MESHTASTIC_FORWARDER_FRAGMENT_HEADER_BYTES
+)
 DEFAULT_MESHTASTIC_CHANNEL_INDEX = 0
 MESHTASTIC_ATAK_PLUGIN_PORTNUM = 72
 MESHTASTIC_ATAK_FORWARDER_PORTNUM = 257
@@ -655,6 +663,10 @@ def _clamp_battery_percentage(value):
     if battery_value is None or math.isnan(battery_value):
         return 0
     return max(0, min(100, int(round(battery_value))))
+
+
+def _is_meshtastic_payload_too_big_error(exc):
+    return "payload too big" in str(exc or "").strip().lower()
 
 
 def load_config():
@@ -2082,6 +2094,7 @@ class TAKMeshtasticGateway:
         self.recent_meshtastic_outbound_texts = {}
         self.recent_cot_ids = {}
         self.partial_meshtastic_cot_messages = {}
+        self.partial_meshtastic_forwarder_messages = {}
         self.relay_text_messages = as_bool(self.cfg.get("relay_text_messages", True))
         self.relay_text_from_ports = {
             port.upper() for port in _config_ports_to_list(self.cfg.get("relay_text_from_ports"))
@@ -2224,6 +2237,19 @@ class TAKMeshtasticGateway:
                     expired_keys.append(key)
             for key in expired_keys:
                 self.partial_meshtastic_cot_messages.pop(key, None)
+
+    def _cleanup_expired_meshtastic_forwarder_fragments(self):
+        now = time.time()
+        with self.chat_cache_lock:
+            expired_keys = []
+            for key, entry in self.partial_meshtastic_forwarder_messages.items():
+                updated_at = entry.get("updated_at")
+                created_at = entry.get("created_at")
+                last_seen_at = updated_at if updated_at is not None else created_at
+                if last_seen_at is None or now - last_seen_at > MESHTASTIC_COT_FRAGMENT_TTL_SECONDS:
+                    expired_keys.append(key)
+            for key in expired_keys:
+                self.partial_meshtastic_forwarder_messages.pop(key, None)
 
     def _extract_cot_event_metadata(self, packet_xml):
         try:
@@ -2871,7 +2897,12 @@ class TAKMeshtasticGateway:
                 self.logger.warning(
                     f"Fehler beim Senden eines Meshtastic-Datenpakets auf {self._get_interface_label(iface)}: {exc}"
                 )
-        if not sent_interfaces and last_error is not None and allow_reconnect:
+        should_retry = (
+            allow_reconnect
+            and last_error is not None
+            and not _is_meshtastic_payload_too_big_error(last_error)
+        )
+        if not sent_interfaces and should_retry:
             retry_interfaces = self._ensure_meshtastic_interfaces(reconnect=True, reason=str(last_error))
             if retry_interfaces:
                 try:
@@ -2977,6 +3008,70 @@ class TAKMeshtasticGateway:
             return b""
         return zlib.compress(packet_bytes)
 
+    def _prepare_meshtastic_forwarder_packets(self, payload):
+        payload_bytes = _ensure_bytes(payload).strip()
+        if not payload_bytes:
+            return []
+        if len(payload_bytes) <= MESHTASTIC_DATA_PAYLOAD_MAX_BYTES:
+            return [payload_bytes]
+        if MESHTASTIC_FORWARDER_FRAGMENT_PAYLOAD_BYTES <= 0:
+            raise ValueError("Ungültige Meshtastic-Forwarder-Fragmentgröße konfiguriert.")
+
+        total_parts = math.ceil(len(payload_bytes) / MESHTASTIC_FORWARDER_FRAGMENT_PAYLOAD_BYTES)
+        if total_parts < 2 or total_parts > 255:
+            raise ValueError("Meshtastic-ATAK_FORWARDER-Payload kann nicht sinnvoll fragmentiert werden.")
+
+        message_id = uuid.uuid4().bytes[:MESHTASTIC_FORWARDER_FRAGMENT_MESSAGE_ID_BYTES]
+        packets = []
+        for index, offset in enumerate(
+            range(0, len(payload_bytes), MESHTASTIC_FORWARDER_FRAGMENT_PAYLOAD_BYTES),
+            start=1,
+        ):
+            chunk_payload = payload_bytes[offset:offset + MESHTASTIC_FORWARDER_FRAGMENT_PAYLOAD_BYTES]
+            packets.append(
+                b"".join(
+                    (
+                        MESHTASTIC_FORWARDER_FRAGMENT_MAGIC,
+                        bytes((MESHTASTIC_FORWARDER_FRAGMENT_VERSION,)),
+                        message_id,
+                        bytes((index, total_parts)),
+                        chunk_payload,
+                    )
+                )
+            )
+        return packets
+
+    def _parse_meshtastic_forwarder_fragment(self, payload):
+        payload_bytes = bytes(payload or b"")
+        if len(payload_bytes) < MESHTASTIC_FORWARDER_FRAGMENT_HEADER_BYTES:
+            return None
+        if not payload_bytes.startswith(MESHTASTIC_FORWARDER_FRAGMENT_MAGIC):
+            return None
+
+        version_offset = len(MESHTASTIC_FORWARDER_FRAGMENT_MAGIC)
+        version = payload_bytes[version_offset]
+        if version != MESHTASTIC_FORWARDER_FRAGMENT_VERSION:
+            return None
+
+        message_id_start = version_offset + 1
+        message_id_end = message_id_start + MESHTASTIC_FORWARDER_FRAGMENT_MESSAGE_ID_BYTES
+        message_id = payload_bytes[message_id_start:message_id_end]
+        part_index = payload_bytes[message_id_end]
+        total_parts = payload_bytes[message_id_end + 1]
+        chunk_payload = payload_bytes[MESHTASTIC_FORWARDER_FRAGMENT_HEADER_BYTES:]
+
+        has_required_fields = bool(message_id and chunk_payload)
+        has_valid_part_numbers = total_parts >= 2 and 1 <= part_index <= total_parts
+        if not has_required_fields or not has_valid_part_numbers:
+            return None
+
+        return {
+            "message_id": message_id.hex(),
+            "part_index": part_index,
+            "total_parts": total_parts,
+            "payload": chunk_payload,
+        }
+
     def _decode_meshtastic_forwarder_payload(self, payload):
         payload_bytes = _ensure_bytes(payload).strip()
         if not payload_bytes:
@@ -3013,11 +3108,51 @@ class TAKMeshtasticGateway:
         payload = decoded.get("payload")
         if not isinstance(payload, (bytes, bytearray)):
             return False
+        fragment = self._parse_meshtastic_forwarder_fragment(payload)
+        if fragment is not None:
+            return self._handle_meshtastic_forwarder_fragment(fragment, from_id)
         packet_xml = self._decode_meshtastic_forwarder_payload(payload)
         if not packet_xml:
             self.logger.warning("ATAK_FORWARDER-Payload aus dem Mesh konnte nicht dekodiert werden.")
             return True
         return self._forward_meshtastic_cot_xml_to_tak(packet_xml, from_id, source_label="ATAK_FORWARDER")
+
+    def _handle_meshtastic_forwarder_fragment(self, fragment, from_id):
+        self._cleanup_expired_meshtastic_forwarder_fragments()
+        cache_key = f"{from_id}:{fragment['message_id']}"
+        now = time.time()
+        with self.chat_cache_lock:
+            entry = self.partial_meshtastic_forwarder_messages.get(cache_key)
+            if entry is None or entry.get("total_parts") != fragment["total_parts"]:
+                entry = {
+                    "created_at": now,
+                    "updated_at": now,
+                    "total_parts": fragment["total_parts"],
+                    "parts": {},
+                }
+                self.partial_meshtastic_forwarder_messages[cache_key] = entry
+            else:
+                entry["updated_at"] = now
+
+            entry["parts"][fragment["part_index"]] = fragment["payload"]
+            if len(entry["parts"]) < entry["total_parts"]:
+                return True
+            ordered_payload = b"".join(
+                entry["parts"][index]
+                for index in range(1, entry["total_parts"] + 1)
+                if index in entry["parts"]
+            )
+            self.partial_meshtastic_forwarder_messages.pop(cache_key, None)
+
+        packet_xml = self._decode_meshtastic_forwarder_payload(ordered_payload)
+        if not packet_xml:
+            self.logger.warning("ATAK_FORWARDER-Fragmentfolge aus dem Mesh konnte nicht dekodiert werden.")
+            return True
+        return self._forward_meshtastic_cot_xml_to_tak(
+            packet_xml,
+            from_id,
+            source_label="ATAK_FORWARDER-Fragmentfolge",
+        )
 
     def _forward_cot_to_meshtastic(self, packet_xml):
         interfaces = self._ensure_meshtastic_interfaces(raise_on_empty=True)
@@ -3029,7 +3164,7 @@ class TAKMeshtasticGateway:
                     interfaces,
                     MESHTASTIC_ATAK_PLUGIN_PORTNUM,
                 )
-                return ["ATAK_PLUGIN"]
+                return {"transport": "ATAK_PLUGIN", "count": 1}
             except Exception as exc:
                 self.logger.warning(
                     "ATAK_PLUGIN-PLI-Senden fehlgeschlagen, versuche ATAK_FORWARDER-Fallback: "
@@ -3038,9 +3173,17 @@ class TAKMeshtasticGateway:
         forwarder_payload = self._prepare_meshtastic_forwarder_payload(packet_xml)
         if not forwarder_payload:
             raise ValueError("Leere CoT-Nachricht kann nicht ins Mesh gesendet werden.")
+        forwarder_packets = self._prepare_meshtastic_forwarder_packets(forwarder_payload)
         try:
-            self._send_data_to_interfaces(forwarder_payload, interfaces, MESHTASTIC_ATAK_FORWARDER_PORTNUM)
-            return ["ATAK_FORWARDER"]
+            for forwarder_packet in forwarder_packets:
+                self._send_data_to_interfaces(
+                    forwarder_packet,
+                    interfaces,
+                    MESHTASTIC_ATAK_FORWARDER_PORTNUM,
+                )
+                interfaces = self._get_interfaces_snapshot()
+            transport = "ATAK_FORWARDER" if len(forwarder_packets) == 1 else "ATAK_FORWARDER_FRAGMENTS"
+            return {"transport": transport, "count": len(forwarder_packets)}
         except Exception as exc:
             self.logger.warning(
                 "ATAK_FORWARDER-Senden fehlgeschlagen, versuche Legacy-CoT-Fragmente als Fallback: "
@@ -3053,7 +3196,7 @@ class TAKMeshtasticGateway:
             self._send_text_to_interfaces(chunk, interfaces)
             interfaces = self._get_interfaces_snapshot()
             self._remember_recent_chat(self.recent_meshtastic_outbound_texts, chunk)
-        return cot_chunks
+        return {"transport": "LEGACY_COTM", "count": len(cot_chunks)}
 
     def _handle_meshtastic_cot_chunk(self, message, from_id):
         chunk = self._parse_meshtastic_cot_chunk(message)
@@ -3569,7 +3712,7 @@ class TAKMeshtasticGateway:
             return
 
         try:
-            sent_chunks = self._forward_cot_to_meshtastic(packet_xml)
+            send_result = self._forward_cot_to_meshtastic(packet_xml)
         except Exception as exc:
             self.logger.warning(f"TAK-CoT konnte nicht ins Mesh gesendet werden: {exc}")
             self.logger.debug("Fehler beim Senden von TAK-CoT ins Mesh:\n" + traceback.format_exc())
@@ -3577,10 +3720,18 @@ class TAKMeshtasticGateway:
         if cot_dedupe_key:
             self._remember_recent_chat(self.recent_cot_ids, cot_dedupe_key)
         transport_label = "ATAK_FORWARDER-Paket"
-        if sent_chunks == ["ATAK_PLUGIN"]:
+        transport = send_result.get("transport")
+        transport_count = int(send_result.get("count") or 0)
+        if transport == "ATAK_PLUGIN":
             transport_label = "ATAK_PLUGIN-PLI"
-        elif sent_chunks != ["ATAK_FORWARDER"]:
-            transport_label = f"{len(sent_chunks)} Legacy-Fragment{'e' if len(sent_chunks) != 1 else ''}"
+        elif transport == "ATAK_FORWARDER_FRAGMENTS":
+            transport_label = (
+                f"{transport_count} ATAK_FORWARDER-Fragment{'e' if transport_count != 1 else ''}"
+            )
+        elif transport == "LEGACY_COTM":
+            transport_label = (
+                f"{transport_count} Legacy-Fragment{'e' if transport_count != 1 else ''}"
+            )
         self.logger.info(f"TAK-CoT ins Mesh gesendet: {metadata['uid'] or 'ohne UID'} ({transport_label})")
 
     def handle_tak_chat_message(self, packet_xml, source_addr=None, source_protocol=None):
