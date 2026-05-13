@@ -486,6 +486,16 @@ def _extract_first_tak_event(packet_bytes):
     return match.group(0).encode("utf-8")
 
 
+def _coerce_cot_point_float(value):
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(parsed) or math.isinf(parsed):
+        return None
+    return parsed
+
+
 def _read_protobuf_varint(buffer, offset):
     """Read a protobuf varint from buffer starting at offset."""
     result = 0
@@ -2258,9 +2268,88 @@ class TAKMeshtasticGateway:
             return None
         if _xml_local_name(root.tag) != "event":
             return None
+        point = _find_child_by_local_name(root, "point")
+        detail = _find_child_by_local_name(root, "detail")
+        if point is None or detail is None:
+            return None
+        lat = _coerce_cot_point_float(point.get("lat"))
+        lon = _coerce_cot_point_float(point.get("lon"))
+        if lat is None or lon is None:
+            return None
+        event_uid = (root.get("uid") or "").strip()
+        event_type = (root.get("type") or "").strip()
+        event_how = (root.get("how") or "").strip()
+        if not event_uid or not event_type or not event_how:
+            return None
         return {
-            "uid": (root.get("uid") or "").strip(),
+            "uid": event_uid,
+            "type": event_type,
+            "how": event_how,
+            "start": (root.get("start") or "").strip(),
+            "time": (root.get("time") or "").strip(),
+            "stale": (root.get("stale") or "").strip(),
+            "lat": lat,
+            "lon": lon,
+            "hae": _coerce_cot_point_float(point.get("hae")),
+            "ce": _coerce_cot_point_float(point.get("ce")),
+            "le": _coerce_cot_point_float(point.get("le")),
+            "has_meshtastic_marker": _find_descendant_by_local_name(detail, "__meshtastic") is not None,
         }
+
+    def _normalize_generic_cot_event(self, packet_xml, add_meshtastic_marker=False):
+        try:
+            root = fromstring(packet_xml)
+        except (ParseError, TypeError, ValueError) as exc:
+            return None, None, f"XML-Parsing fehlgeschlagen: {exc}"
+        if _xml_local_name(root.tag) != "event":
+            return None, None, "Root-Element ist kein <event>"
+
+        uid = (root.get("uid") or "").strip()
+        event_type = (root.get("type") or "").strip()
+        event_how = (root.get("how") or "").strip()
+        if not uid:
+            return None, None, "CoT-UID fehlt"
+        if not event_type:
+            return None, None, "CoT-Typ fehlt"
+        if not event_how:
+            return None, None, "CoT-how fehlt"
+
+        point = _find_child_by_local_name(root, "point")
+        if point is None:
+            return None, None, "CoT-point fehlt"
+        lat = _coerce_cot_point_float(point.get("lat"))
+        lon = _coerce_cot_point_float(point.get("lon"))
+        if lat is None or lon is None:
+            return None, None, "CoT-point enthält ungültige lat/lon-Werte"
+        if point.get("hae") is None:
+            point.set("hae", "0.0")
+        if point.get("ce") is None:
+            point.set("ce", "9999999.0")
+        if point.get("le") is None:
+            point.set("le", "9999999.0")
+
+        now = get_tak_timestamp()
+        stale_default = (
+            datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=10)
+        ).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+        if not str(root.get("time") or "").strip():
+            root.set("time", now)
+        if not str(root.get("start") or "").strip():
+            root.set("start", root.get("time") or now)
+        if not str(root.get("stale") or "").strip():
+            root.set("stale", stale_default)
+
+        detail = _find_child_by_local_name(root, "detail")
+        if detail is None:
+            detail = SubElement(root, "detail")
+        if add_meshtastic_marker and _find_child_by_local_name(detail, "__meshtastic") is None:
+            SubElement(detail, "__meshtastic")
+
+        normalized_packet = tostring(root, encoding="utf-8")
+        metadata = self._extract_cot_event_metadata(normalized_packet)
+        if metadata is None:
+            return None, None, "CoT-Struktur nach Normalisierung ungültig"
+        return normalized_packet, metadata, None
 
     def _extract_meshtastic_pli_candidate(self, packet_xml):
         try:
@@ -3196,16 +3285,24 @@ class TAKMeshtasticGateway:
         return None
 
     def _forward_meshtastic_cot_xml_to_tak(self, packet_xml, from_id, source_label="Mesh-CoT"):
-        cot_dedupe_key = self._build_cot_dedupe_key(packet_xml)
+        normalized_packet, metadata, error = self._normalize_generic_cot_event(
+            packet_xml,
+            add_meshtastic_marker=True,
+        )
+        if normalized_packet is None or metadata is None:
+            self.logger.warning(f"{source_label} verworfen: {error or 'ungültiges CoT-Event'}")
+            self.logger.debug(f"{source_label} Rohpayload: {_build_safe_payload_snippet(packet_xml)}")
+            return True
+        self.logger.debug(
+            f"{source_label} rekonstruiert: uid={metadata['uid']} type={metadata['type']} "
+            f"how={metadata['how']} lat={metadata['lat']:.6f} lon={metadata['lon']:.6f} "
+            f"payload={_build_safe_payload_snippet(normalized_packet)}"
+        )
+        cot_dedupe_key = self._build_cot_dedupe_key(normalized_packet)
         if cot_dedupe_key and self._was_seen_recently(self.recent_cot_ids, cot_dedupe_key):
             return True
 
-        metadata = self._extract_cot_event_metadata(packet_xml)
-        if metadata is None:
-            self.logger.warning(f"{source_label} verworfen: empfangene Nachricht ist kein gültiges CoT-Event.")
-            return True
-
-        self._send_packet_to_tak(packet_xml, metadata["uid"] or f"{source_label} {from_id}")
+        self._send_packet_to_tak(normalized_packet, metadata["uid"] or f"{source_label} {from_id}")
         self.logger.info(
             f"CoT aus dem Mesh nach TAK weitergeleitet: {metadata['uid'] or f'ohne UID von {from_id}'}"
         )
@@ -3218,6 +3315,9 @@ class TAKMeshtasticGateway:
         payload = decoded.get("payload")
         if not isinstance(payload, (bytes, bytearray)):
             return False
+        self.logger.debug(
+            f"ATAK_FORWARDER-Paket aus dem Mesh empfangen: {len(payload)} Byte von {from_id}"
+        )
         fragment = self._parse_meshtastic_forwarder_fragment(payload)
         if fragment is not None:
             return self._handle_meshtastic_forwarder_fragment(fragment, from_id)
@@ -3228,6 +3328,10 @@ class TAKMeshtasticGateway:
         return self._forward_meshtastic_cot_xml_to_tak(packet_xml, from_id, source_label="ATAK_FORWARDER")
 
     def _handle_meshtastic_forwarder_fragment(self, fragment, from_id):
+        self.logger.debug(
+            f"ATAK_FORWARDER-Fragment empfangen: {fragment['part_index']}/{fragment['total_parts']} "
+            f"message_id={fragment['message_id']} from={from_id} payload_bytes={len(fragment['payload'])}"
+        )
         self._cleanup_expired_meshtastic_forwarder_fragments()
         cache_key = f"{from_id}:{fragment['message_id']}"
         now = time.time()
@@ -3254,6 +3358,10 @@ class TAKMeshtasticGateway:
             )
             self.partial_meshtastic_forwarder_messages.pop(cache_key, None)
 
+        self.logger.debug(
+            f"ATAK_FORWARDER-Fragmentfolge vollständig: message_id={fragment['message_id']} "
+            f"gesamt_bytes={len(ordered_payload)}"
+        )
         packet_xml = self._decode_meshtastic_forwarder_payload(ordered_payload)
         if not packet_xml:
             self.logger.warning("ATAK_FORWARDER-Fragmentfolge aus dem Mesh konnte nicht dekodiert werden.")
@@ -3266,9 +3374,22 @@ class TAKMeshtasticGateway:
 
     def _forward_cot_to_meshtastic(self, packet_xml):
         interfaces = self._ensure_meshtastic_interfaces(raise_on_empty=True)
-        pli_packet = self._prepare_meshtastic_pli_packet(packet_xml)
+        normalized_packet, metadata, error = self._normalize_generic_cot_event(packet_xml)
+        if normalized_packet is None or metadata is None:
+            raise ValueError(error or "Ungültiges CoT-Event")
+        self.logger.debug(
+            f"Generic-CoT für Mesh vorbereitet: uid={metadata['uid']} type={metadata['type']} "
+            f"how={metadata['how']} lat={metadata['lat']:.6f} lon={metadata['lon']:.6f} "
+            f"payload={_build_safe_payload_snippet(normalized_packet)}"
+        )
+
+        pli_packet = self._prepare_meshtastic_pli_packet(normalized_packet)
         if pli_packet is not None:
             try:
+                self.logger.debug(
+                    f"Generic-CoT wird als ATAK_PLUGIN-PLI gesendet: uid={pli_packet['uid']} "
+                    f"callsign={pli_packet['callsign']} payload_bytes={len(pli_packet['payload'])}"
+                )
                 self._send_data_to_interfaces(
                     pli_packet["payload"],
                     interfaces,
@@ -3280,11 +3401,19 @@ class TAKMeshtasticGateway:
                     "ATAK_PLUGIN-PLI-Senden fehlgeschlagen, versuche ATAK_FORWARDER-Fallback: "
                     f"{exc}"
                 )
-        forwarder_payload = self._prepare_meshtastic_forwarder_payload(packet_xml)
+        forwarder_payload = self._prepare_meshtastic_forwarder_payload(normalized_packet)
         if not forwarder_payload:
             raise ValueError("Leere CoT-Nachricht kann nicht ins Mesh gesendet werden.")
+        self.logger.debug(
+            f"Generic-CoT via ATAK_FORWARDER komprimiert: xml_bytes={len(_ensure_bytes(normalized_packet))} "
+            f"compressed_bytes={len(forwarder_payload)}"
+        )
         forwarder_packets = self._prepare_meshtastic_forwarder_packets(forwarder_payload)
         try:
+            self.logger.debug(
+                f"Generic-CoT via ATAK_FORWARDER verpackt: paketanzahl={len(forwarder_packets)} "
+                f"modus={'direkt' if len(forwarder_packets) == 1 else 'fragmentiert'}"
+            )
             for forwarder_packet in forwarder_packets:
                 self._send_data_to_interfaces(
                     forwarder_packet,
@@ -3299,20 +3428,30 @@ class TAKMeshtasticGateway:
                 "ATAK_FORWARDER-Senden fehlgeschlagen, versuche Legacy-CoT-Fragmente als Fallback: "
                 f"{exc}"
             )
-        cot_chunks = self._prepare_meshtastic_cot_chunks(packet_xml)
+        cot_chunks = self._prepare_meshtastic_cot_chunks(normalized_packet)
         if not cot_chunks:
             raise ValueError("Leere CoT-Nachricht kann nicht ins Mesh gesendet werden.")
+        self.logger.debug(
+            f"Generic-CoT fällt auf Legacy-COTM-Fragmente zurück: paketanzahl={len(cot_chunks)}"
+        )
         for chunk in cot_chunks:
             self._send_text_to_interfaces(chunk, interfaces)
             interfaces = self._get_interfaces_snapshot()
             self._remember_recent_chat(self.recent_meshtastic_outbound_texts, chunk)
         return {"transport": "LEGACY_COTM", "count": len(cot_chunks)}
 
+    def _handle_meshtastic_legacy_cot_text(self, message, from_id):
+        return self._handle_meshtastic_cot_chunk(message, from_id)
+
     def _handle_meshtastic_cot_chunk(self, message, from_id):
         chunk = self._parse_meshtastic_cot_chunk(message)
         if chunk is None:
             return False
 
+        self.logger.debug(
+            f"Legacy-COTM-Fragment empfangen: {chunk['part_index']}/{chunk['total_parts']} "
+            f"message_id={chunk['message_id']} from={from_id}"
+        )
         self._cleanup_expired_meshtastic_cot_fragments()
         cache_key = f"{from_id}:{chunk['message_id']}"
         now = time.time()
@@ -3339,6 +3478,10 @@ class TAKMeshtasticGateway:
         if not encoded_packet:
             self.logger.warning("Unvollständige CoT-Fragmentserie aus dem Mesh verworfen.")
             return True
+        self.logger.debug(
+            f"Legacy-COTM-Fragmentfolge vollständig: message_id={chunk['message_id']} "
+            f"encoded_chars={len(encoded_packet)}"
+        )
 
         try:
             packet_xml = base64.urlsafe_b64decode(encoded_packet.encode("ascii"))
@@ -3376,9 +3519,6 @@ class TAKMeshtasticGateway:
         if self._was_seen_recently(self.recent_meshtastic_chat_ids, dedupe_key):
             return
         self._remember_recent_chat(self.recent_meshtastic_chat_ids, dedupe_key)
-
-        if self._handle_meshtastic_cot_chunk(message, from_id or "MESH-UNKNOWN"):
-            return
 
         available_interfaces = self._ensure_meshtastic_interfaces()
         if self.relay_text_messages and len(available_interfaces) > 1:
@@ -3764,6 +3904,11 @@ class TAKMeshtasticGateway:
             cot_dedupe_key = metadata["uid"] or self._build_cot_dedupe_key(packet_xml)
             if cot_dedupe_key and self._was_seen_recently(self.recent_cot_ids, cot_dedupe_key):
                 self.logger.debug("TAK-CoT wegen Duplikat-Schutz ignoriert.")
+                return
+            if metadata.get("has_meshtastic_marker"):
+                self.logger.debug(
+                    f"TAK-CoT mit __meshtastic-Marker nicht erneut ins Mesh gesendet: {metadata['uid']}"
+                )
                 return
 
         if chat_payload:
@@ -4182,7 +4327,20 @@ class TAKMeshtasticGateway:
             node = self._find_node_for_packet(interface, from_id)
             if self._is_atak_forwarder_packet(packet):
                 self._handle_meshtastic_forwarder_packet(packet, from_id or "MESH-UNKNOWN")
-            if self._is_text_message_packet(packet) or self._is_atak_plugin_packet(packet):
+            if self._is_text_message_packet(packet):
+                decoded = packet.get("decoded") or {}
+                text_payload = decoded.get("text")
+                if not text_payload:
+                    payload = decoded.get("payload")
+                    if isinstance(payload, (bytes, bytearray)):
+                        text_payload = payload.decode("utf-8", errors="ignore")
+                handled_legacy_cot = self._handle_meshtastic_legacy_cot_text(
+                    text_payload,
+                    from_id or "MESH-UNKNOWN",
+                )
+                if not handled_legacy_cot:
+                    self.process_meshtastic_text_message(packet, node=node, source_interface=interface)
+            elif self._is_atak_plugin_packet(packet):
                 self.process_meshtastic_text_message(packet, node=node, source_interface=interface)
             if from_id and node:
                 # Force update für Live-Events
