@@ -17,6 +17,7 @@ import base64
 import codecs
 import datetime
 import hashlib
+import ipaddress
 import inspect
 import math
 import re
@@ -3233,8 +3234,12 @@ class TAKMeshtasticGateway:
         host = str(self.server_ip or "").strip()
         if not protocol or not host:
             return None
-        if ":" in host and not host.startswith("[") and not host.endswith("]") and host.count(":") > 1:
-            host = f"[{host}]"
+        raw_host = host[1:-1] if host.startswith("[") and host.endswith("]") else host
+        try:
+            if isinstance(ipaddress.ip_address(raw_host), ipaddress.IPv6Address):
+                host = f"[{raw_host}]"
+        except ValueError:
+            host = raw_host
         return f"{protocol}://{host}:{self.server_port}"
 
     def _should_use_pytak_remote(self):
@@ -3251,8 +3256,6 @@ class TAKMeshtasticGateway:
             await asyncio.sleep(0.25)
 
     async def _run_remote_pytak_client(self):
-        if pytak is None:
-            raise RuntimeError("PyTAK ist nicht installiert.")
         if not self.remote_cot_url:
             raise ValueError("Remote-TAK-URL konnte nicht aus Host/Port/Protokoll erstellt werden.")
 
@@ -3320,6 +3323,8 @@ class TAKMeshtasticGateway:
             self.logger.warning(f"Fehler beim Senden an lokales TAK (UDP): {e}")
 
         if self._should_use_pytak_remote():
+            # PyTAK replaces the legacy remote socket path when available so packets
+            # are not sent twice to the same remote TAK endpoint.
             self._send_remote_packet_via_pytak(packet_xml, label)
             return
 
@@ -4034,7 +4039,7 @@ class TAKMeshtasticGateway:
                 )
         else:
             self.logger.debug(
-                f"Generic-CoT-Typ {metadata['type']} wird bevorzugt als Legacy-COTM-Kurztext gesendet."
+                f"Generic-CoT-Typ {metadata['type']} versucht zuerst Legacy-COTM-Kurztext mit ATAK_FORWARDER-Fallback."
             )
         try:
             cot_chunks = self._prepare_meshtastic_cot_chunks(normalized_packet)
