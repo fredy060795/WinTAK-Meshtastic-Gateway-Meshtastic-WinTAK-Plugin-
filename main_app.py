@@ -172,7 +172,7 @@ def _resolve_meshtastic_portnum(primary_name, fallback, *alternate_names):
     """
     if portnums_pb2 is None:
         return fallback
-    for name in (primary_name,) + tuple(alternate_names):
+    for name in (primary_name,) + alternate_names:
         try:
             value = getattr(portnums_pb2.PortNum, name, None)
             if value is not None:
