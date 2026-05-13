@@ -2721,7 +2721,7 @@ class TAKMeshtasticGateway:
         return merged
 
     def _get_interfaces_by_labels(self, labels, interfaces=None):
-        label_keys = {str(label or "").strip().upper() for label in labels or [] if str(label or "").strip()}
+        label_keys = self._get_interface_label_keys(labels)
         if not label_keys:
             return []
         matched = []
@@ -2735,6 +2735,11 @@ class TAKMeshtasticGateway:
             seen.add(label_key)
             matched.append(iface)
         return matched
+
+    def _raise_with_optional_cause(self, error, cause=None):
+        if cause is not None:
+            raise error from cause
+        raise error
 
     def _get_interfaces_snapshot(self):
         with self.interface_lock:
@@ -2923,9 +2928,9 @@ class TAKMeshtasticGateway:
         if failed_labels and allow_reconnect:
             retry_interfaces = self._ensure_meshtastic_interfaces(reconnect=True, reason=str(last_error))
             retry_targets = self._get_interfaces_by_labels(failed_labels, retry_interfaces)
-            retry_target_labels = self._get_interface_label_keys(
-                self._get_interface_label(iface) for iface in retry_targets
-            )
+            retry_target_labels = {
+                self._get_interface_label_key(iface) for iface in retry_targets if iface is not None
+            }
             missing_retry_labels = [
                 label for label in failed_labels if self._normalize_interface_label_key(label) not in retry_target_labels
             ]
@@ -2934,9 +2939,7 @@ class TAKMeshtasticGateway:
                     "Meshtastic-Nachricht konnte nach COM-Neuverbindung nicht an folgende Ports gesendet werden: "
                     + ", ".join(missing_retry_labels)
                 )
-                if last_error is not None:
-                    raise failure from last_error
-                raise failure
+                self._raise_with_optional_cause(failure, last_error)
             if retry_targets:
                 try:
                     retried_interfaces = self._send_text_to_interfaces(
@@ -2956,9 +2959,7 @@ class TAKMeshtasticGateway:
                 "Meshtastic-Nachricht konnte nicht an alle verbundenen Ports gesendet werden: "
                 + ", ".join(failed_labels)
             )
-            if last_error is not None:
-                raise failure from last_error
-            raise failure
+            self._raise_with_optional_cause(failure, last_error)
         return sent_interfaces
 
     def _send_data_to_interfaces(self, payload, interfaces, portnum, allow_reconnect=True):
@@ -2992,9 +2993,9 @@ class TAKMeshtasticGateway:
         if should_retry:
             retry_interfaces = self._ensure_meshtastic_interfaces(reconnect=True, reason=str(last_error))
             retry_targets = self._get_interfaces_by_labels(failed_labels, retry_interfaces)
-            retry_target_labels = self._get_interface_label_keys(
-                self._get_interface_label(iface) for iface in retry_targets
-            )
+            retry_target_labels = {
+                self._get_interface_label_key(iface) for iface in retry_targets if iface is not None
+            }
             missing_retry_labels = [
                 label for label in failed_labels if self._normalize_interface_label_key(label) not in retry_target_labels
             ]
@@ -3003,7 +3004,7 @@ class TAKMeshtasticGateway:
                     "Meshtastic-Datenpaket konnte nach COM-Neuverbindung nicht an folgende Ports gesendet werden: "
                     + ", ".join(missing_retry_labels)
                 )
-                raise failure from last_error
+                self._raise_with_optional_cause(failure, last_error)
             if retry_targets:
                 try:
                     retried_interfaces = self._send_data_to_interfaces(
@@ -3024,9 +3025,7 @@ class TAKMeshtasticGateway:
                 "Meshtastic-Datenpaket konnte nicht an alle verbundenen Ports gesendet werden: "
                 + ", ".join(failed_labels)
             )
-            if last_error is not None:
-                raise failure from last_error
-            raise failure
+            self._raise_with_optional_cause(failure, last_error)
         return sent_interfaces
 
     def _get_relay_targets(self, source_interface, interfaces=None):
