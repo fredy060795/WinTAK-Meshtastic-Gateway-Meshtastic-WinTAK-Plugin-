@@ -157,6 +157,9 @@ _WINTAK_CHAT_FIELD_PATTERN = re.compile(
 def _resolve_meshtastic_portnum(primary_name, fallback, *alternate_names):
     """Resolve a Meshtastic PortNum enum name with legacy fallback values.
 
+    This helper is evaluated during module import to populate cached module-level
+    constants for outbound ATAK packet routing.
+
     Args:
         primary_name: Preferred enum attribute name from ``portnums_pb2.PortNum``.
         fallback: Legacy numeric port number used when the enum is unavailable.
@@ -2741,11 +2744,12 @@ class TAKMeshtasticGateway:
             return True
         if portnums_pb2 is not None:
             try:
-                portnum_values = {MESHTASTIC_ATAK_FORWARDER_PORTNUM}
                 atak_forwarder = getattr(portnums_pb2.PortNum, "ATAK_FORWARDER", None)
-                if atak_forwarder is not None:
-                    portnum_values.add(int(atak_forwarder))
-                return int(portnum) in portnum_values
+                numeric_portnum = int(portnum)
+                return (
+                    numeric_portnum == MESHTASTIC_ATAK_FORWARDER_PORTNUM
+                    or (atak_forwarder is not None and numeric_portnum == int(atak_forwarder))
+                )
             except (TypeError, ValueError):
                 return False
         try:
