@@ -118,6 +118,8 @@ MESHTASTIC_FORWARDER_FRAGMENT_PAYLOAD_BYTES = (
 )
 DEFAULT_MESHTASTIC_CHANNEL_INDEX = 0
 GEOCHAT_UID_PREFIX = "GeoChat."
+MESHTASTIC_PLI_COT_EVENT_TYPE = "a-f-G-U-C"
+MESHTASTIC_PLI_COT_EVENT_TYPE_NORMALIZED = MESHTASTIC_PLI_COT_EVENT_TYPE.lower()
 MESHTASTIC_DEFAULT_TEAM_ENUM = 1  # White
 MESHTASTIC_DEFAULT_ROLE_ENUM = 1  # TeamMember
 MESHTASTIC_TEAM_NAME_TO_ENUM = {
@@ -898,7 +900,7 @@ def _classify_cot_event_type(event_type):
     normalized = str(event_type or "").strip().lower()
     if normalized == "b-t-f":
         return "chat"
-    if normalized == "a-f-g-u-c":
+    if normalized == MESHTASTIC_PLI_COT_EVENT_TYPE_NORMALIZED:
         return "pli"
     if _is_persistable_cot_type(normalized):
         return "marker"
@@ -906,7 +908,7 @@ def _classify_cot_event_type(event_type):
 
 
 def _is_meshtastic_pli_event_type(event_type):
-    return str(event_type or "").strip().lower() == "a-f-g-u-c"
+    return str(event_type or "").strip().lower() == MESHTASTIC_PLI_COT_EVENT_TYPE_NORMALIZED
 
 
 def _get_cot_subject_label(metadata):
@@ -3066,6 +3068,9 @@ class TAKMeshtasticGateway:
 
         cot_class = detail_candidate.get("cot_class") or "generic"
         if cot_class in {"marker", "generic"}:
+            # Marker/generic CoT packets prefer the smallest detail=7 variants first so
+            # uid/type/how/point/detail semantics stay on the ATAK plugin path longer
+            # before the gateway has to fall back to ATAK_FORWARDER fragmentation.
             payload_variants = (
                 {"compressed": True, "contact": False, "group": False, "status": False},
                 {"compressed": False, "contact": False, "group": False, "status": False},
@@ -3341,7 +3346,7 @@ class TAKMeshtasticGateway:
         event = Element("event", {
             "version": "2.0",
             "uid": sender_uid,
-            "type": "a-f-G-U-C",
+            "type": MESHTASTIC_PLI_COT_EVENT_TYPE,
             "how": "m-g",
             "start": timestamp,
             "time": timestamp,
@@ -3359,7 +3364,7 @@ class TAKMeshtasticGateway:
         SubElement(detail, "link", {
             "uid": sender_uid,
             "relation": "p-p",
-            "type": "a-f-G-U-C",
+            "type": MESHTASTIC_PLI_COT_EVENT_TYPE,
         })
         SubElement(detail, "__group", {"name": team_name, "role": role_name})
         SubElement(detail, "status", {"battery": str(battery)})
@@ -3554,7 +3559,7 @@ class TAKMeshtasticGateway:
         SubElement(detail, 'link', {
             'uid': sender_uid,
             'relation': 'p-p',
-            'type': 'a-f-G-U-C',
+            'type': MESHTASTIC_PLI_COT_EVENT_TYPE,
         })
         remarks = SubElement(detail, 'remarks', {
             'source': f"BAO.F.ATAK.{sender_uid}",
@@ -4237,11 +4242,12 @@ class TAKMeshtasticGateway:
             if detail_packet is not None:
                 try:
                     transport_subject = _get_cot_subject_label(metadata)
-                    self.logger.debug(
-                        f"{transport_subject} nutzt ATAK_PLUGIN-detail=7: uid={detail_packet['uid']} "
-                        f"compressed={detail_packet['is_compressed']} payload_bytes={len(detail_packet['payload'])} "
-                        f"serialized={_build_safe_payload_snippet(detail_packet['payload'])}"
-                    )
+                    if self.logger.isEnabledFor(logging.DEBUG):
+                        self.logger.debug(
+                            f"{transport_subject} nutzt ATAK_PLUGIN-detail=7: uid={detail_packet['uid']} "
+                            f"compressed={detail_packet['is_compressed']} payload_bytes={len(detail_packet['payload'])} "
+                            f"serialized={_build_safe_payload_snippet(detail_packet['payload'])}"
+                        )
                     self._send_data_to_interfaces(
                         detail_packet["payload"],
                         interfaces,
@@ -4264,11 +4270,12 @@ class TAKMeshtasticGateway:
             raise ValueError(EMPTY_MESHTASTIC_COT_ERROR)
         try:
             transport_subject = _get_cot_subject_label(metadata)
-            self.logger.debug(
-                f"{transport_subject} via ATAK_FORWARDER komprimiert: "
-                f"xml_bytes={len(_ensure_bytes(normalized_packet))} compressed_bytes={len(forwarder_payload)} "
-                f"serialized={_build_safe_payload_snippet(forwarder_payload)}"
-            )
+            if self.logger.isEnabledFor(logging.DEBUG):
+                self.logger.debug(
+                    f"{transport_subject} via ATAK_FORWARDER komprimiert: "
+                    f"xml_bytes={len(_ensure_bytes(normalized_packet))} compressed_bytes={len(forwarder_payload)} "
+                    f"serialized={_build_safe_payload_snippet(forwarder_payload)}"
+                )
             forwarder_packets = self._prepare_meshtastic_forwarder_packets(forwarder_payload)
             self.logger.debug(
                 f"{transport_subject} via ATAK_FORWARDER verpackt: paketanzahl={len(forwarder_packets)} "
@@ -5474,7 +5481,7 @@ class TAKMeshtasticGateway:
 
             event = Element('event', {
                 'how': 'm-g',
-                'type': 'a-f-G-U-C',
+                'type': MESHTASTIC_PLI_COT_EVENT_TYPE,
                 'uid': uid,
                 'start': t,
                 'time': t,
