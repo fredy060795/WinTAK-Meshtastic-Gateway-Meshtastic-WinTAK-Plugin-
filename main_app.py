@@ -2671,7 +2671,7 @@ class TAKMeshtasticGateway:
             return None
         point = _find_child_by_local_name(root, "point")
         detail = _find_child_by_local_name(root, "detail")
-        if point is None or detail is None:
+        if point is None:
             return None
         lat = _coerce_cot_point_float(point.get("lat"))
         lon = _coerce_cot_point_float(point.get("lon"))
@@ -2694,7 +2694,10 @@ class TAKMeshtasticGateway:
             "hae": _coerce_cot_point_float(point.get("hae")),
             "ce": _coerce_cot_point_float(point.get("ce")),
             "le": _coerce_cot_point_float(point.get("le")),
-            "has_meshtastic_marker": _find_descendant_by_local_name(detail, "__meshtastic") is not None,
+            "has_meshtastic_marker": (
+                detail is not None
+                and _find_descendant_by_local_name(detail, "__meshtastic") is not None
+            ),
         }
 
     def _normalize_generic_cot_event(self, packet_xml, add_meshtastic_marker=False):
