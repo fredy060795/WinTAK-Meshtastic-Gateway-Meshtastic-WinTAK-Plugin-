@@ -4430,7 +4430,6 @@ class TAKMeshtasticGateway:
         event_type = str(root.get("type") or "").lower()
         has_chat_identity = event_uid.startswith(GEOCHAT_UID_PREFIX) or event_type.startswith("b-t-f")
         has_chat_elements = any(element is not None for element in (chat, chat_note, chatgrp))
-        has_chat_remarks = _looks_like_tak_chat_remarks(remarks)
         has_chat_message_fields = _has_tak_chat_message_fields(detail)
         generic_message_nodes = []
         for element in detail.iter():
@@ -4458,7 +4457,7 @@ class TAKMeshtasticGateway:
             message = _extract_latest_wintak_chat_attribute_message(detail)
         if not message:
             return None
-        if not (has_chat_identity or has_chat_elements or has_chat_remarks or has_chat_message_fields):
+        if not (has_chat_identity or has_chat_elements or has_chat_message_fields):
             return None
 
         link = _find_descendant_by_local_name(detail, "link")
