@@ -3829,7 +3829,20 @@ class TAKMeshtasticGateway:
         for iface in interfaces:
             try:
                 kwargs = self._build_meshtastic_send_data_kwargs(iface, portnum)
-                iface.sendData(payload, **kwargs)
+                try:
+                    iface.sendData(payload, **kwargs)
+                except Exception as exc:
+                    compatibility_kwargs = dict(kwargs)
+                    removed_destination = compatibility_kwargs.pop("destinationId", None)
+                    if removed_destination is None:
+                        removed_destination = compatibility_kwargs.pop("destination_id", None)
+                    if removed_destination is None:
+                        raise
+                    self.logger.debug(
+                        "Meshtastic-sendData-Broadcast wird ohne destinationId erneut versucht: "
+                        f"iface={self._get_interface_label(iface)} port={portnum} previous_destination={removed_destination}"
+                    )
+                    iface.sendData(payload, **compatibility_kwargs)
                 sent_interfaces.append(iface)
             except Exception as exc:
                 last_error = exc
