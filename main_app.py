@@ -4222,17 +4222,24 @@ class TAKMeshtasticGateway:
                 f"{exc}"
             )
 
-        cot_chunks = self._prepare_meshtastic_cot_chunks(normalized_packet)
-        if not cot_chunks:
-            raise ValueError(EMPTY_MESHTASTIC_COT_ERROR)
-        self.logger.debug(
-            f"Generic-CoT als Legacy-COTM-Kurztext fragmentiert: paketanzahl={len(cot_chunks)}"
-        )
-        for chunk in cot_chunks:
-            self._send_text_to_interfaces(chunk, interfaces)
-            interfaces = self._get_interfaces_snapshot()
-            self._remember_recent_chat(self.recent_meshtastic_outbound_texts, chunk)
-        return {"transport": "LEGACY_COTM", "count": len(cot_chunks)}
+        try:
+            cot_chunks = self._prepare_meshtastic_cot_chunks(normalized_packet)
+            if not cot_chunks:
+                raise ValueError(EMPTY_MESHTASTIC_COT_ERROR)
+            self.logger.debug(
+                f"Generic-CoT als Legacy-COTM-Kurztext fragmentiert: paketanzahl={len(cot_chunks)}"
+            )
+            for chunk in cot_chunks:
+                self._send_text_to_interfaces(chunk, interfaces)
+                interfaces = self._get_interfaces_snapshot()
+                self._remember_recent_chat(self.recent_meshtastic_outbound_texts, chunk)
+            return {"transport": "LEGACY_COTM", "count": len(cot_chunks)}
+        except Exception as exc:
+            self.logger.warning(
+                "Legacy-COTM-Kurztext-Senden als letzter Fallback fehlgeschlagen: "
+                f"{exc}"
+            )
+            raise
 
     def send_cot_to_meshtastic(self, packet_xml):
         """Send a full TAK/CoT ``<event>`` XML payload into the Meshtastic pipeline.
