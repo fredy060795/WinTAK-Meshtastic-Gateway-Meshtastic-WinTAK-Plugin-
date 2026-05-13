@@ -458,6 +458,31 @@ def _ensure_bytes(value):
     return str(value or "").encode("utf-8")
 
 
+def _strip_invalid_xml_chars(text):
+    if not text:
+        return ""
+    return "".join(
+        char
+        for char in str(text)
+        if (
+            char in "\t\n\r"
+            or 0x20 <= ord(char) <= 0xD7FF
+            or 0xE000 <= ord(char) <= 0xFFFD
+            or 0x10000 <= ord(char) <= 0x10FFFF
+        )
+    )
+
+
+def _normalize_tak_xml_payload(packet_xml):
+    normalized_bytes = _extract_first_tak_event(packet_xml)
+    if not normalized_bytes:
+        normalized_bytes = _decode_tak_packet_bytes(packet_xml)
+    normalized_text = _strip_invalid_xml_chars(
+        _ensure_bytes(normalized_bytes).decode("utf-8", errors="ignore")
+    ).strip()
+    return normalized_text.encode("utf-8")
+
+
 def _is_xml_text(text):
     stripped = str(text or "").lstrip(UTF8_BOM_CHAR).strip()
     return stripped.startswith("<") and ">" in stripped
@@ -2695,6 +2720,9 @@ class TAKMeshtasticGateway:
         }
 
     def _normalize_generic_cot_event(self, packet_xml, add_meshtastic_marker=False):
+        packet_xml = _normalize_tak_xml_payload(packet_xml)
+        if not packet_xml:
+            return None, None, "CoT-Payload ist leer"
         try:
             root = fromstring(packet_xml)
         except (ParseError, TypeError, ValueError) as exc:
@@ -4181,10 +4209,7 @@ class TAKMeshtasticGateway:
         return total_sent
 
     def _normalize_inbound_tak_packet(self, packet_xml):
-        packet_bytes = _ensure_bytes(packet_xml)
-        if packet_bytes.startswith(b"\xef\xbb\xbf"):
-            packet_bytes = packet_bytes[3:]
-        return _extract_first_tak_event(packet_bytes)
+        return _normalize_tak_xml_payload(packet_xml)
 
     def _extract_tak_events_from_stream_buffer(self, buffer_text):
         events = []
