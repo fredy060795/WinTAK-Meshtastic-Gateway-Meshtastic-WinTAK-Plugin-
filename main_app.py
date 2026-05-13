@@ -2736,11 +2736,6 @@ class TAKMeshtasticGateway:
             matched.append(iface)
         return matched
 
-    def _raise_with_optional_cause(self, error, cause=None):
-        if cause is not None:
-            raise error from cause
-        raise error
-
     def _get_interfaces_snapshot(self):
         with self.interface_lock:
             return list(self.interfaces)
@@ -2938,10 +2933,10 @@ class TAKMeshtasticGateway:
             ]
             if missing_retry_labels:
                 failure = RuntimeError(
-                    "Meshtastic-Nachricht konnte nach COM-Neuverbindung nicht an folgende Ports gesendet werden: "
-                    + ", ".join(missing_retry_labels)
+                    f"Meshtastic-Nachricht konnte nach COM-Neuverbindung nicht an folgende Ports gesendet werden: "
+                    f"{', '.join(missing_retry_labels)}"
                 )
-                self._raise_with_optional_cause(failure, last_error)
+                raise failure from last_error
             if retry_targets:
                 try:
                     retried_interfaces = self._send_text_to_interfaces(
@@ -2958,10 +2953,10 @@ class TAKMeshtasticGateway:
                     raise retry_exc from last_error
         if normalized_failed_labels:
             failure = RuntimeError(
-                "Meshtastic-Nachricht konnte nicht an alle verbundenen Ports gesendet werden: "
-                + ", ".join(normalized_failed_labels)
+                f"Meshtastic-Nachricht konnte nicht an alle verbundenen Ports gesendet werden: "
+                f"{', '.join(normalized_failed_labels)}"
             )
-            self._raise_with_optional_cause(failure, last_error)
+            raise failure from last_error
         return sent_interfaces
 
     def _send_data_to_interfaces(self, payload, interfaces, portnum, allow_reconnect=True):
@@ -3005,10 +3000,10 @@ class TAKMeshtasticGateway:
             ]
             if missing_retry_labels:
                 failure = RuntimeError(
-                    "Meshtastic-Datenpaket konnte nach COM-Neuverbindung nicht an folgende Ports gesendet werden: "
-                    + ", ".join(missing_retry_labels)
+                    f"Meshtastic-Datenpaket konnte nach COM-Neuverbindung nicht an folgende Ports gesendet werden: "
+                    f"{', '.join(missing_retry_labels)}"
                 )
-                self._raise_with_optional_cause(failure, last_error)
+                raise failure from last_error
             if retry_targets:
                 try:
                     retried_interfaces = self._send_data_to_interfaces(
@@ -3026,10 +3021,10 @@ class TAKMeshtasticGateway:
                     raise retry_exc from last_error
         if normalized_failed_labels:
             failure = RuntimeError(
-                "Meshtastic-Datenpaket konnte nicht an alle verbundenen Ports gesendet werden: "
-                + ", ".join(normalized_failed_labels)
+                f"Meshtastic-Datenpaket konnte nicht an alle verbundenen Ports gesendet werden: "
+                f"{', '.join(normalized_failed_labels)}"
             )
-            self._raise_with_optional_cause(failure, last_error)
+            raise failure from last_error
         return sent_interfaces
 
     def _get_relay_targets(self, source_interface, interfaces=None):
