@@ -664,7 +664,8 @@ def _fountain_decode(blocks, K, total_length, block_size=FOUNTAIN_BLOCK_SIZE):
             remaining = set()
             for idx in indices:
                 if is_decoded[idx]:
-                    for j in range(min(len(payload), len(decoded[idx]))):
+                    xor_len = min(len(payload), len(decoded[idx]))
+                    for j in range(xor_len):
                         payload[j] ^= decoded[idx][j]
                 else:
                     remaining.add(idx)
