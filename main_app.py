@@ -3567,7 +3567,7 @@ class TAKMeshtasticGateway:
             or DEFAULT_CHATROOM_NAME
         )
         message_hash = hashlib.sha256(_ensure_bytes(message)).hexdigest()[:16]
-        message_id = f"{sender_uid}-{message_hash}-{int(time.time() * 1000)}"
+        message_id = f"{sender_uid}-{message_hash}-{(time.time_ns() // 1_000_000)}"
         event = Element('event', {
             'version': '2.0',
             'uid': f"GeoChat.{sender_uid}.{message_id}",
@@ -3604,7 +3604,7 @@ class TAKMeshtasticGateway:
             'type': MESHTASTIC_PLI_COT_EVENT_TYPE,
         })
         SubElement(detail, '__serverdestination', {
-            'destination': f"0.0.0.0:4242:tcp:{sender_uid}",
+            'destination': f"0.0.0.0:{self.chat_listen_port}:tcp:{sender_uid}",
         })
         remarks = SubElement(detail, 'remarks', {
             'source': f"BAO.F.ATAK.{sender_uid}",
