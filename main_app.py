@@ -3246,6 +3246,8 @@ class TAKMeshtasticGateway:
                 "callsign": None,
                 "sender_uid": None,
                 "chatroom": DEFAULT_CHATROOM_NAME,
+                "recipient_uid": DEFAULT_CHATROOM_NAME,
+                "recipient_callsign": DEFAULT_CHATROOM_NAME,
             }
 
         if not self._is_atak_plugin_packet(packet):
@@ -3290,6 +3292,8 @@ class TAKMeshtasticGateway:
             "callsign": callsign,
             "sender_uid": sender_uid,
             "chatroom": chatroom,
+            "recipient_uid": chat.get("to") or chatroom,
+            "recipient_callsign": chat.get("to_callsign") or chatroom,
         }
 
     def _build_meshtastic_pli_cot_xml(self, packet, node=None):
@@ -3543,13 +3547,31 @@ class TAKMeshtasticGateway:
                             pass
                         self.sock_remote = None
 
-    def _build_chat_cot_xml(self, sender_uid, callsign, message, lat, lon, alt=0.0, chatroom=DEFAULT_CHATROOM_NAME):
+    def _build_chat_cot_xml(
+        self,
+        sender_uid,
+        callsign,
+        message,
+        lat,
+        lon,
+        alt=0.0,
+        chatroom=DEFAULT_CHATROOM_NAME,
+        recipient_uid=None,
+        recipient_callsign=None,
+    ):
         t = get_tak_timestamp()
         stale = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=10)).strftime('%Y-%m-%dT%H:%M:%S.000Z')
-        destination_id = chatroom or DEFAULT_CHATROOM_NAME
+        destination_uid = str(recipient_uid or chatroom or DEFAULT_CHATROOM_NAME).strip() or DEFAULT_CHATROOM_NAME
+        destination_callsign = (
+            str(recipient_callsign or chatroom or recipient_uid or DEFAULT_CHATROOM_NAME).strip()
+            or DEFAULT_CHATROOM_NAME
+        )
+        message_hash = hashlib.sha256(_ensure_bytes(message)).hexdigest()[:16]
+        message_timestamp_ms = time.time_ns() // 1_000_000
+        message_id = f"{sender_uid}-{message_hash}-{message_timestamp_ms}"
         event = Element('event', {
             'version': '2.0',
-            'uid': f"GeoChat.{sender_uid}.{uuid.uuid4()}",
+            'uid': f"GeoChat.{sender_uid}.{message_id}",
             'type': 'b-t-f',
             'how': 'h-g-i-g-o',
             'start': t,
@@ -3567,23 +3589,30 @@ class TAKMeshtasticGateway:
         chat = SubElement(detail, '__chat', {
             'parent': 'RootContactGroup',
             'groupOwner': 'false',
-            'chatroom': destination_id,
-            'id': destination_id,
+            'messageId': message_id,
+            'chatroom': destination_callsign,
+            'id': destination_uid,
             'senderCallsign': callsign,
         })
         SubElement(chat, 'chatgrp', {
             'uid0': sender_uid,
-            'uid1': destination_id,
-            'id': destination_id,
+            'uid1': destination_uid,
+            'id': destination_uid,
         })
         SubElement(detail, 'link', {
             'uid': sender_uid,
             'relation': 'p-p',
             'type': MESHTASTIC_PLI_COT_EVENT_TYPE,
         })
+        server_destination_host = str(getattr(self, "chat_listen_ip", "0.0.0.0") or "0.0.0.0").strip() or "0.0.0.0"
+        if server_destination_host in {"*", "::"}:
+            server_destination_host = "0.0.0.0"
+        SubElement(detail, '__serverdestination', {
+            'destination': f"{server_destination_host}:{self.chat_listen_port}:tcp:{sender_uid}",
+        })
         remarks = SubElement(detail, 'remarks', {
             'source': f"BAO.F.ATAK.{sender_uid}",
-            'to': destination_id,
+            'to': destination_uid,
             'time': t,
         })
         remarks.text = message
@@ -4419,9 +4448,30 @@ class TAKMeshtasticGateway:
 
         return self._forward_meshtastic_cot_xml_to_tak(packet_xml, from_id)
 
-    def send_chat_to_tak(self, sender_uid, callsign, message, lat, lon, alt=0.0, chatroom=DEFAULT_CHATROOM_NAME):
+    def send_chat_to_tak(
+        self,
+        sender_uid,
+        callsign,
+        message,
+        lat,
+        lon,
+        alt=0.0,
+        chatroom=DEFAULT_CHATROOM_NAME,
+        recipient_uid=None,
+        recipient_callsign=None,
+    ):
         try:
-            packet_xml = self._build_chat_cot_xml(sender_uid, callsign, message, lat, lon, alt, chatroom=chatroom)
+            packet_xml = self._build_chat_cot_xml(
+                sender_uid,
+                callsign,
+                message,
+                lat,
+                lon,
+                alt,
+                chatroom=chatroom,
+                recipient_uid=recipient_uid,
+                recipient_callsign=recipient_callsign,
+            )
             self._send_packet_to_tak(packet_xml, f"Chat {callsign}")
         except Exception:
             self.logger.error("Fehler in send_chat_to_tak:\n" + traceback.format_exc())
@@ -4465,8 +4515,20 @@ class TAKMeshtasticGateway:
         sender_uid = chat_payload.get("sender_uid") or normalize_meshtastic_uid(raw_uid)
         callsign = chat_payload.get("callsign") or user.get('longName') or user.get('shortName') or sender_uid
         chatroom = chat_payload.get("chatroom") or DEFAULT_CHATROOM_NAME
+        recipient_uid = chat_payload.get("recipient_uid") or chatroom
+        recipient_callsign = chat_payload.get("recipient_callsign") or chatroom
         lat, lon, alt = self._resolve_chat_position(sender_uid, node=node)
-        self.send_chat_to_tak(sender_uid, callsign, message, lat, lon, alt, chatroom=chatroom)
+        self.send_chat_to_tak(
+            sender_uid,
+            callsign,
+            message,
+            lat,
+            lon,
+            alt,
+            chatroom=chatroom,
+            recipient_uid=recipient_uid,
+            recipient_callsign=recipient_callsign,
+        )
         self.logger.info(f"Meshtastic-Chat nach TAK weitergeleitet: {callsign}: {message}")
         return True
 
@@ -4611,28 +4673,39 @@ class TAKMeshtasticGateway:
         if not sender_callsign:
             sender_callsign = "UNKNOWN-SENDER"
 
-        chatroom = DEFAULT_CHATROOM_NAME
+        recipient_uid = ""
+        recipient_callsign = DEFAULT_CHATROOM_NAME
         if chat is not None:
-            chatroom = (
+            recipient_uid = chat.get("id") or chat.get("uid") or recipient_uid
+            recipient_callsign = (
                 chat.get("chatroom")
                 or chat.get("chatRoom")
-                or chat.get("id")
-                or chat.get("parent")
-                or chatroom
+                or chat.get("name")
+                or recipient_callsign
             )
-        if chatroom == DEFAULT_CHATROOM_NAME and chatgrp is not None:
-            chatroom = chatgrp.get("id") or chatgrp.get("name") or chatroom
-        # WinTAK GeoChat UIDs typically follow GeoChat.<sender>.<chatroom>.<messageId>.
-        if chatroom == DEFAULT_CHATROOM_NAME and len(uid_parts) >= 3:
-            chatroom = uid_parts[2] or chatroom
-        if chatroom == DEFAULT_CHATROOM_NAME and remarks is not None:
-            chatroom = remarks.get("to") or chatroom
+        if chatgrp is not None:
+            recipient_uid = recipient_uid or chatgrp.get("uid1") or chatgrp.get("id")
+            if recipient_callsign == DEFAULT_CHATROOM_NAME:
+                recipient_callsign = chatgrp.get("name") or chatgrp.get("id") or recipient_callsign
+        if recipient_callsign == DEFAULT_CHATROOM_NAME and len(uid_parts) >= 3:
+            recipient_callsign = uid_parts[2] or recipient_callsign
+        if remarks is not None:
+            remarks_to = remarks.get("to")
+            if _looks_like_valid_tak_uid(remarks_to):
+                recipient_uid = remarks_to or recipient_uid
+        if not recipient_uid:
+            recipient_uid = recipient_callsign or DEFAULT_CHATROOM_NAME
+        if recipient_callsign == DEFAULT_CHATROOM_NAME and recipient_uid:
+            recipient_callsign = recipient_uid
+        chatroom = recipient_callsign or recipient_uid or DEFAULT_CHATROOM_NAME
 
         return {
             "event_uid": root.get("uid"),
             "sender_uid": sender_uid,
             "sender_callsign": sender_callsign,
             "chatroom": chatroom,
+            "recipient_uid": recipient_uid,
+            "recipient_callsign": recipient_callsign,
             "message": message,
         }
 
@@ -4649,6 +4722,76 @@ class TAKMeshtasticGateway:
         if total_sent <= 0:
             raise RuntimeError("TAK-Chat konnte an kein Meshtastic-Interface gesendet werden.")
         return total_sent
+
+    def _build_meshtastic_geochat_payload(self, chat_payload):
+        message = str(chat_payload.get("message") or "").strip()
+        if not message:
+            raise ValueError("Leere TAK-Chatnachricht kann nicht als ATAK GeoChat kodiert werden.")
+
+        sender_uid = str(chat_payload.get("sender_uid") or self.gateway_uid or "UNKNOWN-SENDER").strip() or "UNKNOWN-SENDER"
+        sender_callsign = (
+            str(chat_payload.get("sender_callsign") or self.gateway_callsign or sender_uid).strip() or sender_uid
+        )
+        recipient_uid = (
+            str(chat_payload.get("recipient_uid") or chat_payload.get("chatroom") or DEFAULT_CHATROOM_NAME).strip()
+            or DEFAULT_CHATROOM_NAME
+        )
+        recipient_callsign = (
+            str(chat_payload.get("recipient_callsign") or chat_payload.get("chatroom") or recipient_uid).strip()
+            or recipient_uid
+        )
+
+        contact_payload = self._build_meshtastic_contact_payload(
+            {
+                "callsign": sender_callsign,
+                "device_callsign": sender_uid,
+            }
+        )
+        geochat_payload = b"".join(
+            (
+                _encode_protobuf_string_field(1, message),
+                _encode_protobuf_string_field(2, recipient_uid),
+                _encode_protobuf_string_field(3, recipient_callsign),
+            )
+        )
+        payload = b"".join(
+            (
+                _encode_protobuf_message_field(2, contact_payload),
+                _encode_protobuf_message_field(6, geochat_payload),
+            )
+        )
+        if not payload:
+            raise ValueError("ATAK GeoChat-Payload konnte nicht erzeugt werden.")
+        return payload
+
+    def _send_tak_chat_to_meshtastic(self, chat_payload):
+        payload = self._build_meshtastic_geochat_payload(chat_payload)
+        interfaces = self._ensure_meshtastic_interfaces(raise_on_empty=True)
+        if any(getattr(iface, "sendData", None) is None for iface in interfaces):
+            sent_chunks = self._prepare_meshtastic_text_chunks(chat_payload.get("message"))
+            total_sent = self._send_text_to_meshtastic(chat_payload.get("message"), prepared_chunks=sent_chunks)
+            return {
+                "transport": "TEXT_MESSAGE_APP",
+                "count": total_sent,
+                "chunks": len(sent_chunks),
+            }
+        try:
+            sent_interfaces = self._send_data_to_interfaces(payload, interfaces, MESHTASTIC_ATAK_PLUGIN_PORTNUM)
+            return {
+                "transport": "ATAK_PLUGIN_CHAT",
+                "count": len(sent_interfaces),
+                "chunks": 1,
+            }
+        except Exception as exc:
+            if not _is_meshtastic_payload_too_big_error(exc):
+                raise
+            sent_chunks = self._prepare_meshtastic_text_chunks(chat_payload.get("message"))
+            total_sent = self._send_text_to_meshtastic(chat_payload.get("message"), prepared_chunks=sent_chunks)
+            return {
+                "transport": "TEXT_MESSAGE_APP",
+                "count": total_sent,
+                "chunks": len(sent_chunks),
+            }
 
     def _normalize_inbound_tak_packet(self, packet_xml):
         return _normalize_tak_xml_payload(packet_xml)
@@ -4915,19 +5058,26 @@ class TAKMeshtasticGateway:
                     pass
 
             try:
-                sent_chunks = self._prepare_meshtastic_text_chunks(chat_payload["message"])
-                total_sent = self._send_text_to_meshtastic(chat_payload["message"], prepared_chunks=sent_chunks)
+                send_result = self._send_tak_chat_to_meshtastic(chat_payload)
             except Exception as exc:
                 self.logger.warning(f"TAK-Chat konnte nicht ins Mesh gesendet werden: {exc}")
                 self.logger.debug("Fehler beim Senden von TAK-Chat ins Mesh:\n" + traceback.format_exc())
                 return
             self._remember_recent_chat(self.recent_tak_chat_ids, dedupe_key)
-            for chunk in sent_chunks:
-                self._remember_recent_chat(self.recent_meshtastic_outbound_texts, chunk)
+            self._remember_recent_chat(self.recent_meshtastic_outbound_texts, chat_payload["message"])
             src = chat_payload["sender_callsign"]
-            if len(sent_chunks) > 1:
+            transport = send_result.get("transport")
+            total_sent = int(send_result.get("count") or 0)
+            sent_chunk_count = int(send_result.get("chunks") or 1)
+            destination_label = chat_payload.get("recipient_callsign") or chat_payload.get("recipient_uid")
+            if transport == "ATAK_PLUGIN_CHAT":
                 self.logger.info(
-                    f"TAK-Chat wurde in {len(sent_chunks)} Mesh-Nachrichten über {total_sent} Interface(s) gesendet: "
+                    f"TAK-Chat als ATAK GeoChat ins Mesh über {total_sent} Interface(s) gesendet: "
+                    f"{src} -> {destination_label}: {chat_payload['message']}"
+                )
+            elif sent_chunk_count > 1:
+                self.logger.info(
+                    f"TAK-Chat wurde in {sent_chunk_count} Mesh-Nachrichten über {total_sent} Interface(s) gesendet: "
                     f"{src}: {chat_payload['message']}"
                 )
             else:
