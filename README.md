@@ -11,7 +11,7 @@ The gateway reads position data and text messages from Meshtastic nodes over a s
 |---|---|
 | **Dual-Streaming** | Sends CoT data simultaneously to local WinTAK (UDP 4242) and a remote TAK Server (TCP/UDP). |
 | **Chat Bridging** | Forwards Meshtastic text messages to TAK GeoChat and can relay GeoChat messages from WinTAK back into the mesh. |
-| **CoT over Mesh** | Friendly position reports stay on official Meshtastic `ATAK_PLUGIN` PLI packets, while marker/generic CoT events now keep their original iTAK-style CoT semantics on a dedicated marker transport path that prefers `ATAK_PLUGIN` `detail=7` and only falls back to zlib-compressed `ATAK_FORWARDER` when the packet is too large. |
+| **CoT over Mesh** | Friendly position reports stay on official Meshtastic `ATAK_PLUGIN` PLI packets, while marker/generic CoT events keep their original iTAK-style CoT semantics on the official `ATAK_FORWARDER` transport path for maximum ATAK/iTAK compatibility. |
 | **COM Relay Mode** | Incoming Meshtastic text from one selected COM port can be forwarded automatically to the other selected COM ports. |
 | **Automatic Reconnect** | Maintains the remote TAK Server connection with automatic retry on disconnect. |
 | **All-Nodes Visibility** | All nodes are forwarded to TAK by default. Nodes with valid GPS (including phone GPS shared over mesh) appear at their real position; nodes without current GPS use their last known position when available, otherwise configurable fallback coordinates. |
