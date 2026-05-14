@@ -120,6 +120,15 @@ MESHTASTIC_TRANSFER_TYPE_COT = 0x00
 MESHTASTIC_TRANSFER_TYPE_FILE = 0x01
 MESHTASTIC_TRANSFER_TYPE_COT_ASCII = 0x30  # '0'
 MESHTASTIC_TRANSFER_TYPE_FILE_ASCII = 0x31  # '1'
+
+# Fountain code (FTN) constants — matching meshtastic/ATAK-Plugin FountainPacket.java
+FOUNTAIN_MAGIC = b"FTN"
+FOUNTAIN_BLOCK_SIZE = 214        # FountainPacket.MAX_PAYLOAD_SIZE
+FOUNTAIN_DATA_HEADER_SIZE = 11   # MAGIC(3)+xfer_id(3)+seed(2)+K(1)+total_len(2)
+FOUNTAIN_ACK_SIZE = 19           # MAGIC(3)+xfer_id(3)+type(1)+recv(2)+need(2)+hash(8)
+FOUNTAIN_C = 0.1                 # Robust Soliton parameter c (FountainCodec default)
+FOUNTAIN_DELTA = 0.5             # Robust Soliton parameter delta (FountainCodec default)
+FOUNTAIN_RECEIVE_TTL_SECONDS = 300
 DEFAULT_MESHTASTIC_CHANNEL_INDEX = 0
 GEOCHAT_UID_PREFIX = "GeoChat."
 MESHTASTIC_PLI_COT_EVENT_TYPE = "a-f-G-U-C"
@@ -532,6 +541,267 @@ def _strip_invalid_xml_chars(text):
             or 0x10000 <= ord(char) <= 0x10FFFF
         )
     )
+
+
+# ─────────────────── Fountain Code (FTN) helpers ──────────────────────────
+# Implements the LT-code fountain codec used by meshtastic/ATAK-Plugin for
+# large ATAK_FORWARDER payloads.  The algorithm is a strict port of
+# FountainCodec.java / FountainPacket.java (meshtastic/ATAK-Plugin).
+
+class _JavaRandom:
+    """Mimics java.util.Random (LCG, 48-bit state) for fountain-code compatibility."""
+    _MUL = 0x5DEECE66D
+    _ADD = 0xB
+    _MASK = (1 << 48) - 1
+
+    def __init__(self, seed):
+        self.state = (int(seed) ^ self._MUL) & self._MASK
+
+    def _next(self, bits):
+        self.state = (self.state * self._MUL + self._ADD) & self._MASK
+        return self.state >> (48 - bits)
+
+    def next_int(self, bound=None):
+        if bound is None:
+            return self._next(32)
+        if bound <= 0:
+            raise ValueError("bound must be positive")
+        if (bound & -bound) == bound:          # power of 2 fast path
+            return (bound * self._next(31)) >> 31
+        while True:
+            bits = self._next(31)
+            val = bits % bound
+            if bits - val + (bound - 1) >= 0:
+                return val
+
+    def next_double(self):
+        return ((self._next(26) << 27) + self._next(27)) / float(1 << 53)
+
+
+def _fountain_robust_soliton_cdf(K, c=FOUNTAIN_C, delta=FOUNTAIN_DELTA):
+    """Build Robust Soliton CDF (matches FountainCodec.buildRobustSolitonCDF)."""
+    rho = [0.0] * (K + 1)
+    tau = [0.0] * (K + 1)
+    cdf = [0.0] * (K + 1)
+    rho[1] = 1.0 / K
+    for d in range(2, K + 1):
+        rho[d] = 1.0 / (d * (d - 1))
+    S = c * math.log(K / delta) * math.sqrt(K)
+    threshold = int(math.floor(K / S))
+    for d in range(1, K + 1):
+        if d < threshold:
+            tau[d] = S / (K * d)
+        elif d == threshold:
+            tau[d] = S * math.log(S / delta) / K
+    Z = sum(rho[d] + tau[d] for d in range(1, K + 1))
+    cumulative = 0.0
+    for d in range(1, K + 1):
+        cumulative += (rho[d] + tau[d]) / Z
+        cdf[d] = cumulative
+    return cdf
+
+
+def _fountain_sample_degree(rng, K):
+    """Sample degree from Robust Soliton distribution."""
+    cdf = _fountain_robust_soliton_cdf(K)
+    u = rng.next_double()
+    for d in range(1, K + 1):
+        if u <= cdf[d]:
+            return d
+    return K
+
+
+def _fountain_select_indices(rng, K, degree):
+    """Select *degree* source-block indices without replacement (matches Java selectIndices)."""
+    degree = min(degree, K)
+    selected = set()
+    while len(selected) < degree:
+        selected.add(rng.next_int(K))
+    return sorted(selected)
+
+
+def _fountain_regenerate_indices(seed, K, transfer_id):
+    """Regenerate source-block indices from a received block's seed (decoder side).
+    Matches FountainCodec.regenerateIndices(seed, K, transferId)."""
+    rng = _JavaRandom(seed)
+    block0_seed = (transfer_id * 31337) & 0xFFFF
+    is_first_block = (seed == block0_seed)
+    # Always consume one degree sample to keep RNG in sync with the encoder
+    _fountain_sample_degree(rng, K)
+    if is_first_block:
+        degree = 1
+        return _fountain_select_indices(rng, K, degree)
+    # For non-first blocks: re-seed and sample again (matches Java logic)
+    rng = _JavaRandom(seed)
+    degree = _fountain_sample_degree(rng, K)
+    return _fountain_select_indices(rng, K, degree)
+
+
+def _fountain_decode(blocks, K, total_length, block_size=FOUNTAIN_BLOCK_SIZE):
+    """LT-code peeling decoder (matches FountainCodec.decode).
+
+    *blocks* is a list of ``(seed, transfer_id, raw_payload_bytes)`` tuples.
+    Returns the original data bytes on success, or ``None`` if decoding failed.
+    """
+    decoded = [None] * K
+    is_decoded = [False] * K
+    decoded_count = 0
+    working = []
+    for seed, transfer_id, payload in blocks:
+        indices = set(_fountain_regenerate_indices(seed, K, transfer_id))
+        padded = bytearray(block_size)
+        src = bytes(payload)
+        padded[:len(src)] = src[:block_size]
+        working.append([indices, padded])
+
+    progress = True
+    while progress and decoded_count < K:
+        progress = False
+        for i, wb in enumerate(working):
+            if wb is None:
+                continue
+            indices, payload = wb
+            remaining = set()
+            for idx in indices:
+                if is_decoded[idx]:
+                    for j in range(min(len(payload), len(decoded[idx]))):
+                        payload[j] ^= decoded[idx][j]
+                else:
+                    remaining.add(idx)
+            wb[0] = remaining
+            if len(remaining) == 1:
+                idx = next(iter(remaining))
+                decoded[idx] = bytes(payload)
+                is_decoded[idx] = True
+                decoded_count += 1
+                working[i] = None
+                progress = True
+            elif not remaining:
+                working[i] = None
+
+    if decoded_count < K:
+        return None
+    result = bytearray()
+    for block in decoded:
+        result.extend(block or bytes(block_size))
+    return bytes(result[:total_length])
+
+
+def _fountain_parse_data_block(raw):
+    """Parse a FTN data-block packet from raw bytes.
+    Returns a dict with keys (transfer_id, seed, K, total_len, payload) or None."""
+    if not raw or len(raw) < FOUNTAIN_DATA_HEADER_SIZE:
+        return None
+    raw = bytes(raw)
+    if raw[:3] != FOUNTAIN_MAGIC:
+        return None
+    # ACK packets have the same magic — length distinguishes them
+    if len(raw) == FOUNTAIN_ACK_SIZE:
+        return None  # ACK, not a data block
+    transfer_id = (raw[3] << 16) | (raw[4] << 8) | raw[5]
+    seed = (raw[6] << 8) | raw[7]
+    K = raw[8]
+    total_len = (raw[9] << 8) | raw[10]
+    payload = raw[FOUNTAIN_DATA_HEADER_SIZE:]
+    if K == 0 or total_len == 0 or not payload:
+        return None
+    return {
+        "transfer_id": transfer_id,
+        "seed": seed,
+        "K": K,
+        "total_len": total_len,
+        "payload": payload,
+    }
+
+
+def _fountain_generate_seed(transfer_id, block_index):
+    """Deterministic seed for a block (matches FountainCodec.generateSeed)."""
+    return (transfer_id * 31337 + block_index * 7919) & 0xFFFF
+
+
+def _fountain_encode(data, transfer_id):
+    """Encode *data* into FTN fountain packets (matches FountainChunkManager.send).
+
+    Returns a list of raw packet bytes (each ready to send as an ATAK_FORWARDER payload).
+    The transfer type byte (0x00 = COT) is prepended to *data* before encoding,
+    matching FountainChunkManager behaviour.
+    """
+    # Prepend transfer-type byte (0x00 = COT) — matches FountainChunkManager
+    payload_with_type = bytes([MESHTASTIC_TRANSFER_TYPE_COT]) + bytes(data)
+    total = len(payload_with_type)
+    K = math.ceil(total / FOUNTAIN_BLOCK_SIZE)
+    if K == 0:
+        return []
+    source_blocks = []
+    for i in range(K):
+        start = i * FOUNTAIN_BLOCK_SIZE
+        block = payload_with_type[start:start + FOUNTAIN_BLOCK_SIZE]
+        if len(block) < FOUNTAIN_BLOCK_SIZE:
+            block = block + b"\x00" * (FOUNTAIN_BLOCK_SIZE - len(block))
+        source_blocks.append(bytearray(block))
+    # Adaptive overhead: 50% for K≤10, 25% for K≤50, else 15%
+    if K <= 10:
+        overhead = 0.50
+    elif K <= 50:
+        overhead = 0.25
+    else:
+        overhead = 0.15
+    num_blocks = math.ceil(K * (1 + overhead))
+    packets = []
+    for i in range(num_blocks):
+        seed = _fountain_generate_seed(transfer_id, i)
+        rng = _JavaRandom(seed)
+        if i == 0:
+            # Block 0: forced degree 1; advance RNG past sampleDegree first
+            _fountain_sample_degree(rng, K)
+            indices = _fountain_select_indices(rng, K, 1)
+        else:
+            degree = _fountain_sample_degree(rng, K)
+            indices = _fountain_select_indices(rng, K, degree)
+        enc = bytearray(FOUNTAIN_BLOCK_SIZE)
+        for idx in indices:
+            for j in range(FOUNTAIN_BLOCK_SIZE):
+                enc[j] ^= source_blocks[idx][j]
+        packet = bytes([
+            FOUNTAIN_MAGIC[0], FOUNTAIN_MAGIC[1], FOUNTAIN_MAGIC[2],
+            (transfer_id >> 16) & 0xFF, (transfer_id >> 8) & 0xFF, transfer_id & 0xFF,
+            (seed >> 8) & 0xFF, seed & 0xFF,
+            K & 0xFF,
+            (total >> 8) & 0xFF, total & 0xFF,
+        ]) + bytes(enc)
+        packets.append(packet)
+    return packets
+
+
+def _fountain_decode_payload(data_bytes):
+    """Strip the transfer-type prefix and zlib-decompress a fountain-decoded payload.
+
+    Returns the CoT XML bytes on success, or ``None`` on failure.
+    """
+    if not data_bytes:
+        return None
+    # Strip leading transfer-type byte when present
+    if data_bytes[0] in (
+        MESHTASTIC_TRANSFER_TYPE_COT,
+        MESHTASTIC_TRANSFER_TYPE_COT_ASCII,
+        MESHTASTIC_TRANSFER_TYPE_FILE,
+        MESHTASTIC_TRANSFER_TYPE_FILE_ASCII,
+    ):
+        if data_bytes[0] in (MESHTASTIC_TRANSFER_TYPE_FILE, MESHTASTIC_TRANSFER_TYPE_FILE_ASCII):
+            return None  # File transfer — not a CoT
+        data_bytes = data_bytes[1:]
+    if not data_bytes:
+        return None
+    # Try standard zlib, then raw deflate, then raw XML
+    for wbits in (zlib.MAX_WBITS, -zlib.MAX_WBITS):
+        try:
+            return zlib.decompress(data_bytes, wbits)
+        except zlib.error:
+            continue
+    if data_bytes.lstrip().startswith(b"<"):
+        return data_bytes
+    return None
+# ──────────────────────────────────────────────────────────────────────────
 
 
 def _normalize_tak_xml_payload(packet_xml):
@@ -2615,6 +2885,7 @@ class TAKMeshtasticGateway:
         self.recent_cot_ids = {}
         self.partial_meshtastic_cot_messages = {}
         self.partial_meshtastic_forwarder_messages = {}
+        self.partial_fountain_transfers = {}   # FTN fountain-code receive state
         self.relay_text_messages = as_bool(self.cfg.get("relay_text_messages", True))
         self.relay_text_from_ports = {
             port.upper() for port in _config_ports_to_list(self.cfg.get("relay_text_from_ports"))
@@ -2770,6 +3041,13 @@ class TAKMeshtasticGateway:
                     expired_keys.append(key)
             for key in expired_keys:
                 self.partial_meshtastic_forwarder_messages.pop(key, None)
+            # Also expire stale FTN fountain transfers
+            ftn_expired = [
+                k for k, v in self.partial_fountain_transfers.items()
+                if now - v.get("updated_at", v.get("created_at", now)) > FOUNTAIN_RECEIVE_TTL_SECONDS
+            ]
+            for key in ftn_expired:
+                self.partial_fountain_transfers.pop(key, None)
 
     def _extract_cot_event_metadata(self, packet_xml):
         try:
@@ -4077,36 +4355,31 @@ class TAKMeshtasticGateway:
         return zlib.compress(packet_bytes)
 
     def _prepare_meshtastic_forwarder_packets(self, payload):
+        """Return a list of raw ATAK_FORWARDER payloads for *payload* bytes.
+
+        Single-packet path: if the zlib payload fits in one Meshtastic packet it
+        is returned as-is (identical to the reference behaviour for small CoT).
+
+        Multi-packet path: large payloads are encoded using the FTN fountain-code
+        protocol (meshtastic/ATAK-Plugin reference), replacing the old COTF
+        sequential fragment format.  FTN packets are understood by real ATAK/iTAK
+        clients, COTF is not.
+        """
         payload_bytes = _ensure_bytes(payload).strip()
         if not payload_bytes:
             return []
+        # Small enough for a single direct packet — reference sends raw zlib here
         if len(payload_bytes) <= MESHTASTIC_DATA_PAYLOAD_MAX_BYTES:
             return [payload_bytes]
-        if MESHTASTIC_FORWARDER_FRAGMENT_PAYLOAD_BYTES <= 0:
-            raise ValueError("Ungültige Meshtastic-Forwarder-Fragmentgröße konfiguriert.")
-
-        total_parts = math.ceil(len(payload_bytes) / MESHTASTIC_FORWARDER_FRAGMENT_PAYLOAD_BYTES)
-        if total_parts < 2 or total_parts > 255:
-            raise ValueError("Meshtastic-ATAK_FORWARDER-Payload kann nicht sinnvoll fragmentiert werden.")
-
-        message_id = uuid.uuid4().bytes[:MESHTASTIC_FORWARDER_FRAGMENT_MESSAGE_ID_BYTES]
-        packets = []
-        for index, offset in enumerate(
-            range(0, len(payload_bytes), MESHTASTIC_FORWARDER_FRAGMENT_PAYLOAD_BYTES),
-            start=1,
-        ):
-            chunk_payload = payload_bytes[offset:offset + MESHTASTIC_FORWARDER_FRAGMENT_PAYLOAD_BYTES]
-            packets.append(
-                b"".join(
-                    (
-                        MESHTASTIC_FORWARDER_FRAGMENT_MAGIC,
-                        bytes((MESHTASTIC_FORWARDER_FRAGMENT_VERSION,)),
-                        message_id,
-                        bytes((index, total_parts)),
-                        chunk_payload,
-                    )
-                )
-            )
+        # Large payload — use FTN fountain code (reference behaviour)
+        transfer_id = (uuid.uuid4().int >> 104) & 0xFFFFFF  # 24-bit random ID
+        self.logger.debug(
+            f"ATAK_FORWARDER-Payload zu groß für Einzelpaket ({len(payload_bytes)} Byte), "
+            f"verwende FTN-Fountain-Code (transfer_id=0x{transfer_id:06x})"
+        )
+        packets = _fountain_encode(payload_bytes, transfer_id)
+        if not packets:
+            raise ValueError("FTN-Encoder hat keine Pakete erzeugt.")
         return packets
 
     def _parse_meshtastic_forwarder_fragment(self, payload):
@@ -4213,17 +4486,120 @@ class TAKMeshtasticGateway:
         payload = decoded.get("payload")
         if not isinstance(payload, (bytes, bytearray)):
             return False
+        payload = bytes(payload)
         self.logger.debug(
             f"ATAK_FORWARDER-Paket aus dem Mesh empfangen: {len(payload)} Byte von {from_id}"
         )
+        # ── Priority 1: FTN fountain-code packet (meshtastic/ATAK-Plugin reference format)
+        if payload[:3] == FOUNTAIN_MAGIC:
+            return self._handle_fountain_data_block(payload, from_id)
+        # ── Priority 2: Gateway-native COTF sequential fragment
         fragment = self._parse_meshtastic_forwarder_fragment(payload)
         if fragment is not None:
             return self._handle_meshtastic_forwarder_fragment(fragment, from_id)
+        # ── Priority 3: Direct zlib-compressed (or raw) CoT XML single packet
         packet_xml = self._decode_meshtastic_forwarder_payload(payload)
         if not packet_xml:
-            self.logger.warning("ATAK_FORWARDER-Payload aus dem Mesh konnte nicht dekodiert werden.")
+            self.logger.warning(
+                "ATAK_FORWARDER-Payload aus dem Mesh konnte nicht dekodiert werden. "
+                f"first_bytes=0x{payload[:4].hex()} len={len(payload)}"
+            )
             return True
         return self._forward_meshtastic_cot_xml_to_tak(packet_xml, from_id, source_label="ATAK_FORWARDER")
+
+    def _handle_fountain_data_block(self, raw_bytes, from_id):
+        """Receive and reassemble an FTN fountain-code data block.
+
+        This implements the receiver side of the fountain codec used by the
+        official meshtastic/ATAK-Plugin (FountainChunkManager + FountainCodec).
+        Blocks are accumulated per (from_id, transfer_id); once enough blocks
+        are received the payload is decoded with the LT peeling decoder.
+        """
+        block = _fountain_parse_data_block(raw_bytes)
+        if block is None:
+            self.logger.debug(
+                f"FTN-Paket ignoriert (kein gültiger Data-Block): len={len(raw_bytes)} from={from_id}"
+            )
+            return True
+
+        transfer_id = block["transfer_id"]
+        K = block["K"]
+        total_len = block["total_len"]
+        self.logger.debug(
+            f"FTN-Block empfangen: transfer_id=0x{transfer_id:06x} seed=0x{block['seed']:04x} "
+            f"K={K} total_len={total_len} payload_bytes={len(block['payload'])} from={from_id}"
+        )
+        self._cleanup_expired_meshtastic_forwarder_fragments()
+
+        cache_key = f"ftn:{from_id}:{transfer_id}"
+        now = time.time()
+        with self.chat_cache_lock:
+            entry = self.partial_fountain_transfers.get(cache_key)
+            if entry is None or entry.get("K") != K or entry.get("total_len") != total_len:
+                entry = {
+                    "created_at": now,
+                    "updated_at": now,
+                    "K": K,
+                    "total_len": total_len,
+                    "transfer_id": transfer_id,
+                    "blocks": [],
+                }
+                self.partial_fountain_transfers[cache_key] = entry
+            else:
+                entry["updated_at"] = now
+
+            entry["blocks"].append((block["seed"], transfer_id, block["payload"]))
+            num_received = len(entry["blocks"])
+
+            # The peeling decoder needs at least K blocks; try decoding as soon as K are available
+            if num_received < K:
+                self.logger.debug(
+                    f"FTN-Reassembly: {num_received}/{K} Blöcke empfangen, warte auf mehr "
+                    f"(transfer_id=0x{transfer_id:06x} from={from_id})"
+                )
+                return True
+
+            # Try to decode — may succeed with exactly K blocks or need a few more
+            blocks_snapshot = list(entry["blocks"])
+
+        self.logger.debug(
+            f"FTN-Decoder gestartet: transfer_id=0x{transfer_id:06x} "
+            f"blocks={len(blocks_snapshot)} K={K} total_len={total_len} from={from_id}"
+        )
+        try:
+            decoded_payload = _fountain_decode(blocks_snapshot, K, total_len)
+        except Exception as exc:
+            self.logger.warning(
+                f"FTN-Decoder Fehler: transfer_id=0x{transfer_id:06x} {exc}"
+            )
+            decoded_payload = None
+
+        if decoded_payload is None:
+            # Not enough blocks yet (or decoding failed) — keep accumulating
+            self.logger.debug(
+                f"FTN-Decoder: noch nicht genug Blöcke für vollständige Rekonstruktion "
+                f"(transfer_id=0x{transfer_id:06x} blocks={len(blocks_snapshot)} K={K})"
+            )
+            return True
+
+        # Decoding succeeded — remove state and process the payload
+        with self.chat_cache_lock:
+            self.partial_fountain_transfers.pop(cache_key, None)
+
+        self.logger.debug(
+            f"FTN-Reassembly vollständig: transfer_id=0x{transfer_id:06x} "
+            f"decoded_bytes={len(decoded_payload)} from={from_id}"
+        )
+        packet_xml = _fountain_decode_payload(decoded_payload)
+        if not packet_xml:
+            self.logger.warning(
+                f"FTN-Payload konnte nicht als CoT XML dekodiert werden: "
+                f"transfer_id=0x{transfer_id:06x} first_bytes=0x{decoded_payload[:4].hex()}"
+            )
+            return True
+        return self._forward_meshtastic_cot_xml_to_tak(
+            packet_xml, from_id, source_label="ATAK_FORWARDER-FTN"
+        )
 
     def _handle_meshtastic_forwarder_fragment(self, fragment, from_id):
         self.logger.debug(
@@ -4350,9 +4726,10 @@ class TAKMeshtasticGateway:
                     f"serialized={_build_safe_payload_snippet(forwarder_payload)}"
                 )
             forwarder_packets = self._prepare_meshtastic_forwarder_packets(forwarder_payload)
+            is_ftn = len(forwarder_packets) > 1 and forwarder_packets[0][:3] == FOUNTAIN_MAGIC
             self.logger.debug(
                 f"{transport_subject} via ATAK_FORWARDER verpackt: paketanzahl={len(forwarder_packets)} "
-                f"modus={'direkt' if len(forwarder_packets) == 1 else 'fragmentiert'}"
+                f"modus={'direkt' if len(forwarder_packets) == 1 else ('FTN-Fountain' if is_ftn else 'fragmentiert')}"
             )
             for forwarder_packet in forwarder_packets:
                 self._send_data_to_interfaces(
@@ -4361,7 +4738,12 @@ class TAKMeshtasticGateway:
                     MESHTASTIC_ATAK_FORWARDER_PORTNUM,
                 )
                 interfaces = self._get_interfaces_snapshot()
-            transport = "ATAK_FORWARDER" if len(forwarder_packets) == 1 else "ATAK_FORWARDER_FRAGMENTS"
+            if len(forwarder_packets) == 1:
+                transport = "ATAK_FORWARDER"
+            elif is_ftn:
+                transport = "ATAK_FORWARDER_FTN"
+            else:
+                transport = "ATAK_FORWARDER_FRAGMENTS"
             return {"transport": transport, "count": len(forwarder_packets)}
         except Exception as exc:
             self.logger.warning(
@@ -5119,6 +5501,10 @@ class TAKMeshtasticGateway:
         elif transport == "ATAK_FORWARDER_FRAGMENTS":
             transport_label = (
                 f"{transport_count} ATAK_FORWARDER-Fragment{'e' if transport_count != 1 else ''}"
+            )
+        elif transport == "ATAK_FORWARDER_FTN":
+            transport_label = (
+                f"{transport_count} ATAK_FORWARDER-FTN-Block{'s' if transport_count != 1 else ''}"
             )
         elif transport == "LEGACY_COTM":
             transport_label = (
