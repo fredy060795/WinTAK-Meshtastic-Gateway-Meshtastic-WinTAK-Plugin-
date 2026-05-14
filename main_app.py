@@ -3567,7 +3567,8 @@ class TAKMeshtasticGateway:
             or DEFAULT_CHATROOM_NAME
         )
         message_hash = hashlib.sha256(_ensure_bytes(message)).hexdigest()[:16]
-        message_id = f"{sender_uid}-{message_hash}-{(time.time_ns() // 1_000_000)}"
+        message_timestamp_ms = time.time_ns() // 1_000_000
+        message_id = f"{sender_uid}-{message_hash}-{message_timestamp_ms}"
         event = Element('event', {
             'version': '2.0',
             'uid': f"GeoChat.{sender_uid}.{message_id}",
@@ -3603,8 +3604,11 @@ class TAKMeshtasticGateway:
             'relation': 'p-p',
             'type': MESHTASTIC_PLI_COT_EVENT_TYPE,
         })
+        server_destination_host = str(getattr(self, "chat_listen_ip", "0.0.0.0") or "0.0.0.0").strip() or "0.0.0.0"
+        if server_destination_host in {"*", "::"}:
+            server_destination_host = "0.0.0.0"
         SubElement(detail, '__serverdestination', {
-            'destination': f"0.0.0.0:{self.chat_listen_port}:tcp:{sender_uid}",
+            'destination': f"{server_destination_host}:{self.chat_listen_port}:tcp:{sender_uid}",
         })
         remarks = SubElement(detail, 'remarks', {
             'source': f"BAO.F.ATAK.{sender_uid}",
@@ -4763,6 +4767,14 @@ class TAKMeshtasticGateway:
     def _send_tak_chat_to_meshtastic(self, chat_payload):
         payload = self._build_meshtastic_geochat_payload(chat_payload)
         interfaces = self._ensure_meshtastic_interfaces(raise_on_empty=True)
+        if any(getattr(iface, "sendData", None) is None for iface in interfaces):
+            sent_chunks = self._prepare_meshtastic_text_chunks(chat_payload.get("message"))
+            total_sent = self._send_text_to_meshtastic(chat_payload.get("message"), prepared_chunks=sent_chunks)
+            return {
+                "transport": "TEXT_MESSAGE_APP",
+                "count": total_sent,
+                "chunks": len(sent_chunks),
+            }
         try:
             sent_interfaces = self._send_data_to_interfaces(payload, interfaces, MESHTASTIC_ATAK_PLUGIN_PORTNUM)
             return {
@@ -4771,7 +4783,7 @@ class TAKMeshtasticGateway:
                 "chunks": 1,
             }
         except Exception as exc:
-            if not (_is_meshtastic_payload_too_big_error(exc) or isinstance(exc, AttributeError)):
+            if not _is_meshtastic_payload_too_big_error(exc):
                 raise
             sent_chunks = self._prepare_meshtastic_text_chunks(chat_payload.get("message"))
             total_sent = self._send_text_to_meshtastic(chat_payload.get("message"), prepared_chunks=sent_chunks)
