@@ -4688,32 +4688,10 @@ class TAKMeshtasticGateway:
                     f"{exc}"
                 )
         else:
-            detail_packet = self._prepare_meshtastic_detail_packet(normalized_packet)
-            if detail_packet is not None:
-                try:
-                    transport_subject = _get_cot_subject_label(metadata)
-                    if self.logger.isEnabledFor(logging.DEBUG):
-                        self.logger.debug(
-                            f"{transport_subject} nutzt ATAK_PLUGIN-detail=7: uid={detail_packet['uid']} "
-                            f"compressed={detail_packet['is_compressed']} payload_bytes={len(detail_packet['payload'])} "
-                            f"serialized={_build_safe_payload_snippet(detail_packet['payload'])}"
-                        )
-                    self._send_data_to_interfaces(
-                        detail_packet["payload"],
-                        interfaces,
-                        MESHTASTIC_ATAK_PLUGIN_PORTNUM,
-                    )
-                    return {"transport": "ATAK_PLUGIN_DETAIL", "count": 1}
-                except Exception as exc:
-                    self.logger.warning(
-                        "ATAK_PLUGIN-detail=7-Senden fehlgeschlagen, versuche ATAK_FORWARDER/COTM-Fallback: "
-                        f"{exc}"
-                    )
-            else:
-                self.logger.debug(
-                    f"{_get_cot_subject_label(metadata)} Typ {metadata['type']} "
-                    "passt nicht in ATAK_PLUGIN-detail=7 und nutzt ATAK_FORWARDER."
-                )
+            self.logger.debug(
+                f"{_get_cot_subject_label(metadata)} Typ {metadata['type']} "
+                "nutzt aus Kompatibilitätsgründen direkt ATAK_FORWARDER."
+            )
 
         forwarder_payload = self._prepare_meshtastic_forwarder_payload(normalized_packet)
         if not forwarder_payload:
