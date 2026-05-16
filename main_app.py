@@ -3540,12 +3540,10 @@ class TAKMeshtasticGateway:
         return None
 
     def _build_cot_dedupe_key(self, packet_xml):
-        packet_bytes = _ensure_bytes(packet_xml).strip()
+        normalized_packet = _normalize_tak_xml_payload(packet_xml)
+        packet_bytes = _ensure_bytes(normalized_packet or packet_xml).strip()
         if not packet_bytes:
             return None
-        metadata = self._extract_cot_event_metadata(packet_bytes)
-        if metadata and metadata["uid"]:
-            return metadata["uid"]
         return hashlib.sha256(packet_bytes).hexdigest()
 
     def _build_pong_xml(self):
@@ -5534,7 +5532,7 @@ class TAKMeshtasticGateway:
 
         cot_dedupe_key = None
         if metadata is not None:
-            cot_dedupe_key = metadata["uid"] or self._build_cot_dedupe_key(packet_xml)
+            cot_dedupe_key = self._build_cot_dedupe_key(packet_xml)
             if cot_dedupe_key and self._was_seen_recently(self.recent_cot_ids, cot_dedupe_key):
                 self.logger.debug("TAK-CoT wegen Duplikat-Schutz ignoriert.")
                 return
