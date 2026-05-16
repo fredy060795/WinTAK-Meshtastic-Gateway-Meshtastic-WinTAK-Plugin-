@@ -4041,6 +4041,31 @@ class TAKMeshtasticGateway:
                 except Exception:
                     pass
 
+        # ── Local TCP push (secondary path via TCP-receiver socket to WinTAK) ──
+        # The bidirectional TAK TCP connection to WinTAK's TAK-server (established by
+        # receive_tak_chat_tcp) is also used to push CoT events to WinTAK.  This makes
+        # marker and generic CoT delivery more reliable because WinTAK processes CoT
+        # from its own TCP server connection before processing incoming UDP packets.
+        with self._local_tak_tcp_push_lock:
+            tcp_push_conn = self._local_tak_tcp_push_conn
+        if tcp_push_conn is not None:
+            try:
+                tcp_push_conn.sendall(packet_xml + b"\n")
+                self.logger.debug(
+                    f"[LastHop-TCP] Lokal an WinTAK gesendet via TCP: "
+                    f"{self.tcp_chat_receiver_host}:{self.tcp_chat_receiver_port} "
+                    f"label={label} bytes={len(packet_xml)}"
+                )
+            except OSError as e:
+                self.logger.debug(f"[LastHop-TCP] Lokaler TCP-Push fehlgeschlagen ({e}); Socket wird zurückgesetzt.")
+                with self._local_tak_tcp_push_lock:
+                    if self._local_tak_tcp_push_conn is tcp_push_conn:
+                        self._local_tak_tcp_push_conn = None
+                try:
+                    tcp_push_conn.close()
+                except Exception:
+                    pass
+
         if self._should_use_pytak_remote():
             # PyTAK replaces the legacy remote socket path when available so packets
             # are not sent twice to the same remote TAK endpoint unless PyTAK is
@@ -6092,6 +6117,8 @@ class TAKMeshtasticGateway:
                     f"{self.tcp_chat_receiver_host}:{self.tcp_chat_receiver_port} ({exc})"
                 )
             finally:
+                # Clear the push socket reference when the connection drops so that
+                # _send_packet_to_tak() does not attempt to write to a closed socket.
                 self._unregister_local_tak_tcp_peer(peer)
                 with self._local_tak_tcp_push_lock:
                     if self._local_tak_tcp_push_conn is conn:
