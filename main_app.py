@@ -82,6 +82,7 @@ MAX_PORT_NUMBER = 65535
 DEFAULT_CHATROOM_NAME = "All Chat Rooms"
 DEFAULT_CHAT_LISTEN_PORT = 4242
 TCP_LISTENER_DEFAULT_PORT = 8088
+TCP_RECEIVER_DEFAULT_PORT = 8087
 WINTAK_REQUIRED_HOST = "127.0.0.1"
 MAX_WINTAK_MONITOR_LINES = 150
 DETECTED_PORTS_SUMMARY_DEFAULT_WRAP = 520
@@ -97,6 +98,7 @@ TCP_LISTENER_BACKLOG = 5
 TCP_RECV_BUFFER_SIZE = 4096
 MAX_TCP_STREAM_BUFFER_BYTES = 262144
 TCP_STREAM_BUFFER_TAIL_BYTES = 64
+TCP_RECEIVER_RECONNECT_SECONDS = 5.0
 INBOUND_TAK_DEBUG_SNIPPET_CHARS = 240
 UTF8_BOM_CHAR = "\ufeff"
 RECENT_CHAT_CACHE_TTL_SECONDS = 30
@@ -362,6 +364,20 @@ def _get_tak_tcp_listener_endpoint_from_cfg(cfg, strict_port=False):
             raise
         listen_port = TCP_LISTENER_DEFAULT_PORT
     return listen_ip, listen_port
+
+
+def _get_tak_tcp_receiver_endpoint_from_cfg(cfg, strict_port=False):
+    """Return configured TCP receiver target host/port with shared defaults."""
+    receiver_host = str(
+        cfg.get("local_tak_tcp_receiver_host", cfg.get("local_tak_ip", WINTAK_REQUIRED_HOST))
+    ).strip() or str(cfg.get("local_tak_ip", WINTAK_REQUIRED_HOST)).strip() or WINTAK_REQUIRED_HOST
+    try:
+        receiver_port = int(cfg.get("local_tak_tcp_receiver_port", TCP_RECEIVER_DEFAULT_PORT))
+    except (TypeError, ValueError):
+        if strict_port:
+            raise
+        receiver_port = TCP_RECEIVER_DEFAULT_PORT
+    return receiver_host, receiver_port
 
 
 def _strip_tak_sender_prefix(value):
@@ -1746,7 +1762,12 @@ class GatewayApp:
 
         endpoint_items = [
             ("WinTAK UDP", f"{self.cfg.get('local_tak_ip', WINTAK_REQUIRED_HOST)}:{self.cfg.get('local_tak_port', 4242)}"),
-            ("WinTAK TCP", f"0.0.0.0:{self.cfg.get('local_tak_tcp_listen_port', TCP_LISTENER_DEFAULT_PORT)}"),
+            (
+                "WinTAK TCP Rx",
+                f"{self.cfg.get('local_tak_tcp_receiver_host', self.cfg.get('local_tak_ip', WINTAK_REQUIRED_HOST))}:"
+                f"{self.cfg.get('local_tak_tcp_receiver_port', TCP_RECEIVER_DEFAULT_PORT)}",
+            ),
+            ("WinTAK TCP In", f"0.0.0.0:{self.cfg.get('local_tak_tcp_listen_port', TCP_LISTENER_DEFAULT_PORT)}"),
             ("Remote TAK", f"{self.cfg.get('tak_server_protocol', 'TCP')} {self.cfg.get('tak_server_host', '82.165.11.84')}:{self.cfg.get('tak_server_port', 8088)}"),
         ]
         for title, value in endpoint_items:
@@ -2361,13 +2382,20 @@ class GatewayApp:
         return self._local_tak_tcp_listen_port_var.get().strip() or str(TCP_LISTENER_DEFAULT_PORT)
 
     def _update_wintak_setup_hint(self, *_):
-        tcp_port = self._get_wintak_tcp_port_text()
-        banner_text = f"Create a local server in WinTAK: {WINTAK_REQUIRED_HOST} | Port {tcp_port} | TCP"
+        tcp_listener_port = self._get_wintak_tcp_port_text()
+        tcp_receiver_host, tcp_receiver_port = _get_tak_tcp_receiver_endpoint_from_cfg(self.cfg)
+        banner_text = (
+            f"WinTAK server: {tcp_receiver_host} | Port {tcp_receiver_port} | TCP "
+            f"(Gateway fallback listener: {tcp_listener_port})"
+        )
         self._wintak_banner_var.set(banner_text)
         self._wintak_setup_var.set(
-            f"WinTAK: add a local server at {WINTAK_REQUIRED_HOST}:{tcp_port} using TCP."
+            f"WinTAK: add a local server at {tcp_receiver_host}:{tcp_receiver_port} using TCP. "
+            f"Optional fallback listener on the gateway stays at port {tcp_listener_port}."
         )
-        self._bottom_wintak_hint_var.set(f"WinTAK local: {WINTAK_REQUIRED_HOST} | TCP | Port {tcp_port}")
+        self._bottom_wintak_hint_var.set(
+            f"WinTAK TCP: {tcp_receiver_host} | Port {tcp_receiver_port} | Fallback listen {tcp_listener_port}"
+        )
 
     def _update_no_gps_hint(self):
         send_without_gps = bool(self._send_nodes_without_gps_var.get())
@@ -2852,6 +2880,18 @@ class TAKMeshtasticGateway:
         except (ValueError, TypeError) as e:
             raise ValueError(f"Invalid local_tak_tcp_listen_port in config: {e}")
         self.tcp_chat_listen_ip = tcp_chat_listen_ip
+        self.tak_tcp_receiver_enabled = as_bool(self.cfg.get("local_tak_tcp_receiver_enabled", True))
+        try:
+            tcp_chat_receiver_host, tcp_chat_receiver_port = _get_tak_tcp_receiver_endpoint_from_cfg(
+                self.cfg,
+                strict_port=True,
+            )
+            if not (1 <= tcp_chat_receiver_port <= 65535):
+                raise ValueError(f"Invalid local TAK TCP receiver port: {tcp_chat_receiver_port}")
+            self.tcp_chat_receiver_host = tcp_chat_receiver_host
+            self.tcp_chat_receiver_port = tcp_chat_receiver_port
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Invalid local_tak_tcp_receiver_port in config: {e}")
 
         self.sock_udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock_udp.settimeout(self.SOCKET_TIMEOUT)  # Add timeout to prevent hanging
@@ -2968,6 +3008,11 @@ class TAKMeshtasticGateway:
                 args=(self.tcp_chat_listen_port,),
                 daemon=True,
             ).start()
+            if self.tak_tcp_receiver_enabled:
+                threading.Thread(
+                    target=self.receive_tak_chat_tcp,
+                    daemon=True,
+                ).start()
             self.apply_gateway_fixed_position()
             self.logger.info("Gateway gestartet. Führe initiale Vollsynchronisation aus.")
             self.full_sync()
@@ -3088,11 +3133,85 @@ class TAKMeshtasticGateway:
             "le": _coerce_cot_point_float(point.get("le")),
             "has_meshtastic_marker": (
                 detail is not None
-                and _find_descendant_by_local_name(detail, "__meshtastic") is not None
+                and (
+                    _find_descendant_by_local_name(detail, "__meshtastic") is not None
+                    or _find_descendant_by_local_name(detail, "meshtastic") is not None
+                )
             ),
         }
 
-    def _normalize_generic_cot_event(self, packet_xml, add_meshtastic_marker=False):
+    def _apply_meshtastic_bridge_detail(
+        self,
+        detail,
+        uid,
+        callsign,
+        *,
+        geopointsrc="GPS",
+        battery=None,
+        speed=0.0,
+        course=0.0,
+        endpoint=None,
+    ):
+        contact = _find_child_by_local_name(detail, "contact")
+        if contact is None:
+            contact = SubElement(detail, "contact")
+        if callsign and not str(contact.get("callsign") or "").strip():
+            contact.set("callsign", callsign)
+        if endpoint and not str(contact.get("endpoint") or "").strip():
+            contact.set("endpoint", endpoint)
+
+        uid_detail = _find_child_by_local_name(detail, "uid")
+        if uid_detail is None and callsign:
+            uid_detail = SubElement(detail, "uid")
+        if uid_detail is not None and callsign and not str(uid_detail.get("Droid") or "").strip():
+            uid_detail.set("Droid", callsign)
+
+        group = _find_child_by_local_name(detail, "__group")
+        if group is None:
+            group = SubElement(detail, "__group")
+        if not str(group.get("name") or "").strip():
+            group.set("name", "Cyan")
+        if not str(group.get("role") or "").strip():
+            group.set("role", "Team Member")
+
+        mesh_detail = _find_child_by_local_name(detail, "meshtastic")
+        if mesh_detail is None:
+            mesh_detail = SubElement(detail, "meshtastic")
+        if callsign and not str(mesh_detail.get("longName") or "").strip():
+            mesh_detail.set("longName", callsign)
+        short_name = str(mesh_detail.get("shortName") or "").strip()
+        if not short_name:
+            short_name = (callsign or uid or "")[:2]
+            if short_name:
+                mesh_detail.set("shortName", short_name)
+
+        if battery is not None:
+            status = _find_child_by_local_name(detail, "status")
+            if status is None:
+                status = SubElement(detail, "status")
+            if not str(status.get("battery") or "").strip():
+                status.set("battery", str(_clamp_battery_percentage(battery)))
+
+        track = _find_child_by_local_name(detail, "track")
+        if track is None:
+            track = SubElement(detail, "track")
+        if not str(track.get("speed") or "").strip():
+            track.set("speed", str(speed))
+        if not str(track.get("course") or "").strip():
+            track.set("course", str(course))
+
+        precisionlocation = _find_child_by_local_name(detail, "precisionlocation")
+        if precisionlocation is None:
+            precisionlocation = SubElement(detail, "precisionlocation")
+        if geopointsrc and not str(precisionlocation.get("geopointsrc") or "").strip():
+            precisionlocation.set("geopointsrc", geopointsrc)
+
+    def _normalize_generic_cot_event(
+        self,
+        packet_xml,
+        add_meshtastic_marker=False,
+        meshtastic_live_contact=False,
+    ):
         packet_xml = _normalize_tak_xml_payload(packet_xml)
         if not packet_xml:
             return None, None, "CoT-Payload ist leer"
@@ -3143,7 +3262,21 @@ class TAKMeshtasticGateway:
             detail = SubElement(root, "detail")
         if add_meshtastic_marker and _find_child_by_local_name(detail, "__meshtastic") is None:
             SubElement(detail, "__meshtastic")
-        if _is_persistable_cot_type(event_type) and _find_child_by_local_name(detail, "archive") is None:
+        if meshtastic_live_contact:
+            contact = _find_child_by_local_name(detail, "contact")
+            link = _find_child_by_local_name(detail, "link")
+            callsign = ""
+            if contact is not None:
+                callsign = str(contact.get("callsign") or "").strip()
+            if not callsign and link is not None:
+                callsign = str(link.get("uid") or "").strip()
+            if not callsign:
+                callsign = uid
+            self._apply_meshtastic_bridge_detail(detail, uid, callsign)
+            archive = _find_child_by_local_name(detail, "archive")
+            if archive is not None:
+                detail.remove(archive)
+        elif _is_persistable_cot_type(event_type) and _find_child_by_local_name(detail, "archive") is None:
             SubElement(detail, "archive")
 
         normalized_packet = tostring(root, encoding="utf-8")
@@ -4451,10 +4584,17 @@ class TAKMeshtasticGateway:
                 return candidate
         return None
 
-    def _forward_meshtastic_cot_xml_to_tak(self, packet_xml, from_id, source_label="Mesh-CoT"):
+    def _forward_meshtastic_cot_xml_to_tak(
+        self,
+        packet_xml,
+        from_id,
+        source_label="Mesh-CoT",
+        meshtastic_live_contact=False,
+    ):
         normalized_packet, metadata, error = self._normalize_generic_cot_event(
             packet_xml,
             add_meshtastic_marker=True,
+            meshtastic_live_contact=meshtastic_live_contact,
         )
         if normalized_packet is None or metadata is None:
             self.logger.warning(f"{source_label} verworfen: {error or 'ungültiges CoT-Event'}")
@@ -4949,7 +5089,12 @@ class TAKMeshtasticGateway:
             "ATAK_PLUGIN-PLI aus dem Mesh erkannt und als CoT rekonstruiert: "
             f"from={from_id} payload={_build_safe_payload_snippet(packet_xml)}"
         )
-        return self._forward_meshtastic_cot_xml_to_tak(packet_xml, from_id, source_label="ATAK_PLUGIN-PLI")
+        return self._forward_meshtastic_cot_xml_to_tak(
+            packet_xml,
+            from_id,
+            source_label="ATAK_PLUGIN-PLI",
+            meshtastic_live_contact=True,
+        )
 
     def _extract_tak_chat_payload(self, packet_xml):
         try:
@@ -5608,17 +5753,19 @@ class TAKMeshtasticGateway:
                 was_normalized=was_normalized,
             )
 
-    def _handle_tak_tcp_client(self, conn, addr):
+    def _consume_tak_tcp_stream(
+        self,
+        conn,
+        addr,
+        *,
+        source_protocol="TCP",
+        listener_port=None,
+        ping_label="TAK-TCP",
+    ):
         buffer_text = ""
         probe_buffer = b""
         decoder = None
         conn.settimeout(TCP_SOCKET_TIMEOUT_SECONDS)
-        cb = self.wintak_tcp_chat_callback
-        if cb:
-            try:
-                cb("connect", None, None, addr)
-            except Exception:
-                pass
         try:
             while not self.shutdown_flag.is_set():
                 try:
@@ -5644,7 +5791,7 @@ class TAKMeshtasticGateway:
                             try:
                                 conn.sendall(self._build_pong_xml().encode("utf-8"))
                                 self.logger.debug(
-                                    f"TAK-TCP-Ping von {_format_network_endpoint(addr)} "
+                                    f"{ping_label}-Ping von {_format_network_endpoint(addr)} "
                                     "beantwortet (Pong gesendet)."
                                 )
                             except OSError:
@@ -5657,8 +5804,8 @@ class TAKMeshtasticGateway:
                         if not normalized_packet:
                             self._log_inbound_tak_diagnostics(
                                 source_addr=addr,
-                                source_protocol="TCP",
-                                listener_port=self.tcp_chat_listen_port,
+                                source_protocol=source_protocol,
+                                listener_port=listener_port,
                                 packet_size=packet_size,
                                 was_normalized=False,
                                 is_cot_event=False,
@@ -5670,8 +5817,8 @@ class TAKMeshtasticGateway:
                         self.handle_inbound_tak_packet(
                             normalized_packet,
                             source_addr=addr,
-                            source_protocol="TCP",
-                            listener_port=self.tcp_chat_listen_port,
+                            source_protocol=source_protocol,
+                            listener_port=listener_port,
                             packet_size=packet_size,
                             was_normalized=was_normalized,
                         )
@@ -5686,16 +5833,16 @@ class TAKMeshtasticGateway:
                     self.handle_inbound_tak_packet(
                         normalized_packet,
                         source_addr=addr,
-                        source_protocol="TCP",
-                        listener_port=self.tcp_chat_listen_port,
+                        source_protocol=source_protocol,
+                        listener_port=listener_port,
                         packet_size=len(probe_buffer_bytes),
                         was_normalized=_ensure_bytes(normalized_packet) != probe_buffer_bytes,
                     )
                 else:
                     self._log_inbound_tak_diagnostics(
                         source_addr=addr,
-                        source_protocol="TCP",
-                        listener_port=self.tcp_chat_listen_port,
+                        source_protocol=source_protocol,
+                        listener_port=listener_port,
                         packet_size=len(probe_buffer_bytes),
                         was_normalized=False,
                         is_cot_event=False,
@@ -5712,8 +5859,8 @@ class TAKMeshtasticGateway:
                 if not normalized_packet:
                     self._log_inbound_tak_diagnostics(
                         source_addr=addr,
-                        source_protocol="TCP",
-                        listener_port=self.tcp_chat_listen_port,
+                        source_protocol=source_protocol,
+                        listener_port=listener_port,
                         packet_size=packet_size,
                         was_normalized=False,
                         is_cot_event=False,
@@ -5725,15 +5872,30 @@ class TAKMeshtasticGateway:
                 self.handle_inbound_tak_packet(
                     normalized_packet,
                     source_addr=addr,
-                    source_protocol="TCP",
-                    listener_port=self.tcp_chat_listen_port,
+                    source_protocol=source_protocol,
+                    listener_port=listener_port,
                     packet_size=packet_size,
                     was_normalized=was_normalized,
                 )
         except (OSError, UnicodeError, ValueError):
             self.logger.debug("Fehler beim Lesen einer TAK-TCP-Verbindung:\n" + traceback.format_exc())
+
+    def _handle_tak_tcp_client(self, conn, addr):
+        cb = self.wintak_tcp_chat_callback
+        if cb:
+            try:
+                cb("connect", None, None, addr)
+            except Exception:
+                pass
+        try:
+            self._consume_tak_tcp_stream(
+                conn,
+                addr,
+                source_protocol="TCP",
+                listener_port=self.tcp_chat_listen_port,
+                ping_label="TAK-TCP-Listener",
+            )
         finally:
-            cb = self.wintak_tcp_chat_callback
             if cb:
                 try:
                     cb("disconnect", None, None, addr)
@@ -5743,6 +5905,48 @@ class TAKMeshtasticGateway:
                 conn.close()
             except Exception:
                 pass
+
+    def receive_tak_chat_tcp(self):
+        target_addr = (self.tcp_chat_receiver_host, self.tcp_chat_receiver_port)
+        while not self.shutdown_flag.is_set():
+            conn = None
+            cb = self.wintak_tcp_chat_callback
+            try:
+                conn = socket.create_connection(target_addr, timeout=TCP_SOCKET_TIMEOUT_SECONDS)
+                conn.settimeout(TCP_SOCKET_TIMEOUT_SECONDS)
+                self.logger.info(
+                    f"TAK-TCP-Receiver verbunden mit {self.tcp_chat_receiver_host}:{self.tcp_chat_receiver_port}."
+                )
+                if cb:
+                    try:
+                        cb("connect", None, None, target_addr)
+                    except Exception:
+                        pass
+                self._consume_tak_tcp_stream(
+                    conn,
+                    target_addr,
+                    source_protocol="TCP-CLIENT",
+                    listener_port=self.tcp_chat_receiver_port,
+                    ping_label="TAK-TCP-Receiver",
+                )
+            except OSError as exc:
+                self.logger.debug(
+                    "TAK-TCP-Receiver-Verbindung fehlgeschlagen oder beendet: "
+                    f"{self.tcp_chat_receiver_host}:{self.tcp_chat_receiver_port} ({exc})"
+                )
+            finally:
+                if cb:
+                    try:
+                        cb("disconnect", None, None, target_addr)
+                    except Exception:
+                        pass
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+            if not self.shutdown_flag.is_set():
+                self.shutdown_flag.wait(TCP_RECEIVER_RECONNECT_SECONDS)
 
     def listen_for_tak_chat_tcp(self, listen_port=None):
         if listen_port is None:
@@ -6059,15 +6263,21 @@ class TAKMeshtasticGateway:
                 'le': '10'
             })
             detail = SubElement(event, 'detail')
-            SubElement(detail, 'contact', {'callsign': callsign, 'endpoint': f"{self.tak_ip}:{self.tak_port}:udp"})
-            SubElement(detail, '__group', {'name': 'Cyan', 'role': 'Team Member'})
             if position_source == "GPS":
                 geopointsrc = "GPS"
             elif position_source == "LAST_KNOWN":
                 geopointsrc = "ESTIMATED"
             else:
                 geopointsrc = "USER"
-            SubElement(detail, 'precisionlocation', {'geopointsrc': geopointsrc})
+            self._apply_meshtastic_bridge_detail(
+                detail,
+                uid,
+                callsign,
+                geopointsrc=geopointsrc,
+                speed=0.0,
+                course=0.0,
+                endpoint=f"{self.tak_ip}:{self.tak_port}:udp",
+            )
             if position_source == "LAST_KNOWN":
                 SubElement(detail, 'remarks').text = "Listed (Last Known Position)"
             elif not is_real:
