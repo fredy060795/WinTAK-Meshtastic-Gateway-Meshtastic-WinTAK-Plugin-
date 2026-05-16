@@ -3088,11 +3088,85 @@ class TAKMeshtasticGateway:
             "le": _coerce_cot_point_float(point.get("le")),
             "has_meshtastic_marker": (
                 detail is not None
-                and _find_descendant_by_local_name(detail, "__meshtastic") is not None
+                and (
+                    _find_descendant_by_local_name(detail, "__meshtastic") is not None
+                    or _find_descendant_by_local_name(detail, "meshtastic") is not None
+                )
             ),
         }
 
-    def _normalize_generic_cot_event(self, packet_xml, add_meshtastic_marker=False):
+    def _apply_meshtastic_bridge_detail(
+        self,
+        detail,
+        uid,
+        callsign,
+        *,
+        geopointsrc="GPS",
+        battery=None,
+        speed=0.0,
+        course=0.0,
+        endpoint=None,
+    ):
+        contact = _find_child_by_local_name(detail, "contact")
+        if contact is None:
+            contact = SubElement(detail, "contact")
+        if callsign and not str(contact.get("callsign") or "").strip():
+            contact.set("callsign", callsign)
+        if endpoint and not str(contact.get("endpoint") or "").strip():
+            contact.set("endpoint", endpoint)
+
+        uid_detail = _find_child_by_local_name(detail, "uid")
+        if uid_detail is None and callsign:
+            uid_detail = SubElement(detail, "uid")
+        if uid_detail is not None and callsign and not str(uid_detail.get("Droid") or "").strip():
+            uid_detail.set("Droid", callsign)
+
+        group = _find_child_by_local_name(detail, "__group")
+        if group is None:
+            group = SubElement(detail, "__group")
+        if not str(group.get("name") or "").strip():
+            group.set("name", "Cyan")
+        if not str(group.get("role") or "").strip():
+            group.set("role", "Team Member")
+
+        mesh_detail = _find_child_by_local_name(detail, "meshtastic")
+        if mesh_detail is None:
+            mesh_detail = SubElement(detail, "meshtastic")
+        if callsign and not str(mesh_detail.get("longName") or "").strip():
+            mesh_detail.set("longName", callsign)
+        short_name = str(mesh_detail.get("shortName") or "").strip()
+        if not short_name:
+            short_name = (callsign or uid or "")[:2]
+            if short_name:
+                mesh_detail.set("shortName", short_name)
+
+        if battery is not None:
+            status = _find_child_by_local_name(detail, "status")
+            if status is None:
+                status = SubElement(detail, "status")
+            if not str(status.get("battery") or "").strip():
+                status.set("battery", str(_clamp_battery_percentage(battery)))
+
+        track = _find_child_by_local_name(detail, "track")
+        if track is None:
+            track = SubElement(detail, "track")
+        if not str(track.get("speed") or "").strip():
+            track.set("speed", str(speed))
+        if not str(track.get("course") or "").strip():
+            track.set("course", str(course))
+
+        precisionlocation = _find_child_by_local_name(detail, "precisionlocation")
+        if precisionlocation is None:
+            precisionlocation = SubElement(detail, "precisionlocation")
+        if geopointsrc and not str(precisionlocation.get("geopointsrc") or "").strip():
+            precisionlocation.set("geopointsrc", geopointsrc)
+
+    def _normalize_generic_cot_event(
+        self,
+        packet_xml,
+        add_meshtastic_marker=False,
+        meshtastic_live_contact=False,
+    ):
         packet_xml = _normalize_tak_xml_payload(packet_xml)
         if not packet_xml:
             return None, None, "CoT-Payload ist leer"
@@ -3143,7 +3217,21 @@ class TAKMeshtasticGateway:
             detail = SubElement(root, "detail")
         if add_meshtastic_marker and _find_child_by_local_name(detail, "__meshtastic") is None:
             SubElement(detail, "__meshtastic")
-        if _is_persistable_cot_type(event_type) and _find_child_by_local_name(detail, "archive") is None:
+        if meshtastic_live_contact:
+            contact = _find_child_by_local_name(detail, "contact")
+            link = _find_child_by_local_name(detail, "link")
+            callsign = ""
+            if contact is not None:
+                callsign = str(contact.get("callsign") or "").strip()
+            if not callsign and link is not None:
+                callsign = str(link.get("uid") or "").strip()
+            if not callsign:
+                callsign = uid
+            self._apply_meshtastic_bridge_detail(detail, uid, callsign)
+            archive = _find_child_by_local_name(detail, "archive")
+            if archive is not None:
+                detail.remove(archive)
+        elif _is_persistable_cot_type(event_type) and _find_child_by_local_name(detail, "archive") is None:
             SubElement(detail, "archive")
 
         normalized_packet = tostring(root, encoding="utf-8")
@@ -4451,10 +4539,17 @@ class TAKMeshtasticGateway:
                 return candidate
         return None
 
-    def _forward_meshtastic_cot_xml_to_tak(self, packet_xml, from_id, source_label="Mesh-CoT"):
+    def _forward_meshtastic_cot_xml_to_tak(
+        self,
+        packet_xml,
+        from_id,
+        source_label="Mesh-CoT",
+        meshtastic_live_contact=False,
+    ):
         normalized_packet, metadata, error = self._normalize_generic_cot_event(
             packet_xml,
             add_meshtastic_marker=True,
+            meshtastic_live_contact=meshtastic_live_contact,
         )
         if normalized_packet is None or metadata is None:
             self.logger.warning(f"{source_label} verworfen: {error or 'ungültiges CoT-Event'}")
@@ -4949,7 +5044,12 @@ class TAKMeshtasticGateway:
             "ATAK_PLUGIN-PLI aus dem Mesh erkannt und als CoT rekonstruiert: "
             f"from={from_id} payload={_build_safe_payload_snippet(packet_xml)}"
         )
-        return self._forward_meshtastic_cot_xml_to_tak(packet_xml, from_id, source_label="ATAK_PLUGIN-PLI")
+        return self._forward_meshtastic_cot_xml_to_tak(
+            packet_xml,
+            from_id,
+            source_label="ATAK_PLUGIN-PLI",
+            meshtastic_live_contact=True,
+        )
 
     def _extract_tak_chat_payload(self, packet_xml):
         try:
@@ -6059,15 +6159,21 @@ class TAKMeshtasticGateway:
                 'le': '10'
             })
             detail = SubElement(event, 'detail')
-            SubElement(detail, 'contact', {'callsign': callsign, 'endpoint': f"{self.tak_ip}:{self.tak_port}:udp"})
-            SubElement(detail, '__group', {'name': 'Cyan', 'role': 'Team Member'})
             if position_source == "GPS":
                 geopointsrc = "GPS"
             elif position_source == "LAST_KNOWN":
                 geopointsrc = "ESTIMATED"
             else:
                 geopointsrc = "USER"
-            SubElement(detail, 'precisionlocation', {'geopointsrc': geopointsrc})
+            self._apply_meshtastic_bridge_detail(
+                detail,
+                uid,
+                callsign,
+                geopointsrc=geopointsrc,
+                speed=0.0,
+                course=0.0,
+                endpoint=f"{self.tak_ip}:{self.tak_port}:udp",
+            )
             if position_source == "LAST_KNOWN":
                 SubElement(detail, 'remarks').text = "Listed (Last Known Position)"
             elif not is_real:
