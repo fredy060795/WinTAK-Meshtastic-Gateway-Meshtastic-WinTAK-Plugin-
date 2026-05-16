@@ -32,12 +32,13 @@ local_tak_chat_listen_port: 4242
 # LPU5-kompatibler WinTAK/ATAK TCP-Empfangspfad:
 # Das Gateway verbindet sich als TCP-Client zum in WinTAK/ATAK konfigurierten lokalen Server
 # (typisch 127.0.0.1:8087, kein Zertifikat nötig).
+# Die aktive Verbindung ist bidirektional: WinTAK -> Gateway und Mesh-CoT -> WinTAK.
 local_tak_tcp_receiver_enabled: true
 local_tak_tcp_receiver_host: 127.0.0.1
 local_tak_tcp_receiver_port: 8087
 # Optionaler lokaler TCP-Fallback-Listener für externe/ältere Setups.
 local_tak_tcp_listen_port: 8088
-# Optional: zusätzliche TAK-Multicast-Gruppen für GeoChat / SA lauschen
+# Optional: zusätzliche TAK-Multicast-Gruppen für GeoChat / SA lauschen und senden
 # (hilfreich wenn WinTAK/ATAK oder ein TAK-Server Chat/CoT per Multicast verteilt).
 tak_multicast_groups:
   - 224.10.10.1:17012

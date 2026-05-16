@@ -2896,6 +2896,8 @@ class TAKMeshtasticGateway:
         self.sock_udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock_udp.settimeout(self.SOCKET_TIMEOUT)  # Add timeout to prevent hanging
         self.sock_chat_listeners = []
+        self.local_tak_tcp_peers = []
+        self.local_tak_tcp_peer_lock = threading.RLock()
 
         # Callback invoked by the TCP listener for connection events and received chat messages.
         # Signature: callback(kind, sender, message, addr)
@@ -3925,6 +3927,77 @@ class TAKMeshtasticGateway:
             self._reset_remote_pytak_state()
             return False
 
+    def _register_local_tak_tcp_peer(self, conn, endpoint):
+        if conn is None:
+            return None
+        peer = {
+            "conn": conn,
+            "endpoint": str(endpoint or "unknown"),
+            "lock": threading.Lock(),
+        }
+        with self.local_tak_tcp_peer_lock:
+            self.local_tak_tcp_peers.append(peer)
+        return peer
+
+    def _unregister_local_tak_tcp_peer(self, peer):
+        if peer is None:
+            return
+        with self.local_tak_tcp_peer_lock:
+            self.local_tak_tcp_peers = [entry for entry in self.local_tak_tcp_peers if entry is not peer]
+
+    def _send_local_tak_tcp_payload(self, peer, payload, *, log_errors=True, append_newline=True):
+        if peer is None:
+            return False
+        payload_bytes = _ensure_bytes(payload).strip()
+        if not payload_bytes:
+            return False
+        try:
+            with peer["lock"]:
+                peer["conn"].sendall(payload_bytes + (b"\n" if append_newline else b""))
+            return True
+        except OSError as exc:
+            endpoint = peer.get("endpoint") or "unknown"
+            if log_errors:
+                self.logger.debug(f"Lokales TAK-TCP-Senden fehlgeschlagen ({endpoint}): {exc}")
+            self._unregister_local_tak_tcp_peer(peer)
+            try:
+                peer["conn"].close()
+            except Exception:
+                pass
+            return False
+
+    def _send_packet_to_local_tak_tcp(self, packet_xml, label):
+        packet_bytes = _ensure_bytes(packet_xml).strip()
+        if not packet_bytes:
+            return 0
+        with self.local_tak_tcp_peer_lock:
+            peers = list(self.local_tak_tcp_peers)
+        delivered = 0
+        for peer in peers:
+            if self._send_local_tak_tcp_payload(peer, packet_bytes):
+                delivered += 1
+        if delivered:
+            self.logger.debug(f"Lokales TCP gesendet an {delivered} WinTAK-Verbindung(en) ({label})")
+        return delivered
+
+    def _send_packet_to_tak_multicast(self, packet_xml, label):
+        packet_bytes = _ensure_bytes(packet_xml).strip()
+        if not packet_bytes:
+            return 0
+        delivered = 0
+        for multicast_group, multicast_port in self.tak_multicast_groups:
+            try:
+                self.sock_udp.sendto(packet_bytes, (multicast_group, multicast_port))
+                delivered += 1
+                self.logger.debug(
+                    f"Lokales UDP-Multicast gesendet an {multicast_group}:{multicast_port} ({label})"
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    f"Fehler beim Senden an lokales TAK-Multicast {multicast_group}:{multicast_port}: {exc}"
+                )
+        return delivered
+
     def _send_packet_to_tak(self, packet_xml, label):
         cot_dedupe_key = self._build_cot_dedupe_key(packet_xml)
         if cot_dedupe_key:
@@ -3940,6 +4013,33 @@ class TAKMeshtasticGateway:
             )
         except Exception as e:
             self.logger.warning(f"Fehler beim Senden an lokales TAK (UDP): {e}")
+        self._send_packet_to_tak_multicast(packet_xml, label)
+        self._send_packet_to_local_tak_tcp(packet_xml, label)
+
+        # ── Local TCP push (secondary path via TCP-receiver socket to WinTAK) ──
+        # The bidirectional TAK TCP connection to WinTAK's TAK-server (established by
+        # receive_tak_chat_tcp) is also used to push CoT events to WinTAK.  This makes
+        # marker and generic CoT delivery more reliable because WinTAK processes CoT
+        # from its own TCP server connection before processing incoming UDP packets.
+        with self._local_tak_tcp_push_lock:
+            tcp_push_conn = self._local_tak_tcp_push_conn
+        if tcp_push_conn is not None:
+            try:
+                tcp_push_conn.sendall(packet_xml + b"\n")
+                self.logger.debug(
+                    f"[LastHop-TCP] Lokal an WinTAK gesendet via TCP: "
+                    f"{self.tcp_chat_receiver_host}:{self.tcp_chat_receiver_port} "
+                    f"label={label} bytes={len(packet_xml)}"
+                )
+            except OSError as e:
+                self.logger.debug(f"[LastHop-TCP] Lokaler TCP-Push fehlgeschlagen ({e}); Socket wird zurückgesetzt.")
+                with self._local_tak_tcp_push_lock:
+                    if self._local_tak_tcp_push_conn is tcp_push_conn:
+                        self._local_tak_tcp_push_conn = None
+                try:
+                    tcp_push_conn.close()
+                except Exception:
+                    pass
 
         # ── Local TCP push (secondary path via TCP-receiver socket to WinTAK) ──
         # The bidirectional TAK TCP connection to WinTAK's TAK-server (established by
@@ -5821,6 +5921,7 @@ class TAKMeshtasticGateway:
         source_protocol="TCP",
         listener_port=None,
         ping_label="TAK-TCP",
+        send_peer=None,
     ):
         buffer_text = ""
         probe_buffer = b""
@@ -5849,7 +5950,16 @@ class TAKMeshtasticGateway:
                         # connection stays alive long enough to receive chat messages.
                         if TAK_PING_TYPE_PATTERN.search(packet_xml) and not TAK_PONG_TYPE_PATTERN.search(packet_xml):
                             try:
-                                conn.sendall(self._build_pong_xml().encode("utf-8"))
+                                if send_peer is not None:
+                                    if not self._send_local_tak_tcp_payload(
+                                        send_peer,
+                                        self._build_pong_xml(),
+                                        log_errors=False,
+                                        append_newline=False,
+                                    ):
+                                        return
+                                else:
+                                    conn.sendall(self._build_pong_xml().encode("utf-8"))
                                 self.logger.debug(
                                     f"{ping_label}-Ping von {_format_network_endpoint(addr)} "
                                     "beantwortet (Pong gesendet)."
@@ -5941,6 +6051,7 @@ class TAKMeshtasticGateway:
             self.logger.debug("Fehler beim Lesen einer TAK-TCP-Verbindung:\n" + traceback.format_exc())
 
     def _handle_tak_tcp_client(self, conn, addr):
+        peer = self._register_local_tak_tcp_peer(conn, _format_network_endpoint(addr))
         cb = self.wintak_tcp_chat_callback
         if cb:
             try:
@@ -5954,8 +6065,10 @@ class TAKMeshtasticGateway:
                 source_protocol="TCP",
                 listener_port=self.tcp_chat_listen_port,
                 ping_label="TAK-TCP-Listener",
+                send_peer=peer,
             )
         finally:
+            self._unregister_local_tak_tcp_peer(peer)
             if cb:
                 try:
                     cb("disconnect", None, None, addr)
@@ -5970,10 +6083,15 @@ class TAKMeshtasticGateway:
         target_addr = (self.tcp_chat_receiver_host, self.tcp_chat_receiver_port)
         while not self.shutdown_flag.is_set():
             conn = None
+            peer = None
             cb = self.wintak_tcp_chat_callback
             try:
                 conn = socket.create_connection(target_addr, timeout=TCP_SOCKET_TIMEOUT_SECONDS)
                 conn.settimeout(TCP_SOCKET_TIMEOUT_SECONDS)
+                peer = self._register_local_tak_tcp_peer(
+                    conn,
+                    f"{self.tcp_chat_receiver_host}:{self.tcp_chat_receiver_port}",
+                )
                 self.logger.info(
                     f"TAK-TCP-Receiver verbunden mit {self.tcp_chat_receiver_host}:{self.tcp_chat_receiver_port}."
                 )
@@ -5991,6 +6109,7 @@ class TAKMeshtasticGateway:
                     source_protocol="TCP-CLIENT",
                     listener_port=self.tcp_chat_receiver_port,
                     ping_label="TAK-TCP-Receiver",
+                    send_peer=peer,
                 )
             except OSError as exc:
                 self.logger.debug(
@@ -6000,6 +6119,7 @@ class TAKMeshtasticGateway:
             finally:
                 # Clear the push socket reference when the connection drops so that
                 # _send_packet_to_tak() does not attempt to write to a closed socket.
+                self._unregister_local_tak_tcp_peer(peer)
                 with self._local_tak_tcp_push_lock:
                     if self._local_tak_tcp_push_conn is conn:
                         self._local_tak_tcp_push_conn = None
@@ -6389,6 +6509,15 @@ class TAKMeshtasticGateway:
         except Exception:
             pass
         self.sock_chat_listeners = []
+
+        with self.local_tak_tcp_peer_lock:
+            tcp_peers = list(self.local_tak_tcp_peers)
+            self.local_tak_tcp_peers = []
+        for peer in tcp_peers:
+            try:
+                peer["conn"].close()
+            except Exception:
+                pass
         
         # Close remote socket
         self._cleanup_server_socket()
