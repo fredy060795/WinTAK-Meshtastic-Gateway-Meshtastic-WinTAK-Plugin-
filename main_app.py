@@ -3121,8 +3121,8 @@ class TAKMeshtasticGateway:
             return None
         event_uid = (root.get("uid") or "").strip()
         event_type = (root.get("type") or "").strip()
-        event_how = (root.get("how") or "").strip()
-        if not event_uid or not event_type or not event_how:
+        event_how = (root.get("how") or "").strip() or "m-g"
+        if not event_uid or not event_type:
             return None
         cot_class = _classify_cot_event_type(event_type)
         return {
@@ -3239,7 +3239,8 @@ class TAKMeshtasticGateway:
         if not event_type:
             return None, None, "CoT-Typ fehlt"
         if not event_how:
-            return None, None, "CoT-how fehlt"
+            event_how = "m-g"
+            root.set("how", event_how)
 
         point = _find_child_by_local_name(root, "point")
         if point is None:
