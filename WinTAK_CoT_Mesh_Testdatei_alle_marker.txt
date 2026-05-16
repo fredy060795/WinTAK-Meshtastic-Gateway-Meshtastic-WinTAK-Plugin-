@@ -1,0 +1,121 @@
+WinTAK CoT Mesh Testdatei - alle Marker
+======================================
+
+Zweck
+-----
+Diese Datei dient als einfache Referenz zum Testen aller im Projekt bekannten
+Marker-Typen zwischen WinTAK <-> Gateway <-> Meshtastic Mesh.
+
+Kurzablauf
+----------
+1. Gateway starten.
+2. WinTAK mit lokalem Server / UDP wie in README.md beschrieben verbinden.
+3. Fuer jeden Marker den passenden CoT-Typ in WinTAK erzeugen oder per XML einspeisen.
+4. Pruefen:
+   - erscheint der Marker in WinTAK korrekt,
+   - wird er vom Gateway erkannt,
+   - wird er ins Mesh weitergegeben,
+   - kommt er nach Rueckweg weiterhin mit korrektem Typ an.
+
+Test-Matrix
+-----------
+
+01. hostile
+    CoT-Type: a-h-G-U-C
+    Erwartung: Roter feindlicher Marker / Diamant
+
+02. friendly
+    CoT-Type: a-f-G-U-C
+    Erwartung: Blauer freundlicher Marker / Rechteck
+
+03. neutral
+    CoT-Type: a-n-G-U-C
+    Erwartung: Gruener neutraler Marker / Quadrat
+
+04. unknown
+    CoT-Type: a-u-G-U-C
+    Erwartung: Gelber unbekannter Marker
+
+05. pending
+    CoT-Type: a-p-G-U-C
+    Erwartung: Lila pending Marker
+
+06. marker
+    CoT-Type: b-m-p-s-m
+    Erwartung: Generischer Spot-Map Marker
+
+07. tak_maker
+    CoT-Type: a-f-G-U-C
+    Erwartung: ATAK/WinTAK SA Marker
+
+08. meshtastic_node
+    CoT-Type: a-f-G-E-S-U-M
+    Erwartung: Meshtastic-Knoten mit speziellem Mesh-Symbol
+
+09. node
+    CoT-Type: a-f-G-E-S-U-M
+    Erwartung: Alias von meshtastic_node
+
+10. gateway
+    CoT-Type: a-f-G-E-S-U-M
+    Erwartung: Mesh-Gateway / Equipment-Symbol
+
+11. gps_position
+    CoT-Type: a-f-G-E-S-U-M
+    Erwartung: GPS-/Positionssymbol
+
+12. cbt_hostile
+    CoT-Type: a-h-G-U-C
+    Erwartung: ATAK-seitig erkannter feindlicher CBT-Marker
+
+13. cbt_friendly
+    CoT-Type: a-f-G-U-C
+    Erwartung: ATAK-seitig erkannter freundlicher CBT-Marker
+
+14. cbt_neutral
+    CoT-Type: a-n-G-U-C
+    Erwartung: ATAK-seitig erkannter neutraler CBT-Marker
+
+15. cbt_unknown
+    CoT-Type: a-u-G-U-C
+    Erwartung: ATAK-seitig erkannter unbekannter CBT-Marker
+
+Beispiel-CoT XML
+----------------
+Die folgenden Vorlagen koennen fuer manuelle Tests angepasst werden:
+
+Hostile:
+<event version="2.0" uid="TEST-HOSTILE-001" type="a-h-G-U-C" how="m-g" time="2026-05-16T14:00:00Z" start="2026-05-16T14:00:00Z" stale="2026-05-16T14:10:00Z"><point lat="48.1351" lon="11.5820" hae="0" ce="10" le="10"/><detail><contact callsign="HOSTILE-1"/><remarks>Marker Test hostile</remarks></detail></event>
+
+Friendly:
+<event version="2.0" uid="TEST-FRIENDLY-001" type="a-f-G-U-C" how="m-g" time="2026-05-16T14:00:00Z" start="2026-05-16T14:00:00Z" stale="2026-05-16T14:10:00Z"><point lat="48.1352" lon="11.5821" hae="0" ce="10" le="10"/><detail><contact callsign="FRIEND-1"/><remarks>Marker Test friendly</remarks></detail></event>
+
+Neutral:
+<event version="2.0" uid="TEST-NEUTRAL-001" type="a-n-G-U-C" how="m-g" time="2026-05-16T14:00:00Z" start="2026-05-16T14:00:00Z" stale="2026-05-16T14:10:00Z"><point lat="48.1353" lon="11.5822" hae="0" ce="10" le="10"/><detail><contact callsign="NEUTRAL-1"/><remarks>Marker Test neutral</remarks></detail></event>
+
+Unknown:
+<event version="2.0" uid="TEST-UNKNOWN-001" type="a-u-G-U-C" how="m-g" time="2026-05-16T14:00:00Z" start="2026-05-16T14:00:00Z" stale="2026-05-16T14:10:00Z"><point lat="48.1354" lon="11.5823" hae="0" ce="10" le="10"/><detail><contact callsign="UNKNOWN-1"/><remarks>Marker Test unknown</remarks></detail></event>
+
+Pending:
+<event version="2.0" uid="TEST-PENDING-001" type="a-p-G-U-C" how="m-g" time="2026-05-16T14:00:00Z" start="2026-05-16T14:00:00Z" stale="2026-05-16T14:10:00Z"><point lat="48.1355" lon="11.5824" hae="0" ce="10" le="10"/><detail><contact callsign="PENDING-1"/><remarks>Marker Test pending</remarks></detail></event>
+
+Generic Marker:
+<event version="2.0" uid="TEST-MARKER-001" type="b-m-p-s-m" how="m-g" time="2026-05-16T14:00:00Z" start="2026-05-16T14:00:00Z" stale="2026-05-16T14:10:00Z"><point lat="48.1356" lon="11.5825" hae="0" ce="10" le="10"/><detail><contact callsign="MARKER-1"/><remarks>Marker Test generic</remarks></detail></event>
+
+Meshtastic Node / Node / Gateway / GPS Position:
+<event version="2.0" uid="TEST-MESH-001" type="a-f-G-E-S-U-M" how="m-g" time="2026-05-16T14:00:00Z" start="2026-05-16T14:00:00Z" stale="2026-05-16T14:10:00Z"><point lat="48.1357" lon="11.5826" hae="0" ce="10" le="10"/><detail><contact callsign="MESH-1"/><remarks>Marker Test meshtastic equipment</remarks></detail></event>
+
+Pruefpunkte je Marker
+---------------------
+- WinTAK zeigt Symbol, Farbe und Position korrekt an.
+- Gateway uebernimmt UID, Type, How und Point ohne ungewollte Aenderung.
+- Marker wird ueber das Meshtastic Mesh weitergeleitet.
+- Rueckempfang bleibt kompatibel zu WinTAK / ATAK / iTAK.
+- Im Fehlerfall DEBUG-Logs im Gateway pruefen.
+
+Hinweis
+-------
+Die CBT-Marker entstehen vor allem dann, wenn CoT/ATAK-seitige Marker im Gateway
+als ATAK-Quelle erkannt und intern entsprechend umgelabelt werden. Fuer reine
+Mesh-Kompatibilitaet sind daher besonders die Typen a-h-G-U-C, a-f-G-U-C,
+a-n-G-U-C, a-u-G-U-C, a-p-G-U-C, b-m-p-s-m und a-f-G-E-S-U-M relevant.
