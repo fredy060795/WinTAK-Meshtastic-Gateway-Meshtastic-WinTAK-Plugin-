@@ -36,6 +36,9 @@ local_tak_chat_listen_port: 4242
 local_tak_tcp_receiver_enabled: true
 local_tak_tcp_receiver_host: 127.0.0.1
 local_tak_tcp_receiver_port: 8087
+# Pong-/Keepalive-Fenster für die lokale WinTAK-TCP-Verbindung in Sekunden.
+# Höher setzen, wenn WinTAK die 127.0.0.1-Verbindung wegen zu kurzer Keepalive-Gültigkeit trennt.
+local_tak_tcp_pong_stale_seconds: 120
 # Optionaler lokaler TCP-Fallback-Listener für externe/ältere Setups.
 local_tak_tcp_listen_port: 8088
 # Optional: zusätzliche TAK-Multicast-Gruppen für GeoChat / SA lauschen und senden

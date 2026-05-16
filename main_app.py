@@ -83,6 +83,7 @@ DEFAULT_CHATROOM_NAME = "All Chat Rooms"
 DEFAULT_CHAT_LISTEN_PORT = 4242
 TCP_LISTENER_DEFAULT_PORT = 8088
 TCP_RECEIVER_DEFAULT_PORT = 8087
+DEFAULT_LOCAL_TAK_TCP_PONG_STALE_SECONDS = 120
 WINTAK_REQUIRED_HOST = "127.0.0.1"
 MAX_WINTAK_MONITOR_LINES = 150
 DETECTED_PORTS_SUMMARY_DEFAULT_WRAP = 520
@@ -2892,6 +2893,18 @@ class TAKMeshtasticGateway:
             self.tcp_chat_receiver_port = tcp_chat_receiver_port
         except (ValueError, TypeError) as e:
             raise ValueError(f"Invalid local_tak_tcp_receiver_port in config: {e}")
+        try:
+            pong_stale_seconds = float(
+                self.cfg.get(
+                    "local_tak_tcp_pong_stale_seconds",
+                    DEFAULT_LOCAL_TAK_TCP_PONG_STALE_SECONDS,
+                )
+            )
+            if pong_stale_seconds <= 0:
+                raise ValueError("local_tak_tcp_pong_stale_seconds must be positive")
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"Invalid local_tak_tcp_pong_stale_seconds in config: {e}")
+        self.local_tak_tcp_pong_stale_seconds = pong_stale_seconds
 
         self.sock_udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock_udp.settimeout(self.SOCKET_TIMEOUT)  # Add timeout to prevent hanging
@@ -3561,7 +3574,7 @@ class TAKMeshtasticGateway:
     def _build_pong_xml(self):
         """Build a minimal CoT t-x-c-t-r ping-ack reply for WinTAK/ATAK keepalive pings."""
         now = datetime.datetime.now(datetime.timezone.utc)
-        stale = now + datetime.timedelta(seconds=30)
+        stale = now + datetime.timedelta(seconds=self.local_tak_tcp_pong_stale_seconds)
         def _fmt_ts(dt):
             return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
         uid = self.gateway_uid or "GW-01"
