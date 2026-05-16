@@ -38,7 +38,7 @@ local_tak_tcp_receiver_host: 127.0.0.1
 local_tak_tcp_receiver_port: 8087
 # Optionaler lokaler TCP-Fallback-Listener für externe/ältere Setups.
 local_tak_tcp_listen_port: 8088
-# Optional: zusätzliche TAK-Multicast-Gruppen für GeoChat / SA lauschen
+# Optional: zusätzliche TAK-Multicast-Gruppen für GeoChat / SA lauschen und senden
 # (hilfreich wenn WinTAK/ATAK oder ein TAK-Server Chat/CoT per Multicast verteilt).
 tak_multicast_groups:
   - 224.10.10.1:17012

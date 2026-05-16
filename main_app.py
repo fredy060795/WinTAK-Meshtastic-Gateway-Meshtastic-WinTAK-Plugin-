@@ -2904,6 +2904,15 @@ class TAKMeshtasticGateway:
         # kind: "connect" | "disconnect" | "chat"
         self.wintak_tcp_chat_callback = None
 
+        # Local WinTAK TCP push socket: the active TCP-CLIENT connection established by
+        # receive_tak_chat_tcp() to WinTAK's TAK-server port (default 8087).  Because the
+        # TAK protocol is bidirectional on a single TCP stream we reuse this connection to
+        # also *push* CoT events (especially markers) to WinTAK in addition to UDP.  This
+        # makes marker delivery more reliable when WinTAK is configured as a TAK server
+        # (localhost:8087) instead of relying solely on UDP 4242.
+        self._local_tak_tcp_push_conn = None
+        self._local_tak_tcp_push_lock = threading.Lock()
+
         # Remote server socket(s)
         self.sock_remote = None  # für TCP: persistent socket; für UDP: socket used for sendto
         self.remote_pytak_loop = None
@@ -3114,8 +3123,8 @@ class TAKMeshtasticGateway:
             return None
         event_uid = (root.get("uid") or "").strip()
         event_type = (root.get("type") or "").strip()
-        event_how = (root.get("how") or "").strip()
-        if not event_uid or not event_type or not event_how:
+        event_how = (root.get("how") or "").strip() or "m-g"
+        if not event_uid or not event_type:
             return None
         cot_class = _classify_cot_event_type(event_type)
         return {
@@ -3232,7 +3241,8 @@ class TAKMeshtasticGateway:
         if not event_type:
             return None, None, "CoT-Typ fehlt"
         if not event_how:
-            return None, None, "CoT-how fehlt"
+            event_how = "m-g"
+            root.set("how", event_how)
 
         point = _find_child_by_local_name(root, "point")
         if point is None:
@@ -3970,16 +3980,66 @@ class TAKMeshtasticGateway:
             self.logger.debug(f"Lokales TCP gesendet an {delivered} WinTAK-Verbindung(en) ({label})")
         return delivered
 
+    def _send_packet_to_tak_multicast(self, packet_xml, label):
+        packet_bytes = _ensure_bytes(packet_xml).strip()
+        if not packet_bytes:
+            return 0
+        delivered = 0
+        for multicast_group, multicast_port in self.tak_multicast_groups:
+            try:
+                self.sock_udp.sendto(packet_bytes, (multicast_group, multicast_port))
+                delivered += 1
+                self.logger.debug(
+                    f"Lokales UDP-Multicast gesendet an {multicast_group}:{multicast_port} ({label})"
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    f"Fehler beim Senden an lokales TAK-Multicast {multicast_group}:{multicast_port}: {exc}"
+                )
+        return delivered
+
     def _send_packet_to_tak(self, packet_xml, label):
         cot_dedupe_key = self._build_cot_dedupe_key(packet_xml)
         if cot_dedupe_key:
             self._remember_recent_chat(self.recent_cot_ids, cot_dedupe_key)
+
+        # ── Local UDP send (primary path) ──────────────────────────────────────
+        udp_target = (self.tak_ip, self.tak_port)
         try:
-            self.sock_udp.sendto(packet_xml, (self.tak_ip, self.tak_port))
-            self.logger.debug(f"Lokales UDP gesendet an {self.tak_ip}:{self.tak_port} ({label})")
+            self.sock_udp.sendto(packet_xml, udp_target)
+            self.logger.debug(
+                f"[LastHop-UDP] Lokal an WinTAK gesendet: {self.tak_ip}:{self.tak_port} "
+                f"label={label} bytes={len(packet_xml)}"
+            )
         except Exception as e:
             self.logger.warning(f"Fehler beim Senden an lokales TAK (UDP): {e}")
+        self._send_packet_to_tak_multicast(packet_xml, label)
         self._send_packet_to_local_tak_tcp(packet_xml, label)
+
+        # ── Local TCP push (secondary path via TCP-receiver socket to WinTAK) ──
+        # The bidirectional TAK TCP connection to WinTAK's TAK-server (established by
+        # receive_tak_chat_tcp) is also used to push CoT events to WinTAK.  This makes
+        # marker and generic CoT delivery more reliable because WinTAK processes CoT
+        # from its own TCP server connection before processing incoming UDP packets.
+        with self._local_tak_tcp_push_lock:
+            tcp_push_conn = self._local_tak_tcp_push_conn
+        if tcp_push_conn is not None:
+            try:
+                tcp_push_conn.sendall(packet_xml + b"\n")
+                self.logger.debug(
+                    f"[LastHop-TCP] Lokal an WinTAK gesendet via TCP: "
+                    f"{self.tcp_chat_receiver_host}:{self.tcp_chat_receiver_port} "
+                    f"label={label} bytes={len(packet_xml)}"
+                )
+            except OSError as e:
+                self.logger.debug(f"[LastHop-TCP] Lokaler TCP-Push fehlgeschlagen ({e}); Socket wird zurückgesetzt.")
+                with self._local_tak_tcp_push_lock:
+                    if self._local_tak_tcp_push_conn is tcp_push_conn:
+                        self._local_tak_tcp_push_conn = None
+                try:
+                    tcp_push_conn.close()
+                except Exception:
+                    pass
 
         if self._should_use_pytak_remote():
             # PyTAK replaces the legacy remote socket path when available so packets
@@ -4645,6 +4705,10 @@ class TAKMeshtasticGateway:
         source_label="Mesh-CoT",
         meshtastic_live_contact=False,
     ):
+        # Extract uid/type/how from the RAW received packet BEFORE normalization so we can
+        # confirm that the normalization step does not silently change marker semantics.
+        pre_norm_metadata = self._extract_cot_event_metadata(packet_xml) if packet_xml else None
+
         normalized_packet, metadata, error = self._normalize_generic_cot_event(
             packet_xml,
             add_meshtastic_marker=True,
@@ -4655,9 +4719,26 @@ class TAKMeshtasticGateway:
             self.logger.debug(f"{source_label} Rohpayload: {_build_safe_payload_snippet(packet_xml)}")
             return True
         if metadata.get("is_marker"):
+            # ── LPU5-aligned marker last-hop debug ────────────────────────────
+            # Confirm that uid/type/how are unchanged after normalization so that
+            # TAK-originated marker semantics are forwarded unmodified to WinTAK.
+            pre_uid = pre_norm_metadata.get("uid") if pre_norm_metadata else None
+            pre_type = pre_norm_metadata.get("type") if pre_norm_metadata else None
+            pre_how = pre_norm_metadata.get("how") if pre_norm_metadata else None
+            uid_unchanged = pre_uid == metadata["uid"] if pre_uid is not None else True
+            type_unchanged = pre_type == metadata["type"] if pre_type is not None else True
+            how_unchanged = pre_how == metadata["how"] if pre_how is not None else True
             self.logger.debug(
-                f"Marker-CoT nach Decode/Reassembly validiert: valid=yes source={source_label} "
-                f"uid={metadata['uid']} type={metadata['type']} how={metadata['how']}"
+                f"[Marker-LastHop] Rekonstruiert aus Mesh — source={source_label} from={from_id} "
+                f"uid={metadata['uid']} (unverändert={uid_unchanged}) "
+                f"type={metadata['type']} (unverändert={type_unchanged}) "
+                f"how={metadata['how']} (unverändert={how_unchanged}) "
+                f"lat={metadata['lat']:.6f} lon={metadata['lon']:.6f}"
+            )
+            self.logger.debug(
+                f"[Marker-LastHop] CoT-XML an WinTAK (letzte Meile): "
+                f"transport=UDP({self.tak_ip}:{self.tak_port})+TCP({self.tcp_chat_receiver_host}:{self.tcp_chat_receiver_port}) "
+                f"xml={_build_safe_payload_snippet(normalized_packet)}"
             )
         self.logger.debug(
             f"{source_label} rekonstruiert: uid={metadata['uid']} type={metadata['type']} "
@@ -5989,6 +6070,9 @@ class TAKMeshtasticGateway:
                 self.logger.info(
                     f"TAK-TCP-Receiver verbunden mit {self.tcp_chat_receiver_host}:{self.tcp_chat_receiver_port}."
                 )
+                # Expose this socket for bidirectional CoT push to WinTAK (marker delivery).
+                with self._local_tak_tcp_push_lock:
+                    self._local_tak_tcp_push_conn = conn
                 if cb:
                     try:
                         cb("connect", None, None, target_addr)
@@ -6009,6 +6093,9 @@ class TAKMeshtasticGateway:
                 )
             finally:
                 self._unregister_local_tak_tcp_peer(peer)
+                with self._local_tak_tcp_push_lock:
+                    if self._local_tak_tcp_push_conn is conn:
+                        self._local_tak_tcp_push_conn = None
                 if cb:
                     try:
                         cb("disconnect", None, None, target_addr)
