@@ -5449,8 +5449,10 @@ class TAKMeshtasticGateway:
                 "chunks": 1,
             }
         except Exception as exc:
-            if not _is_meshtastic_payload_too_big_error(exc):
-                raise
+            self.logger.warning(
+                "ATAK_PLUGIN-Chat-Senden fehlgeschlagen, verwende TEXT_MESSAGE_APP-Fallback: "
+                f"{exc}"
+            )
             sent_chunks = self._prepare_meshtastic_text_chunks(chat_payload.get("message"))
             total_sent = self._send_text_to_meshtastic(chat_payload.get("message"), prepared_chunks=sent_chunks)
             return {
@@ -5692,18 +5694,6 @@ class TAKMeshtasticGateway:
             is_chat_payload=bool(chat_payload),
         )
 
-        cot_dedupe_key = None
-        if metadata is not None:
-            cot_dedupe_key = self._build_cot_dedupe_key(packet_xml)
-            if cot_dedupe_key and self._was_seen_recently(self.recent_cot_ids, cot_dedupe_key):
-                self.logger.debug("TAK-CoT wegen Duplikat-Schutz ignoriert.")
-                return
-            if metadata.get("has_meshtastic_marker"):
-                self.logger.debug(
-                    f"TAK-CoT mit __meshtastic-Marker nicht erneut ins Mesh gesendet: {metadata['uid']}"
-                )
-                return
-
         if chat_payload:
             sender_uid = chat_payload["sender_uid"] or self.gateway_uid
             if sender_uid in self.local_node_ids:
@@ -5751,6 +5741,18 @@ class TAKMeshtasticGateway:
                     f"TAK-Chat ins Mesh über {total_sent} Interface(s) gesendet: {src}: {chat_payload['message']}"
                 )
             return
+
+        cot_dedupe_key = None
+        if metadata is not None:
+            cot_dedupe_key = self._build_cot_dedupe_key(packet_xml)
+            if cot_dedupe_key and self._was_seen_recently(self.recent_cot_ids, cot_dedupe_key):
+                self.logger.debug("TAK-CoT wegen Duplikat-Schutz ignoriert.")
+                return
+            if metadata.get("has_meshtastic_marker"):
+                self.logger.debug(
+                    f"TAK-CoT mit __meshtastic-Marker nicht erneut ins Mesh gesendet: {metadata['uid']}"
+                )
+                return
 
         if metadata is None:
             self._log_inbound_tak_diagnostics(
