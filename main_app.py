@@ -82,6 +82,7 @@ MAX_PORT_NUMBER = 65535
 DEFAULT_CHATROOM_NAME = "All Chat Rooms"
 DEFAULT_CHAT_LISTEN_PORT = 4242
 TCP_LISTENER_DEFAULT_PORT = 8088
+TCP_RECEIVER_DEFAULT_PORT = 8087
 WINTAK_REQUIRED_HOST = "127.0.0.1"
 MAX_WINTAK_MONITOR_LINES = 150
 DETECTED_PORTS_SUMMARY_DEFAULT_WRAP = 520
@@ -97,6 +98,7 @@ TCP_LISTENER_BACKLOG = 5
 TCP_RECV_BUFFER_SIZE = 4096
 MAX_TCP_STREAM_BUFFER_BYTES = 262144
 TCP_STREAM_BUFFER_TAIL_BYTES = 64
+TCP_RECEIVER_RECONNECT_SECONDS = 5.0
 INBOUND_TAK_DEBUG_SNIPPET_CHARS = 240
 UTF8_BOM_CHAR = "\ufeff"
 RECENT_CHAT_CACHE_TTL_SECONDS = 30
@@ -362,6 +364,20 @@ def _get_tak_tcp_listener_endpoint_from_cfg(cfg, strict_port=False):
             raise
         listen_port = TCP_LISTENER_DEFAULT_PORT
     return listen_ip, listen_port
+
+
+def _get_tak_tcp_receiver_endpoint_from_cfg(cfg, strict_port=False):
+    """Return configured TCP receiver target host/port with shared defaults."""
+    receiver_host = str(
+        cfg.get("local_tak_tcp_receiver_host", cfg.get("local_tak_ip", WINTAK_REQUIRED_HOST))
+    ).strip() or str(cfg.get("local_tak_ip", WINTAK_REQUIRED_HOST)).strip() or WINTAK_REQUIRED_HOST
+    try:
+        receiver_port = int(cfg.get("local_tak_tcp_receiver_port", TCP_RECEIVER_DEFAULT_PORT))
+    except (TypeError, ValueError):
+        if strict_port:
+            raise
+        receiver_port = TCP_RECEIVER_DEFAULT_PORT
+    return receiver_host, receiver_port
 
 
 def _strip_tak_sender_prefix(value):
@@ -1746,7 +1762,12 @@ class GatewayApp:
 
         endpoint_items = [
             ("WinTAK UDP", f"{self.cfg.get('local_tak_ip', WINTAK_REQUIRED_HOST)}:{self.cfg.get('local_tak_port', 4242)}"),
-            ("WinTAK TCP", f"0.0.0.0:{self.cfg.get('local_tak_tcp_listen_port', TCP_LISTENER_DEFAULT_PORT)}"),
+            (
+                "WinTAK TCP Rx",
+                f"{self.cfg.get('local_tak_tcp_receiver_host', self.cfg.get('local_tak_ip', WINTAK_REQUIRED_HOST))}:"
+                f"{self.cfg.get('local_tak_tcp_receiver_port', TCP_RECEIVER_DEFAULT_PORT)}",
+            ),
+            ("WinTAK TCP In", f"0.0.0.0:{self.cfg.get('local_tak_tcp_listen_port', TCP_LISTENER_DEFAULT_PORT)}"),
             ("Remote TAK", f"{self.cfg.get('tak_server_protocol', 'TCP')} {self.cfg.get('tak_server_host', '82.165.11.84')}:{self.cfg.get('tak_server_port', 8088)}"),
         ]
         for title, value in endpoint_items:
@@ -2361,13 +2382,20 @@ class GatewayApp:
         return self._local_tak_tcp_listen_port_var.get().strip() or str(TCP_LISTENER_DEFAULT_PORT)
 
     def _update_wintak_setup_hint(self, *_):
-        tcp_port = self._get_wintak_tcp_port_text()
-        banner_text = f"Create a local server in WinTAK: {WINTAK_REQUIRED_HOST} | Port {tcp_port} | TCP"
+        tcp_listener_port = self._get_wintak_tcp_port_text()
+        tcp_receiver_host, tcp_receiver_port = _get_tak_tcp_receiver_endpoint_from_cfg(self.cfg)
+        banner_text = (
+            f"WinTAK server: {tcp_receiver_host} | Port {tcp_receiver_port} | TCP "
+            f"(Gateway fallback listener: {tcp_listener_port})"
+        )
         self._wintak_banner_var.set(banner_text)
         self._wintak_setup_var.set(
-            f"WinTAK: add a local server at {WINTAK_REQUIRED_HOST}:{tcp_port} using TCP."
+            f"WinTAK: add a local server at {tcp_receiver_host}:{tcp_receiver_port} using TCP. "
+            f"Optional fallback listener on the gateway stays at port {tcp_listener_port}."
         )
-        self._bottom_wintak_hint_var.set(f"WinTAK local: {WINTAK_REQUIRED_HOST} | TCP | Port {tcp_port}")
+        self._bottom_wintak_hint_var.set(
+            f"WinTAK TCP: {tcp_receiver_host} | Port {tcp_receiver_port} | Fallback listen {tcp_listener_port}"
+        )
 
     def _update_no_gps_hint(self):
         send_without_gps = bool(self._send_nodes_without_gps_var.get())
@@ -2852,6 +2880,18 @@ class TAKMeshtasticGateway:
         except (ValueError, TypeError) as e:
             raise ValueError(f"Invalid local_tak_tcp_listen_port in config: {e}")
         self.tcp_chat_listen_ip = tcp_chat_listen_ip
+        self.tak_tcp_receiver_enabled = as_bool(self.cfg.get("local_tak_tcp_receiver_enabled", True))
+        try:
+            tcp_chat_receiver_host, tcp_chat_receiver_port = _get_tak_tcp_receiver_endpoint_from_cfg(
+                self.cfg,
+                strict_port=True,
+            )
+            if not (1 <= tcp_chat_receiver_port <= 65535):
+                raise ValueError(f"Invalid local TAK TCP receiver port: {tcp_chat_receiver_port}")
+            self.tcp_chat_receiver_host = tcp_chat_receiver_host
+            self.tcp_chat_receiver_port = tcp_chat_receiver_port
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Invalid local_tak_tcp_receiver_port in config: {e}")
 
         self.sock_udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock_udp.settimeout(self.SOCKET_TIMEOUT)  # Add timeout to prevent hanging
@@ -2968,6 +3008,11 @@ class TAKMeshtasticGateway:
                 args=(self.tcp_chat_listen_port,),
                 daemon=True,
             ).start()
+            if self.tak_tcp_receiver_enabled:
+                threading.Thread(
+                    target=self.receive_tak_chat_tcp,
+                    daemon=True,
+                ).start()
             self.apply_gateway_fixed_position()
             self.logger.info("Gateway gestartet. Führe initiale Vollsynchronisation aus.")
             self.full_sync()
@@ -5708,17 +5753,19 @@ class TAKMeshtasticGateway:
                 was_normalized=was_normalized,
             )
 
-    def _handle_tak_tcp_client(self, conn, addr):
+    def _consume_tak_tcp_stream(
+        self,
+        conn,
+        addr,
+        *,
+        source_protocol="TCP",
+        listener_port=None,
+        ping_label="TAK-TCP",
+    ):
         buffer_text = ""
         probe_buffer = b""
         decoder = None
         conn.settimeout(TCP_SOCKET_TIMEOUT_SECONDS)
-        cb = self.wintak_tcp_chat_callback
-        if cb:
-            try:
-                cb("connect", None, None, addr)
-            except Exception:
-                pass
         try:
             while not self.shutdown_flag.is_set():
                 try:
@@ -5744,7 +5791,7 @@ class TAKMeshtasticGateway:
                             try:
                                 conn.sendall(self._build_pong_xml().encode("utf-8"))
                                 self.logger.debug(
-                                    f"TAK-TCP-Ping von {_format_network_endpoint(addr)} "
+                                    f"{ping_label}-Ping von {_format_network_endpoint(addr)} "
                                     "beantwortet (Pong gesendet)."
                                 )
                             except OSError:
@@ -5757,8 +5804,8 @@ class TAKMeshtasticGateway:
                         if not normalized_packet:
                             self._log_inbound_tak_diagnostics(
                                 source_addr=addr,
-                                source_protocol="TCP",
-                                listener_port=self.tcp_chat_listen_port,
+                                source_protocol=source_protocol,
+                                listener_port=listener_port,
                                 packet_size=packet_size,
                                 was_normalized=False,
                                 is_cot_event=False,
@@ -5770,8 +5817,8 @@ class TAKMeshtasticGateway:
                         self.handle_inbound_tak_packet(
                             normalized_packet,
                             source_addr=addr,
-                            source_protocol="TCP",
-                            listener_port=self.tcp_chat_listen_port,
+                            source_protocol=source_protocol,
+                            listener_port=listener_port,
                             packet_size=packet_size,
                             was_normalized=was_normalized,
                         )
@@ -5786,16 +5833,16 @@ class TAKMeshtasticGateway:
                     self.handle_inbound_tak_packet(
                         normalized_packet,
                         source_addr=addr,
-                        source_protocol="TCP",
-                        listener_port=self.tcp_chat_listen_port,
+                        source_protocol=source_protocol,
+                        listener_port=listener_port,
                         packet_size=len(probe_buffer_bytes),
                         was_normalized=_ensure_bytes(normalized_packet) != probe_buffer_bytes,
                     )
                 else:
                     self._log_inbound_tak_diagnostics(
                         source_addr=addr,
-                        source_protocol="TCP",
-                        listener_port=self.tcp_chat_listen_port,
+                        source_protocol=source_protocol,
+                        listener_port=listener_port,
                         packet_size=len(probe_buffer_bytes),
                         was_normalized=False,
                         is_cot_event=False,
@@ -5812,8 +5859,8 @@ class TAKMeshtasticGateway:
                 if not normalized_packet:
                     self._log_inbound_tak_diagnostics(
                         source_addr=addr,
-                        source_protocol="TCP",
-                        listener_port=self.tcp_chat_listen_port,
+                        source_protocol=source_protocol,
+                        listener_port=listener_port,
                         packet_size=packet_size,
                         was_normalized=False,
                         is_cot_event=False,
@@ -5825,15 +5872,30 @@ class TAKMeshtasticGateway:
                 self.handle_inbound_tak_packet(
                     normalized_packet,
                     source_addr=addr,
-                    source_protocol="TCP",
-                    listener_port=self.tcp_chat_listen_port,
+                    source_protocol=source_protocol,
+                    listener_port=listener_port,
                     packet_size=packet_size,
                     was_normalized=was_normalized,
                 )
         except (OSError, UnicodeError, ValueError):
             self.logger.debug("Fehler beim Lesen einer TAK-TCP-Verbindung:\n" + traceback.format_exc())
+
+    def _handle_tak_tcp_client(self, conn, addr):
+        cb = self.wintak_tcp_chat_callback
+        if cb:
+            try:
+                cb("connect", None, None, addr)
+            except Exception:
+                pass
+        try:
+            self._consume_tak_tcp_stream(
+                conn,
+                addr,
+                source_protocol="TCP",
+                listener_port=self.tcp_chat_listen_port,
+                ping_label="TAK-TCP-Listener",
+            )
         finally:
-            cb = self.wintak_tcp_chat_callback
             if cb:
                 try:
                     cb("disconnect", None, None, addr)
@@ -5843,6 +5905,48 @@ class TAKMeshtasticGateway:
                 conn.close()
             except Exception:
                 pass
+
+    def receive_tak_chat_tcp(self):
+        target_addr = (self.tcp_chat_receiver_host, self.tcp_chat_receiver_port)
+        while not self.shutdown_flag.is_set():
+            conn = None
+            cb = self.wintak_tcp_chat_callback
+            try:
+                conn = socket.create_connection(target_addr, timeout=TCP_SOCKET_TIMEOUT_SECONDS)
+                conn.settimeout(TCP_SOCKET_TIMEOUT_SECONDS)
+                self.logger.info(
+                    f"TAK-TCP-Receiver verbunden mit {self.tcp_chat_receiver_host}:{self.tcp_chat_receiver_port}."
+                )
+                if cb:
+                    try:
+                        cb("connect", None, None, target_addr)
+                    except Exception:
+                        pass
+                self._consume_tak_tcp_stream(
+                    conn,
+                    target_addr,
+                    source_protocol="TCP-CLIENT",
+                    listener_port=self.tcp_chat_receiver_port,
+                    ping_label="TAK-TCP-Receiver",
+                )
+            except OSError as exc:
+                self.logger.debug(
+                    "TAK-TCP-Receiver-Verbindung fehlgeschlagen oder beendet: "
+                    f"{self.tcp_chat_receiver_host}:{self.tcp_chat_receiver_port} ({exc})"
+                )
+            finally:
+                if cb:
+                    try:
+                        cb("disconnect", None, None, target_addr)
+                    except Exception:
+                        pass
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+            if not self.shutdown_flag.is_set():
+                self.shutdown_flag.wait(TCP_RECEIVER_RECONNECT_SECONDS)
 
     def listen_for_tak_chat_tcp(self, listen_port=None):
         if listen_port is None:

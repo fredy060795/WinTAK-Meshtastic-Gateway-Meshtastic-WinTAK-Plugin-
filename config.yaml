@@ -29,9 +29,13 @@ local_tak_port: 4242
 # an dieses Gateway senden soll, damit sie ins Meshtastic-Mesh ausgestrahlt werden.
 # Wie bei der LPU5-TAK-Bridge standardmäßig auf dem normalen TAK-UDP-Port 4242.
 local_tak_chat_listen_port: 4242
-# WICHTIG: In WinTAK muss ein lokaler Server auf 127.0.0.1:8088 per TCP eingerichtet werden,
-# sonst entsteht keine Verbindung zum Gateway.
-# Lokaler TCP-Port für den LPU5-/TAK-ähnlichen WinTAK-Stream.
+# LPU5-kompatibler WinTAK/ATAK TCP-Empfangspfad:
+# Das Gateway verbindet sich als TCP-Client zum in WinTAK/ATAK konfigurierten lokalen Server
+# (typisch 127.0.0.1:8087, kein Zertifikat nötig).
+local_tak_tcp_receiver_enabled: true
+local_tak_tcp_receiver_host: 127.0.0.1
+local_tak_tcp_receiver_port: 8087
+# Optionaler lokaler TCP-Fallback-Listener für externe/ältere Setups.
 local_tak_tcp_listen_port: 8088
 # Optional: zusätzliche TAK-Multicast-Gruppen für GeoChat / SA lauschen
 # (hilfreich wenn WinTAK/ATAK oder ein TAK-Server Chat/CoT per Multicast verteilt).
