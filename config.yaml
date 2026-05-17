@@ -36,6 +36,11 @@ local_tak_chat_listen_port: 4242
 local_tak_tcp_receiver_enabled: true
 local_tak_tcp_receiver_host: 127.0.0.1
 local_tak_tcp_receiver_port: 8087
+# TCP-first last-hop delivery (Option B):
+# Wenn true (Standard), wird CoT zuerst über TCP 127.0.0.1:8087 an WinTAK/LPU5 gesendet
+# und UDP/4242 nur als Fallback genutzt. Dies ist die zuverlässigere Option wenn UDP/4242
+# durch Windows blockiert wird (WinError 10013). Auf false setzen für Legacy-UDP-first-Betrieb.
+prefer_local_tcp_over_udp: true
 # Optionaler lokaler TCP-Fallback-Listener für externe/ältere Setups.
 local_tak_tcp_listen_port: 8088
 # Optional: zusätzliche TAK-Multicast-Gruppen für GeoChat / SA lauschen und senden
