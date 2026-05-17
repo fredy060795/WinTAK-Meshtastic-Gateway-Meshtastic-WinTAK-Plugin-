@@ -3586,6 +3586,22 @@ class TAKMeshtasticGateway:
                 return False
             return True
 
+    def _iter_recent_cot_identity_cache_keys(self, *, uid="", callsign="", droid_uid=""):
+        seen = set()
+        candidates = (
+            ("uid", str(uid or "").strip()),
+            ("droid", str(droid_uid or "").strip()),
+            ("callsign", str(callsign or "").strip().casefold()),
+        )
+        for prefix, value in candidates:
+            if not value:
+                continue
+            cache_key = f"{prefix}:{value}"
+            if cache_key in seen:
+                continue
+            seen.add(cache_key)
+            yield cache_key
+
     def _remember_recent_cot_identity(self, metadata, *, source_label=None):
         if not isinstance(metadata, dict):
             return
@@ -3605,6 +3621,15 @@ class TAKMeshtasticGateway:
             "updated_at": now,
             "source_label": source_label,
         }
+        cache_keys = tuple(
+            self._iter_recent_cot_identity_cache_keys(
+                uid=uid,
+                callsign=metadata.get("callsign"),
+                droid_uid=metadata.get("droid_uid"),
+            )
+        )
+        if not cache_keys:
+            return
         with self.chat_cache_lock:
             expired = [
                 item
@@ -3613,7 +3638,8 @@ class TAKMeshtasticGateway:
             ]
             for item in expired:
                 self.recent_cot_identity_by_uid.pop(item, None)
-            self.recent_cot_identity_by_uid[uid] = entry
+            for cache_key in cache_keys:
+                self.recent_cot_identity_by_uid[cache_key] = dict(entry)
             while len(self.recent_cot_identity_by_uid) > RECENT_COT_IDENTITY_CACHE_MAX_ENTRIES:
                 oldest = min(
                     self.recent_cot_identity_by_uid,
@@ -3621,19 +3647,27 @@ class TAKMeshtasticGateway:
                 )
                 self.recent_cot_identity_by_uid.pop(oldest, None)
 
-    def _get_recent_cot_identity(self, uid):
-        uid = str(uid or "").strip()
-        if not uid:
+    def _get_recent_cot_identity(self, uid, *, callsign="", droid_uid=""):
+        lookup_keys = tuple(
+            self._iter_recent_cot_identity_cache_keys(
+                uid=uid,
+                callsign=callsign,
+                droid_uid=droid_uid,
+            )
+        )
+        if not lookup_keys:
             return None
         now = time.time()
         with self.chat_cache_lock:
-            entry = self.recent_cot_identity_by_uid.get(uid)
-            if entry is None:
-                return None
-            if now - float(entry.get("updated_at") or 0) > RECENT_COT_IDENTITY_CACHE_TTL_SECONDS:
-                self.recent_cot_identity_by_uid.pop(uid, None)
-                return None
-            return dict(entry)
+            for lookup_key in lookup_keys:
+                entry = self.recent_cot_identity_by_uid.get(lookup_key)
+                if entry is None:
+                    continue
+                if now - float(entry.get("updated_at") or 0) > RECENT_COT_IDENTITY_CACHE_TTL_SECONDS:
+                    self.recent_cot_identity_by_uid.pop(lookup_key, None)
+                    continue
+                return dict(entry)
+            return None
 
     def _cleanup_expired_meshtastic_cot_fragments(self):
         now = time.time()
@@ -3683,6 +3717,8 @@ class TAKMeshtasticGateway:
         lon = _coerce_cot_point_float(point.get("lon"))
         if lat is None or lon is None:
             return None
+        contact = _find_descendant_by_local_name(detail, "contact") if detail is not None else None
+        uid_detail = _find_descendant_by_local_name(detail, "uid") if detail is not None else None
         event_uid = (root.get("uid") or "").strip()
         event_type = (root.get("type") or "").strip()
         event_how = (root.get("how") or "").strip() or "m-g"
@@ -3699,6 +3735,8 @@ class TAKMeshtasticGateway:
             "start": (root.get("start") or "").strip(),
             "time": (root.get("time") or "").strip(),
             "stale": (root.get("stale") or "").strip(),
+            "callsign": str(contact.get("callsign") or "").strip() if contact is not None else "",
+            "droid_uid": str(uid_detail.get("Droid") or "").strip() if uid_detail is not None else "",
             "lat": lat,
             "lon": lon,
             "hae": _coerce_cot_point_float(point.get("hae")),
@@ -4326,8 +4364,33 @@ class TAKMeshtasticGateway:
             int(tak_packet.get("role") or MESHTASTIC_DEFAULT_ROLE_ENUM),
             MESHTASTIC_ROLE_ENUM_TO_NAME.get(MESHTASTIC_DEFAULT_ROLE_ENUM, "Team Member"),
         )
-        event_type = self._resolve_meshtastic_v2_event_type(tak_packet) or MESHTASTIC_PLI_COT_EVENT_TYPE
+        pli_event_type = self._resolve_meshtastic_v2_event_type(tak_packet) or MESHTASTIC_PLI_COT_EVENT_TYPE
+        event_type = pli_event_type
         event_how = MESHTASTIC_COT_HOW_ENUM_TO_NAME.get(int(tak_packet.get("how") or 0), "m-g")
+        cot_class = "pli"
+        cached_identity = self._get_recent_cot_identity(
+            sender_uid,
+            callsign=callsign,
+            droid_uid=tak_packet.get("device_callsign"),
+        )
+        if (
+            cached_identity
+            and cached_identity.get("cot_class") in {"marker", "generic"}
+            and str(cached_identity.get("type") or "").strip()
+        ):
+            event_type = str(cached_identity["type"]).strip()
+            event_how = str(cached_identity.get("how") or "").strip() or event_how
+            cot_class = cached_identity.get("cot_class") or _classify_cot_event_type(event_type)
+            self.logger.debug(
+                "ATAK_PLUGIN_V2-PLI nutzt zwischengespeicherten TAK-Typ statt PLI-Default: "
+                f"uid={sender_uid} cached_type={event_type} cached_how={event_how} "
+                f"cached_class={cot_class} mesh_default_type={pli_event_type}"
+            )
+        elif sender_uid != normalize_meshtastic_uid(packet.get("fromId") or packet.get("from") or "MESH-UNKNOWN"):
+            self.logger.debug(
+                "ATAK_PLUGIN_V2-PLI enthält TAK-fähige UID ohne zwischengespeicherten Marker-Typ; "
+                f"nutze Meshtastic-PLI-Default: uid={sender_uid} mesh_default_type={pli_event_type}"
+            )
 
         timestamp = get_tak_timestamp()
         stale_seconds = max(int(tak_packet.get("stale_seconds") or 0), 45)
@@ -4376,6 +4439,13 @@ class TAKMeshtasticGateway:
             SubElement(detail, "uid", {"Droid": str(tak_packet["device_callsign"])})
         if tak_packet.get("remarks"):
             SubElement(detail, "remarks").text = str(tak_packet["remarks"])
+        self.logger.debug(
+            "ATAK_PLUGIN_V2 aus dem Mesh als CoT rekonstruiert: "
+            f"uid={sender_uid} reconstructed_type={event_type} how={event_how} "
+            f"classification={cot_class} mesh_default_type={pli_event_type} "
+            f"type_changed={'ja' if event_type != pli_event_type else 'nein'} "
+            f"lat={lat:.6f} lon={lon:.6f}"
+        )
         return tostring(event, encoding="utf-8")
 
     def _build_meshtastic_takv2_marker_cot_xml(self, tak_packet, packet, node=None):
@@ -4777,7 +4847,11 @@ class TAKMeshtasticGateway:
         event_type = pli_event_type
         event_how = "m-g"
         cot_class = "pli"
-        cached_identity = self._get_recent_cot_identity(sender_uid)
+        cached_identity = self._get_recent_cot_identity(
+            sender_uid,
+            callsign=callsign,
+            droid_uid=raw_sender_uid,
+        )
         if (
             cached_identity
             and cached_identity.get("cot_class") in {"marker", "generic"}
