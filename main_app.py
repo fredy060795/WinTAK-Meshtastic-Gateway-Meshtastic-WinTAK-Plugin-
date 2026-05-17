@@ -2913,6 +2913,13 @@ class TAKMeshtasticGateway:
         self._local_tak_tcp_push_conn = None
         self._local_tak_tcp_push_lock = threading.Lock()
 
+        # When True (default) the gateway sends CoT to the local TCP receiver
+        # connection (127.0.0.1:8087) before falling back to UDP/4242.  Set to
+        # False only if you specifically need legacy UDP-first behaviour.
+        self.prefer_local_tcp_over_udp = as_bool(
+            self.cfg.get("prefer_local_tcp_over_udp", True)
+        )
+
         # Remote server socket(s)
         self.sock_remote = None  # für TCP: persistent socket; für UDP: socket used for sendto
         self.remote_pytak_loop = None
@@ -3998,73 +4005,72 @@ class TAKMeshtasticGateway:
                 )
         return delivered
 
+    def _send_packet_to_local_tak_tcp_push(self, packet_xml, label):
+        """Push CoT to WinTAK via the active TCP receiver connection (127.0.0.1:8087).
+
+        This reuses the bidirectional TAK TCP connection established by
+        ``receive_tak_chat_tcp`` to deliver CoT events to WinTAK.  The push is
+        reliable even when the UDP listener on port 4242 is blocked or unavailable
+        (e.g. Windows WinError 10013).
+        """
+        with self._local_tak_tcp_push_lock:
+            tcp_push_conn = self._local_tak_tcp_push_conn
+        if tcp_push_conn is not None:
+            try:
+                tcp_push_conn.sendall(packet_xml + b"\n")
+                self.logger.debug(
+                    f"[LastHop-TCP] Lokal an WinTAK gesendet via TCP: "
+                    f"{self.tcp_chat_receiver_host}:{self.tcp_chat_receiver_port} "
+                    f"label={label} bytes={len(packet_xml)}"
+                )
+            except OSError as e:
+                self.logger.debug(
+                    f"[LastHop-TCP] Lokaler TCP-Push fehlgeschlagen ({e}); Socket wird zurückgesetzt."
+                )
+                with self._local_tak_tcp_push_lock:
+                    if self._local_tak_tcp_push_conn is tcp_push_conn:
+                        self._local_tak_tcp_push_conn = None
+                try:
+                    tcp_push_conn.close()
+                except Exception:
+                    pass
+
     def _send_packet_to_tak(self, packet_xml, label):
         cot_dedupe_key = self._build_cot_dedupe_key(packet_xml)
         if cot_dedupe_key:
             self._remember_recent_chat(self.recent_cot_ids, cot_dedupe_key)
 
-        # ── Local UDP send (primary path) ──────────────────────────────────────
-        udp_target = (self.tak_ip, self.tak_port)
-        try:
-            self.sock_udp.sendto(packet_xml, udp_target)
-            self.logger.debug(
-                f"[LastHop-UDP] Lokal an WinTAK gesendet: {self.tak_ip}:{self.tak_port} "
-                f"label={label} bytes={len(packet_xml)}"
-            )
-        except Exception as e:
-            self.logger.warning(f"Fehler beim Senden an lokales TAK (UDP): {e}")
-        self._send_packet_to_tak_multicast(packet_xml, label)
-        self._send_packet_to_local_tak_tcp(packet_xml, label)
-
-        # ── Local TCP push (secondary path via TCP-receiver socket to WinTAK) ──
-        # The bidirectional TAK TCP connection to WinTAK's TAK-server (established by
-        # receive_tak_chat_tcp) is also used to push CoT events to WinTAK.  This makes
-        # marker and generic CoT delivery more reliable because WinTAK processes CoT
-        # from its own TCP server connection before processing incoming UDP packets.
-        with self._local_tak_tcp_push_lock:
-            tcp_push_conn = self._local_tak_tcp_push_conn
-        if tcp_push_conn is not None:
+        if self.prefer_local_tcp_over_udp:
+            # ── TCP-first local delivery (primary path) ───────────────────────
+            # The active TCP connection to WinTAK/LPU5 (127.0.0.1:8087) is used
+            # first because UDP/4242 may be blocked on some Windows systems
+            # (WinError 10013).  Registered TCP listener peers are included as
+            # part of the TCP delivery pass before multicast and UDP fallback.
+            self._send_packet_to_local_tak_tcp_push(packet_xml, label)
+            self._send_packet_to_local_tak_tcp(packet_xml, label)
+            self._send_packet_to_tak_multicast(packet_xml, label)
+            # ── Local UDP send (fallback path) ────────────────────────────────
             try:
-                tcp_push_conn.sendall(packet_xml + b"\n")
+                self.sock_udp.sendto(packet_xml, (self.tak_ip, self.tak_port))
                 self.logger.debug(
-                    f"[LastHop-TCP] Lokal an WinTAK gesendet via TCP: "
-                    f"{self.tcp_chat_receiver_host}:{self.tcp_chat_receiver_port} "
+                    f"[LastHop-UDP] Lokal an WinTAK gesendet (Fallback): {self.tak_ip}:{self.tak_port} "
                     f"label={label} bytes={len(packet_xml)}"
                 )
-            except OSError as e:
-                self.logger.debug(f"[LastHop-TCP] Lokaler TCP-Push fehlgeschlagen ({e}); Socket wird zurückgesetzt.")
-                with self._local_tak_tcp_push_lock:
-                    if self._local_tak_tcp_push_conn is tcp_push_conn:
-                        self._local_tak_tcp_push_conn = None
-                try:
-                    tcp_push_conn.close()
-                except Exception:
-                    pass
-
-        # ── Local TCP push (secondary path via TCP-receiver socket to WinTAK) ──
-        # The bidirectional TAK TCP connection to WinTAK's TAK-server (established by
-        # receive_tak_chat_tcp) is also used to push CoT events to WinTAK.  This makes
-        # marker and generic CoT delivery more reliable because WinTAK processes CoT
-        # from its own TCP server connection before processing incoming UDP packets.
-        with self._local_tak_tcp_push_lock:
-            tcp_push_conn = self._local_tak_tcp_push_conn
-        if tcp_push_conn is not None:
+            except Exception as e:
+                self.logger.warning(f"Fehler beim Senden an lokales TAK (UDP-Fallback): {e}")
+        else:
+            # ── UDP-first local delivery (legacy) ─────────────────────────────
             try:
-                tcp_push_conn.sendall(packet_xml + b"\n")
+                self.sock_udp.sendto(packet_xml, (self.tak_ip, self.tak_port))
                 self.logger.debug(
-                    f"[LastHop-TCP] Lokal an WinTAK gesendet via TCP: "
-                    f"{self.tcp_chat_receiver_host}:{self.tcp_chat_receiver_port} "
+                    f"[LastHop-UDP] Lokal an WinTAK gesendet: {self.tak_ip}:{self.tak_port} "
                     f"label={label} bytes={len(packet_xml)}"
                 )
-            except OSError as e:
-                self.logger.debug(f"[LastHop-TCP] Lokaler TCP-Push fehlgeschlagen ({e}); Socket wird zurückgesetzt.")
-                with self._local_tak_tcp_push_lock:
-                    if self._local_tak_tcp_push_conn is tcp_push_conn:
-                        self._local_tak_tcp_push_conn = None
-                try:
-                    tcp_push_conn.close()
-                except Exception:
-                    pass
+            except Exception as e:
+                self.logger.warning(f"Fehler beim Senden an lokales TAK (UDP): {e}")
+            self._send_packet_to_tak_multicast(packet_xml, label)
+            self._send_packet_to_local_tak_tcp(packet_xml, label)
+            self._send_packet_to_local_tak_tcp_push(packet_xml, label)
 
         if self._should_use_pytak_remote():
             # PyTAK replaces the legacy remote socket path when available so packets
