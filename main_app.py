@@ -4387,9 +4387,12 @@ class TAKMeshtasticGateway:
                 f"cached_class={cot_class} mesh_default_type={pli_event_type}"
             )
         elif sender_uid != normalize_meshtastic_uid(packet.get("fromId") or packet.get("from") or "MESH-UNKNOWN"):
+            event_type = "a-u-G"
+            cot_class = "marker"
             self.logger.debug(
                 "ATAK_PLUGIN_V2-PLI enthält TAK-fähige UID ohne zwischengespeicherten Marker-Typ; "
-                f"nutze Meshtastic-PLI-Default: uid={sender_uid} mesh_default_type={pli_event_type}"
+                f"nutze generischen Marker-Fallback statt Meshtastic-PLI-Default: "
+                f"uid={sender_uid} fallback_type={event_type} mesh_default_type={pli_event_type}"
             )
 
         timestamp = get_tak_timestamp()
@@ -4866,9 +4869,12 @@ class TAKMeshtasticGateway:
                 f"cached_class={cot_class} mesh_default_type={pli_event_type}"
             )
         elif sender_uid != fallback_sender_uid:
+            event_type = "a-u-G"
+            cot_class = "marker"
             self.logger.debug(
                 "ATAK_PLUGIN-PLI enthält TAK-fähige UID ohne zwischengespeicherten Marker-Typ; "
-                f"nutze Meshtastic-PLI-Default: uid={sender_uid} mesh_default_type={pli_event_type}"
+                f"nutze generischen Marker-Fallback statt Meshtastic-PLI-Default: "
+                f"uid={sender_uid} fallback_type={event_type} mesh_default_type={pli_event_type}"
             )
         battery = _clamp_battery_percentage(status.get("battery", 0))
         altitude = max(0, int(pli.get("altitude") or 0))
