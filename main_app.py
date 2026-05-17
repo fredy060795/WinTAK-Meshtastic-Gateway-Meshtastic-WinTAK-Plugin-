@@ -2011,23 +2011,42 @@ class GatewayApp:
             row=7, column=3, sticky="w", pady=(0, 4)
         )
 
+        self._log_raw_meshtastic_payloads_var = tk.BooleanVar(
+            value=as_bool(self.cfg.get("log_raw_meshtastic_payloads", False))
+        )
+        ttk.Checkbutton(
+            cfg_frame,
+            text="Enable RAW Meshtastic output",
+            variable=self._log_raw_meshtastic_payloads_var,
+            command=self._update_raw_payload_logging_controls,
+        ).grid(row=8, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        self._log_raw_meshtastic_payloads_full_var = tk.BooleanVar(
+            value=as_bool(self.cfg.get("log_raw_meshtastic_payloads_full", False))
+        )
+        self._raw_payloads_full_check = ttk.Checkbutton(
+            cfg_frame,
+            text="Log complete RAW payload (full dump)",
+            variable=self._log_raw_meshtastic_payloads_full_var,
+        )
+        self._raw_payloads_full_check.grid(row=9, column=0, columnspan=2, sticky="w", pady=(0, 4))
+
         self._relay_text_messages_var = tk.BooleanVar(value=as_bool(self.cfg.get("relay_text_messages", True)))
         ttk.Checkbutton(
             cfg_frame,
             text="Enable relay between selected COM ports",
             variable=self._relay_text_messages_var,
-        ).grid(row=8, column=0, columnspan=2, sticky="w", pady=(0, 4))
-        cfg_label("Relay From COM Port(s):", row=8, col=2, padx=(8, 6), pady=(0, 4))
+        ).grid(row=10, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        cfg_label("Relay From COM Port(s):", row=10, col=2, padx=(8, 6), pady=(0, 4))
         self._relay_text_from_ports_var = tk.StringVar(value=_format_ports_for_entry(self.cfg.get("relay_text_from_ports")))
         ttk.Entry(cfg_frame, textvariable=self._relay_text_from_ports_var, width=16).grid(
-            row=8, column=3, sticky="ew", pady=(0, 4)
+            row=10, column=3, sticky="ew", pady=(0, 4)
         )
 
-        cfg_label("Relay To COM Port(s):", row=9, col=2, padx=(8, 6), pady=(0, 4))
+        cfg_label("Relay To COM Port(s):", row=11, col=2, padx=(8, 6), pady=(0, 4))
         self._relay_text_to_ports_var = tk.StringVar(value=_format_ports_for_entry(self.cfg.get("relay_text_to_ports")))
         self._relay_text_to_ports_var.trace_add("write", self._on_relay_to_ports_changed)
         relay_to_frame = ttk.Frame(cfg_frame)
-        relay_to_frame.grid(row=9, column=3, columnspan=2, sticky="ew", pady=(0, 4))
+        relay_to_frame.grid(row=11, column=3, columnspan=2, sticky="ew", pady=(0, 4))
         relay_to_frame.columnconfigure(0, weight=1)
         self._relay_text_to_picker_var = tk.StringVar()
         self._relay_text_to_picker = ttk.Combobox(
@@ -2047,7 +2066,7 @@ class GatewayApp:
             cfg_frame,
             text="Leave Relay From blank to relay from any selected port. For Relay To, choose 'All other selected ports' or list custom ports.",
             style="Sub.TLabel",
-        ).grid(row=10, column=0, columnspan=5, sticky="w", pady=(0, 4))
+        ).grid(row=12, column=0, columnspan=5, sticky="w", pady=(0, 4))
         self._refresh_relay_to_picker_options()
 
         self._send_nodes_without_gps_var = tk.BooleanVar(value=as_bool(self.cfg.get("send_nodes_without_gps", True)))
@@ -2056,25 +2075,25 @@ class GatewayApp:
             text="Send nodes without GPS fix",
             variable=self._send_nodes_without_gps_var,
             command=self._update_no_gps_hint,
-        ).grid(row=11, column=0, columnspan=2, sticky="w", pady=(0, 4))
-        cfg_label("Fallback Lat:", row=11, col=2, padx=(8, 6), pady=(0, 4))
+        ).grid(row=13, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        cfg_label("Fallback Lat:", row=13, col=2, padx=(8, 6), pady=(0, 4))
         raw_park_lat = self.cfg.get("park_lat")
         park_lat_val = "" if raw_park_lat is None else f"{float(raw_park_lat):.6f}".rstrip("0").rstrip(".")
         self._park_lat_var = tk.StringVar(value=park_lat_val)
         ttk.Entry(cfg_frame, textvariable=self._park_lat_var, width=16).grid(
-            row=11, column=3, sticky="w", pady=(0, 4)
+            row=13, column=3, sticky="w", pady=(0, 4)
         )
 
         self._wintak_setup_var = tk.StringVar()
         ttk.Label(cfg_frame, textvariable=self._wintak_setup_var, style="Hint.TLabel").grid(
-            row=12, column=0, columnspan=2, sticky="w", pady=(0, 4)
+            row=14, column=0, columnspan=2, sticky="w", pady=(0, 4)
         )
-        cfg_label("Fallback Lon:", row=12, col=2, padx=(8, 6), pady=(0, 4))
+        cfg_label("Fallback Lon:", row=14, col=2, padx=(8, 6), pady=(0, 4))
         raw_park_lon = self.cfg.get("park_lon")
         park_lon_val = "" if raw_park_lon is None else f"{float(raw_park_lon):.6f}".rstrip("0").rstrip(".")
         self._park_lon_var = tk.StringVar(value=park_lon_val)
         ttk.Entry(cfg_frame, textvariable=self._park_lon_var, width=16).grid(
-            row=12, column=3, sticky="w", pady=(0, 4)
+            row=14, column=3, sticky="w", pady=(0, 4)
         )
         self._local_tak_tcp_listen_port_var.trace_add("write", self._update_wintak_setup_hint)
 
@@ -2088,8 +2107,9 @@ class GatewayApp:
         self._park_lon_var.trace_add("write", lambda *_: self._update_no_gps_hint())
         self._no_gps_hint_var = tk.StringVar()
         ttk.Label(cfg_frame, textvariable=self._no_gps_hint_var, style="Hint.TLabel").grid(
-            row=13, column=0, columnspan=6, sticky="w", pady=(0, 2)
+            row=15, column=0, columnspan=6, sticky="w", pady=(0, 2)
         )
+        self._update_raw_payload_logging_controls()
         self._update_no_gps_hint()
 
         cfg_frame.columnconfigure(1, weight=1)
@@ -2456,6 +2476,12 @@ class GatewayApp:
         else:
             self._no_gps_hint_var.set("")
 
+    def _update_raw_payload_logging_controls(self):
+        enabled = bool(self._log_raw_meshtastic_payloads_var.get())
+        if not enabled:
+            self._log_raw_meshtastic_payloads_full_var.set(False)
+        self._raw_payloads_full_check.configure(state="normal" if enabled else "disabled")
+
     def _parse_int_field(self, raw_value, field_name, min_value=MIN_PORT_NUMBER, max_value=MAX_PORT_NUMBER):
         try:
             value = int(str(raw_value).strip())
@@ -2482,6 +2508,10 @@ class GatewayApp:
         )
         self.cfg["sync_interval_seconds"] = self._parse_int_field(
             self._sync_interval_var.get(), "Sync Interval", min_value=1, max_value=86400
+        )
+        self.cfg["log_raw_meshtastic_payloads"] = bool(self._log_raw_meshtastic_payloads_var.get())
+        self.cfg["log_raw_meshtastic_payloads_full"] = bool(
+            self._log_raw_meshtastic_payloads_var.get() and self._log_raw_meshtastic_payloads_full_var.get()
         )
         self.cfg["relay_text_messages"] = bool(self._relay_text_messages_var.get())
         relay_from_ports = _parse_ports_text(self._relay_text_from_ports_var.get())
