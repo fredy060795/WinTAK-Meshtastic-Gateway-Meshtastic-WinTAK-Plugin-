@@ -236,7 +236,17 @@ MESHTASTIC_COT_TYPE_ENUM_TO_NAME = {
     121: "b-t-f-d",
     122: "b-t-f-r",
 }
-MESHTASTIC_V2_COT_TYPE_ID_TO_VALUE = dict(MESHTASTIC_COT_TYPE_ENUM_TO_NAME)
+MESHTASTIC_PROTO_MARKER_KIND_NAME_TO_COT_TYPE = {
+    "SPOT": "b-m-p-s-m",
+    "WAYPOINT": "b-m-p-w",
+    "CHECKPOINT": "b-m-p-c",
+    "SELFPOSITION": "b-m-p-s-p-i",
+    "GOTOPOINT": "b-m-p-w-GOTO",
+    "INITIALPOINT": "b-m-p-c-ip",
+    "CONTACTPOINT": "b-m-p-c-cp",
+    "OBSERVATIONPOST": "b-m-p-s-p-op",
+    "IMAGEMARKER": "b-i-x-i",
+}
 MESHTASTIC_V2_MARKER_KIND_TO_COT_TYPE = {
     1: "b-m-p-s-m",
     2: "b-m-p-w",
@@ -263,6 +273,78 @@ MESHTASTIC_MARKER_KIND_TO_LABEL = {
     11: "ObservationPost",
     12: "ImageMarker",
 }
+
+
+def _enum_identifier_to_cot_type(identifier):
+    normalized = str(identifier or "").strip()
+    if not normalized:
+        return ""
+    if normalized.startswith("CotType_"):
+        normalized = normalized[len("CotType_"):]
+    parts = [part for part in normalized.split("_") if part]
+    return "-".join(parts)
+
+
+def _load_proto_enum_value_map(proto_path, enum_name, scope=None):
+    try:
+        with open(proto_path, "r", encoding="utf-8") as proto_file:
+            proto_text = proto_file.read()
+    except OSError:
+        return {}
+
+    if scope:
+        scope_match = re.search(
+            rf"\b(?:message|enum)\s+{re.escape(scope)}\s*\{{(?P<body>.*?)\n\}}",
+            proto_text,
+            re.DOTALL,
+        )
+        if not scope_match:
+            return {}
+        proto_text = scope_match.group("body")
+
+    enum_match = re.search(
+        rf"\benum\s+{re.escape(enum_name)}\s*\{{(?P<body>.*?)\n\s*\}}",
+        proto_text,
+        re.DOTALL,
+    )
+    if not enum_match:
+        return {}
+
+    values = {}
+    for name, raw_value in re.findall(
+        r"^\s*([A-Za-z][A-Za-z0-9_]*)\s*=\s*(-?\d+)\s*;",
+        enum_match.group("body"),
+        re.MULTILINE,
+    ):
+        try:
+            values[int(raw_value)] = name
+        except ValueError:
+            continue
+    return values
+
+
+def _load_meshtastic_atak_proto_mappings():
+    proto_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "atak.proto")
+    cot_type_map = dict(MESHTASTIC_COT_TYPE_ENUM_TO_NAME)
+    for value, enum_name in _load_proto_enum_value_map(proto_path, "CotType").items():
+        cot_type = _enum_identifier_to_cot_type(enum_name)
+        if cot_type and cot_type.lower() != "other":
+            cot_type_map[value] = cot_type
+
+    marker_kind_map = dict(MESHTASTIC_V2_MARKER_KIND_TO_COT_TYPE)
+    for value, enum_name in _load_proto_enum_value_map(proto_path, "Kind", scope="Marker").items():
+        normalized_name = re.sub(r"[^A-Z0-9]", "", str(enum_name or "").upper())
+        if normalized_name.startswith("KIND"):
+            normalized_name = normalized_name[4:]
+        cot_type = MESHTASTIC_PROTO_MARKER_KIND_NAME_TO_COT_TYPE.get(normalized_name)
+        if cot_type:
+            marker_kind_map[value] = cot_type
+    return cot_type_map, marker_kind_map
+
+
+MESHTASTIC_COT_TYPE_ENUM_TO_NAME, MESHTASTIC_V2_MARKER_KIND_TO_COT_TYPE = _load_meshtastic_atak_proto_mappings()
+MESHTASTIC_V2_COT_TYPE_ID_TO_VALUE = dict(MESHTASTIC_COT_TYPE_ENUM_TO_NAME)
+MESHTASTIC_MARKER_KIND_TO_COT_TYPE = dict(MESHTASTIC_V2_MARKER_KIND_TO_COT_TYPE)
 TAK_EVENT_PATTERN = re.compile(r"<event\b[^>]*>.*?</event>", re.DOTALL)
 TAK_PING_EVENT_TYPE = "t-x-c-t"
 TAK_PONG_EVENT_TYPE = "t-x-c-t-r"
