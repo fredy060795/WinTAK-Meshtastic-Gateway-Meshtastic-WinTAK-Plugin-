@@ -1620,6 +1620,27 @@ def _resolve_meshtastic_team_cot_event_type(team_value, default=MESHTASTIC_PLI_C
     return MESHTASTIC_TEAM_NAME_TO_COT_EVENT_TYPE.get(normalized_team, default)
 
 
+def _resolve_meshtastic_marker_cot_type(marker, fallback="a-u-G"):
+    marker = marker or {}
+    try:
+        kind_value = int(marker.get("kind") or 0)
+    except (TypeError, ValueError):
+        kind_value = 0
+    mapped_kind_type = MESHTASTIC_V2_MARKER_KIND_TO_COT_TYPE.get(kind_value)
+    if mapped_kind_type:
+        return mapped_kind_type
+
+    iconset = str(marker.get("iconset") or "").strip()
+    if iconset:
+        icon_parts = [part for part in iconset.split("/") if part]
+        if len(icon_parts) >= 3 and icon_parts[0] == "COT_MAPPING_2525B":
+            return icon_parts[-1]
+        if len(icon_parts) >= 2 and icon_parts[0] == "COT_MAPPING_SPOTMAP":
+            return icon_parts[1]
+
+    return str(fallback or "a-u-G").strip() or "a-u-G"
+
+
 def _is_persistable_cot_type(event_type):
     """Return True for marker/drawing CoT types that should carry ``<archive/>``.
 
@@ -4213,19 +4234,18 @@ class TAKMeshtasticGateway:
     def _derive_meshtastic_marker_event_type(self, base_type, marker):
         event_type = str(base_type or "").strip()
         marker = marker if isinstance(marker, dict) else {}
-        marker_kind = int(marker.get("kind") or 0)
-        marker_kind_type = MESHTASTIC_V2_MARKER_KIND_TO_COT_TYPE.get(marker_kind, "")
-        if marker_kind_type and (
+        derived_marker_type = _resolve_meshtastic_marker_cot_type(marker, fallback="")
+        if derived_marker_type and (
             not event_type
             or event_type == MESHTASTIC_PLI_COT_EVENT_TYPE
             or event_type.endswith("-U-C")
             or event_type in {"a-f-G", "a-h-G", "a-u-G", "a-n-G"}
         ):
-            event_type = marker_kind_type
+            event_type = derived_marker_type
         if not event_type:
             event_type = str(marker.get("parent_type") or "").strip()
         if not event_type:
-            event_type = "a-u-G"
+            event_type = _resolve_meshtastic_marker_cot_type(marker, fallback="a-u-G")
         return event_type
 
     def _resolve_meshtastic_v2_event_type(self, tak_packet):
@@ -4463,8 +4483,7 @@ class TAKMeshtasticGateway:
         if marker.get("parent_callsign"):
             marker_meta_attrs["parentCallsign"] = str(marker.get("parent_callsign"))
         SubElement(detail, "meshtastic_marker", marker_meta_attrs)
-        if _is_persistable_cot_type(event_type):
-            SubElement(detail, "archive")
+        SubElement(detail, "archive")
         if tak_packet.get("remarks"):
             SubElement(detail, "remarks").text = str(tak_packet["remarks"])
         self.logger.debug(
