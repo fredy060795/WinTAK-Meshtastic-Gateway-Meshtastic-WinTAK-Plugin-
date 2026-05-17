@@ -103,6 +103,8 @@ INBOUND_TAK_DEBUG_SNIPPET_CHARS = 240
 UTF8_BOM_CHAR = "\ufeff"
 RECENT_CHAT_CACHE_TTL_SECONDS = 30
 RECENT_CHAT_CACHE_MAX_ENTRIES = 256
+RECENT_COT_IDENTITY_CACHE_TTL_SECONDS = 3600
+RECENT_COT_IDENTITY_CACHE_MAX_ENTRIES = 512
 EMPTY_MESHTASTIC_COT_ERROR = "Leere CoT-Nachricht kann nicht ins Mesh gesendet werden."
 PYTAK_REMOTE_QUEUE_TIMEOUT_SECONDS = 2.0
 PYTAK_REMOTE_RECONNECT_SECONDS = 10
@@ -3021,6 +3023,7 @@ class TAKMeshtasticGateway:
         self.recent_meshtastic_chat_ids = {}
         self.recent_meshtastic_outbound_texts = {}
         self.recent_cot_ids = {}
+        self.recent_cot_identity_by_uid = {}
         self.partial_meshtastic_cot_messages = {}
         self.partial_meshtastic_forwarder_messages = {}
         self.partial_fountain_transfers = {}   # FTN fountain-code receive state
@@ -3168,6 +3171,55 @@ class TAKMeshtasticGateway:
                 cache.pop(key, None)
                 return False
             return True
+
+    def _remember_recent_cot_identity(self, metadata, *, source_label=None):
+        if not isinstance(metadata, dict):
+            return
+        uid = str(metadata.get("uid") or "").strip()
+        event_type = str(metadata.get("type") or "").strip()
+        cot_class = str(metadata.get("cot_class") or "").strip() or _classify_cot_event_type(event_type)
+        if not uid or not event_type:
+            return
+        if cot_class == "pli":
+            return
+        now = time.time()
+        entry = {
+            "uid": uid,
+            "type": event_type,
+            "how": str(metadata.get("how") or "").strip() or "m-g",
+            "cot_class": cot_class,
+            "updated_at": now,
+            "source_label": source_label,
+        }
+        with self.chat_cache_lock:
+            expired = [
+                item
+                for item, cached in self.recent_cot_identity_by_uid.items()
+                if now - float(cached.get("updated_at") or 0) > RECENT_COT_IDENTITY_CACHE_TTL_SECONDS
+            ]
+            for item in expired:
+                self.recent_cot_identity_by_uid.pop(item, None)
+            self.recent_cot_identity_by_uid[uid] = entry
+            while len(self.recent_cot_identity_by_uid) > RECENT_COT_IDENTITY_CACHE_MAX_ENTRIES:
+                oldest = min(
+                    self.recent_cot_identity_by_uid,
+                    key=lambda key: self.recent_cot_identity_by_uid[key].get("updated_at", 0),
+                )
+                self.recent_cot_identity_by_uid.pop(oldest, None)
+
+    def _get_recent_cot_identity(self, uid):
+        uid = str(uid or "").strip()
+        if not uid:
+            return None
+        now = time.time()
+        with self.chat_cache_lock:
+            entry = self.recent_cot_identity_by_uid.get(uid)
+            if entry is None:
+                return None
+            if now - float(entry.get("updated_at") or 0) > RECENT_COT_IDENTITY_CACHE_TTL_SECONDS:
+                self.recent_cot_identity_by_uid.pop(uid, None)
+                return None
+            return dict(entry)
 
     def _cleanup_expired_meshtastic_cot_fragments(self):
         now = time.time()
@@ -3877,10 +3929,32 @@ class TAKMeshtasticGateway:
             int(group.get("role") or MESHTASTIC_DEFAULT_ROLE_ENUM),
             MESHTASTIC_ROLE_ENUM_TO_NAME.get(MESHTASTIC_DEFAULT_ROLE_ENUM, "Team Member"),
         )
-        event_type = _resolve_meshtastic_team_cot_event_type(
+        pli_event_type = _resolve_meshtastic_team_cot_event_type(
             team_name,
             default=MESHTASTIC_PLI_COT_EVENT_TYPE,
         )
+        event_type = pli_event_type
+        event_how = "m-g"
+        cot_class = "pli"
+        cached_identity = self._get_recent_cot_identity(sender_uid)
+        if (
+            cached_identity
+            and cached_identity.get("cot_class") in {"marker", "generic"}
+            and str(cached_identity.get("type") or "").strip()
+        ):
+            event_type = str(cached_identity["type"]).strip()
+            event_how = str(cached_identity.get("how") or "").strip() or "m-g"
+            cot_class = cached_identity.get("cot_class") or _classify_cot_event_type(event_type)
+            self.logger.debug(
+                "ATAK_PLUGIN-PLI nutzt zwischengespeicherten TAK-Typ statt PLI-Default: "
+                f"uid={sender_uid} cached_type={event_type} cached_how={event_how} "
+                f"cached_class={cot_class} mesh_default_type={pli_event_type}"
+            )
+        elif sender_uid != fallback_sender_uid:
+            self.logger.debug(
+                "ATAK_PLUGIN-PLI enthält TAK-fähige UID ohne zwischengespeicherten Marker-Typ; "
+                f"nutze Meshtastic-PLI-Default: uid={sender_uid} mesh_default_type={pli_event_type}"
+            )
         battery = _clamp_battery_percentage(status.get("battery", 0))
         altitude = max(0, int(pli.get("altitude") or 0))
         speed = max(0, int(pli.get("speed") or 0))
@@ -3894,7 +3968,7 @@ class TAKMeshtasticGateway:
             "version": "2.0",
             "uid": sender_uid,
             "type": event_type,
-            "how": "m-g",
+            "how": event_how,
             "start": timestamp,
             "time": timestamp,
             "stale": stale,
@@ -3917,6 +3991,13 @@ class TAKMeshtasticGateway:
         SubElement(detail, "status", {"battery": str(battery)})
         SubElement(detail, "track", {"speed": str(speed), "course": str(course)})
         SubElement(detail, "precisionlocation", {"geopointsrc": "GPS"})
+        self.logger.debug(
+            "ATAK_PLUGIN aus dem Mesh als CoT rekonstruiert: "
+            f"uid={sender_uid} reconstructed_type={event_type} how={event_how} "
+            f"classification={cot_class} mesh_default_type={pli_event_type} "
+            f"type_changed={'ja' if event_type != pli_event_type else 'nein'} "
+            f"lat={lat:.6f} lon={lon:.6f}"
+        )
         return tostring(event, encoding="utf-8")
 
     def _resolve_chat_position(self, uid, node=None):
@@ -4843,16 +4924,26 @@ class TAKMeshtasticGateway:
             self.logger.warning(f"{source_label} verworfen: {error or 'ungültiges CoT-Event'}")
             self.logger.debug(f"{source_label} Rohpayload: {_build_safe_payload_snippet(packet_xml)}")
             return True
+        pre_uid = pre_norm_metadata.get("uid") if pre_norm_metadata else None
+        pre_type = pre_norm_metadata.get("type") if pre_norm_metadata else None
+        pre_how = pre_norm_metadata.get("how") if pre_norm_metadata else None
+        uid_unchanged = pre_uid == metadata["uid"] if pre_uid is not None else True
+        type_unchanged = pre_type == metadata["type"] if pre_type is not None else True
+        how_unchanged = pre_how == metadata["how"] if pre_how is not None else True
+        self.logger.debug(
+            f"[Mesh->WinTAK] Rekonstruiert — source={source_label} from={from_id} "
+            f"uid={metadata['uid']} reconstructed_type={pre_type or metadata['type']} "
+            f"forward_type={metadata['type']} how={metadata['how']} "
+            f"classification={metadata.get('cot_class') or 'generic'} "
+            f"type_changed={'ja' if not type_unchanged else 'nein'} "
+            f"uid_changed={'ja' if not uid_unchanged else 'nein'} "
+            f"how_changed={'ja' if not how_unchanged else 'nein'} "
+            f"lat={metadata['lat']:.6f} lon={metadata['lon']:.6f}"
+        )
         if metadata.get("is_marker"):
             # ── LPU5-aligned marker last-hop debug ────────────────────────────
             # Confirm that uid/type/how are unchanged after normalization so that
             # TAK-originated marker semantics are forwarded unmodified to WinTAK.
-            pre_uid = pre_norm_metadata.get("uid") if pre_norm_metadata else None
-            pre_type = pre_norm_metadata.get("type") if pre_norm_metadata else None
-            pre_how = pre_norm_metadata.get("how") if pre_norm_metadata else None
-            uid_unchanged = pre_uid == metadata["uid"] if pre_uid is not None else True
-            type_unchanged = pre_type == metadata["type"] if pre_type is not None else True
-            how_unchanged = pre_how == metadata["how"] if pre_how is not None else True
             self.logger.debug(
                 f"[Marker-LastHop] Rekonstruiert aus Mesh — source={source_label} from={from_id} "
                 f"uid={metadata['uid']} (unverändert={uid_unchanged}) "
@@ -4870,6 +4961,7 @@ class TAKMeshtasticGateway:
             f"how={metadata['how']} lat={metadata['lat']:.6f} lon={metadata['lon']:.6f} "
             f"payload={_build_safe_payload_snippet(normalized_packet)}"
         )
+        self._remember_recent_cot_identity(metadata, source_label=source_label)
         cot_dedupe_key = self._build_cot_dedupe_key(normalized_packet)
         if cot_dedupe_key and self._was_seen_recently(self.recent_cot_ids, cot_dedupe_key):
             return True
@@ -5052,6 +5144,7 @@ class TAKMeshtasticGateway:
         normalized_packet, metadata, error = self._normalize_generic_cot_event(packet_xml)
         if normalized_packet is None or metadata is None:
             raise ValueError(error or "Ungültiges CoT-Event")
+        self._remember_recent_cot_identity(metadata, source_label="TAK->Mesh")
         cot_class = metadata.get("cot_class") or "generic"
         if cot_class == "marker":
             self.logger.debug(
