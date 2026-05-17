@@ -547,6 +547,39 @@ def _build_safe_payload_snippet(payload, limit=INBOUND_TAK_DEBUG_SNIPPET_CHARS):
     return compact
 
 
+RAW_PAYLOAD_FULL_HEX_THRESHOLD = 128  # bytes – payloads up to this size get a full hex dump
+
+
+def _format_raw_meshtastic_payload(payload, full=False):
+    """Return a human-readable, inspectable representation of a raw binary payload.
+
+    Args:
+        payload: bytes/bytearray or any value that can be coerced to bytes.
+        full:    When True every byte is included regardless of size.
+                 When False payloads larger than RAW_PAYLOAD_FULL_HEX_THRESHOLD
+                 are represented as base64 with a hex-prefix snippet.
+
+    Returns:
+        A multi-field string suitable for a single log line:
+        ``len=N hex=<hex> b64=<base64>``  (full)
+        ``len=N hex_prefix=<first 16 bytes hex> b64=<base64>``  (truncated)
+    """
+    if payload is None:
+        return "len=0 hex= b64="
+    if isinstance(payload, (bytes, bytearray)):
+        raw = bytes(payload)
+    else:
+        raw = str(payload).encode("utf-8", errors="replace")
+    n = len(raw)
+    b64 = base64.b64encode(raw).decode("ascii")
+    if full or n <= RAW_PAYLOAD_FULL_HEX_THRESHOLD:
+        hex_str = raw.hex()
+        return f"len={n} hex={hex_str} b64={b64}"
+    # Large payload: show a 16-byte prefix hex and full base64
+    hex_prefix = raw[:16].hex()
+    return f"len={n} hex_prefix={hex_prefix}… b64={b64}"
+
+
 def _ensure_bytes(value):
     if isinstance(value, bytes):
         return value
@@ -3003,6 +3036,16 @@ class TAKMeshtasticGateway:
 
         # Sync interval
         self.sync_interval_seconds = int(self.cfg.get("sync_interval_seconds", 300))
+
+        # Raw Meshtastic payload logging (off by default, turn on in config.yaml for diagnosis)
+        self.log_raw_meshtastic_payloads = as_bool(
+            self.cfg.get("log_raw_meshtastic_payloads", False)
+        )
+        # When true, include the complete payload (hex + base64) regardless of size.
+        # When false (default), only the first 16 bytes hex prefix is shown for large packets.
+        self.log_raw_meshtastic_payloads_full = as_bool(
+            self.cfg.get("log_raw_meshtastic_payloads_full", False)
+        )
 
         # Warn when no-fix nodes would be placed at an invalid/unconfigured position
         if self.send_nodes_without_gps and self.park_coords is None:
@@ -6263,6 +6306,11 @@ class TAKMeshtasticGateway:
             self.logger.debug(f"RAW Paket empfangen: {packet}")
             from_id = packet.get('fromId') or packet.get('from')
             node = self._find_node_for_packet(interface, from_id)
+
+            # ── Optional raw payload inspection log ──────────────────────────
+            if self.log_raw_meshtastic_payloads:
+                self._log_raw_meshtastic_packet(packet, from_id)
+
             if self._is_atak_forwarder_packet(packet):
                 self._handle_meshtastic_forwarder_packet(packet, from_id or "MESH-UNKNOWN")
             if self._is_text_message_packet(packet):
@@ -6291,6 +6339,62 @@ class TAKMeshtasticGateway:
                 self.process_node(node, 0, force_update=True)
         except Exception:
             self.logger.debug("Fehler im on_any_packet:\n" + traceback.format_exc())
+
+    # ── Raw-payload inspection helper ────────────────────────────────────────
+
+    # Port names that are interesting for raw-payload diagnostics.
+    _RAW_LOG_PORTNUMS = frozenset({
+        "ATAK_PLUGIN", "ATAK_PLUGIN_V2", "ATAK_FORWARDER",
+        "TEXT_MESSAGE_APP", "POSITION_APP", "NODEINFO_APP",
+    })
+
+    def _log_raw_meshtastic_packet(self, packet, from_id):
+        """Emit a structured raw-payload log entry for inbound Meshtastic packets.
+
+        Enabled via ``log_raw_meshtastic_payloads: true`` in config.yaml.
+        Set ``log_raw_meshtastic_payloads_full: true`` to include the complete
+        payload hex/base64 for large packets instead of only the first 16 bytes.
+        """
+        decoded = packet.get("decoded") or {}
+        if not isinstance(decoded, dict):
+            return
+        portnum = str(decoded.get("portnum", "UNKNOWN")).upper()
+        payload = decoded.get("payload")
+
+        # Only log packet types that are relevant for TAK reconstruction diagnosis.
+        # If the portnum is numeric, also check against the interesting set by value.
+        portnum_matches = portnum in self._RAW_LOG_PORTNUMS
+        if not portnum_matches:
+            try:
+                pn_int = int(portnum)
+                interesting_ints = set()
+                if portnums_pb2 is not None:
+                    for name in self._RAW_LOG_PORTNUMS:
+                        v = getattr(portnums_pb2.PortNum, name, None)
+                        if v is not None:
+                            interesting_ints.add(int(v))
+                portnum_matches = pn_int in interesting_ints
+            except (ValueError, TypeError):
+                pass
+
+        if not portnum_matches:
+            return
+
+        full = self.log_raw_meshtastic_payloads_full
+        if isinstance(payload, (bytes, bytearray)):
+            raw_info = _format_raw_meshtastic_payload(payload, full=full)
+        else:
+            # No binary payload — include the text field if present (TEXT_MESSAGE_APP)
+            text_field = decoded.get("text") or ""
+            if text_field:
+                text_bytes = str(text_field).encode("utf-8", errors="replace")
+                raw_info = _format_raw_meshtastic_payload(text_bytes, full=full)
+            else:
+                raw_info = "len=0 hex= b64="
+
+        self.logger.info(
+            f"[RAW-MESH] portnum={portnum} from={from_id or 'UNKNOWN'} {raw_info}"
+        )
 
     def full_sync(self):
         """

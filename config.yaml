@@ -77,3 +77,16 @@ send_nodes_without_gps: true
 # DEBUG aktiviert zusätzliche Diagnosen für empfangene Meshtastic- sowie WinTAK/TAK-Pakete.
 # Mögliche Werte: DEBUG, INFO, WARNING, ERROR
 # log_level: DEBUG
+
+# Raw Meshtastic Payload Logging
+# Wenn true, loggt das Gateway für jeden empfangenen inbound Meshtastic-Paket
+# den exakten Rohpayload als Hex-Dump und Base64 (portnum: ATAK_PLUGIN, ATAK_FORWARDER,
+# TEXT_MESSAGE_APP, POSITION_APP, NODEINFO_APP). Nützlich zur Diagnose von
+# Marker-/PLI-Rekonstruktionsproblemen.
+# Standard: false (rückwärtskompatibel)
+# log_raw_meshtastic_payloads: false
+#
+# Wenn true, wird bei großen Payloads der vollständige Hex-Dump ausgegeben
+# statt nur die ersten 16 Bytes als Präfix. Kann bei langen ATAK_FORWARDER-Paketen
+# sehr lange Logzeilen erzeugen – nur für gezielte Diagnosen aktivieren.
+# log_raw_meshtastic_payloads_full: false
