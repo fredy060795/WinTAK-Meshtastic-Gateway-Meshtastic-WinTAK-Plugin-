@@ -173,6 +173,17 @@ MESHTASTIC_ROLE_ENUM_TO_NAME = {
     )
     for key, value in MESHTASTIC_ROLE_NAME_TO_ENUM.items()
 }
+MESHTASTIC_TEAM_NAME_TO_COT_EVENT_TYPE = {
+    "BLUE": "a-f-G-U-C",
+    "CYAN": "a-f-G-U-C",
+    "DARKBLUE": "a-f-G-U-C",
+    "RED": "a-h-G-U-C",
+    "MAROON": "a-h-G-U-C",
+    "GREEN": "a-n-G-U-C",
+    "DARKGREEN": "a-n-G-U-C",
+    "YELLOW": "a-u-G-U-C",
+    "ORANGE": "a-p-G-U-C",
+}
 TAK_EVENT_PATTERN = re.compile(r"<event\b[^>]*>.*?</event>", re.DOTALL)
 TAK_PING_EVENT_TYPE = "t-x-c-t"
 TAK_PONG_EVENT_TYPE = "t-x-c-t-r"
@@ -1174,6 +1185,11 @@ def _parse_meshtastic_atak_payload(payload):
 
 def _normalize_meshtastic_enum_key(value):
     return re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
+
+
+def _resolve_meshtastic_team_cot_event_type(team_value, default=MESHTASTIC_PLI_COT_EVENT_TYPE):
+    normalized_team = _normalize_meshtastic_enum_key(team_value)
+    return MESHTASTIC_TEAM_NAME_TO_COT_EVENT_TYPE.get(normalized_team, default)
 
 
 def _is_persistable_cot_type(event_type):
@@ -3779,13 +3795,18 @@ class TAKMeshtasticGateway:
             or sender_uid
         ).strip() or sender_uid
 
+        team_enum = int(group.get("team") or MESHTASTIC_DEFAULT_TEAM_ENUM)
         team_name = MESHTASTIC_TEAM_ENUM_TO_NAME.get(
-            int(group.get("team") or MESHTASTIC_DEFAULT_TEAM_ENUM),
+            team_enum,
             MESHTASTIC_TEAM_ENUM_TO_NAME.get(MESHTASTIC_DEFAULT_TEAM_ENUM, "White"),
         )
         role_name = MESHTASTIC_ROLE_ENUM_TO_NAME.get(
             int(group.get("role") or MESHTASTIC_DEFAULT_ROLE_ENUM),
             MESHTASTIC_ROLE_ENUM_TO_NAME.get(MESHTASTIC_DEFAULT_ROLE_ENUM, "Team Member"),
+        )
+        event_type = _resolve_meshtastic_team_cot_event_type(
+            team_name,
+            default=MESHTASTIC_PLI_COT_EVENT_TYPE,
         )
         battery = _clamp_battery_percentage(status.get("battery", 0))
         altitude = max(0, int(pli.get("altitude") or 0))
@@ -3799,7 +3820,7 @@ class TAKMeshtasticGateway:
         event = Element("event", {
             "version": "2.0",
             "uid": sender_uid,
-            "type": MESHTASTIC_PLI_COT_EVENT_TYPE,
+            "type": event_type,
             "how": "m-g",
             "start": timestamp,
             "time": timestamp,
@@ -3817,7 +3838,7 @@ class TAKMeshtasticGateway:
         SubElement(detail, "link", {
             "uid": sender_uid,
             "relation": "p-p",
-            "type": MESHTASTIC_PLI_COT_EVENT_TYPE,
+            "type": event_type,
         })
         SubElement(detail, "__group", {"name": team_name, "role": role_name})
         SubElement(detail, "status", {"battery": str(battery)})
@@ -5259,7 +5280,6 @@ class TAKMeshtasticGateway:
             packet_xml,
             from_id,
             source_label="ATAK_PLUGIN-PLI",
-            meshtastic_live_contact=True,
         )
 
     def _extract_tak_chat_payload(self, packet_xml):
