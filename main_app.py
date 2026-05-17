@@ -4348,6 +4348,18 @@ class TAKMeshtasticGateway:
         lat, lon = normalized_coords
 
         user = node.get("user", {}) if node else {}
+        raw_v2_uid = str(
+            tak_packet.get("uid")
+            or tak_packet.get("device_callsign")
+            or user.get("id")
+            or packet.get("fromId")
+            or packet.get("from")
+            or "MESH-UNKNOWN"
+        ).strip()
+        fallback_sender_uid = normalize_meshtastic_uid(
+            packet.get("fromId") or packet.get("from") or "MESH-UNKNOWN"
+        )
+        normalized_sender_uid = _strip_tak_sender_prefix(normalize_meshtastic_uid(raw_v2_uid))
         sender_uid = self._resolve_meshtastic_v2_event_uid(tak_packet, packet, node=node)
         callsign = str(
             tak_packet.get("callsign")
@@ -4386,13 +4398,14 @@ class TAKMeshtasticGateway:
                 f"uid={sender_uid} cached_type={event_type} cached_how={event_how} "
                 f"cached_class={cot_class} mesh_default_type={pli_event_type}"
             )
-        elif sender_uid != normalize_meshtastic_uid(packet.get("fromId") or packet.get("from") or "MESH-UNKNOWN"):
+        elif normalized_sender_uid != fallback_sender_uid:
             event_type = "a-u-G"
             cot_class = "marker"
             self.logger.debug(
                 "ATAK_PLUGIN_V2-PLI enthält TAK-fähige UID ohne zwischengespeicherten Marker-Typ; "
                 f"nutze generischen Marker-Fallback statt Meshtastic-PLI-Default: "
-                f"uid={sender_uid} fallback_type={event_type} mesh_default_type={pli_event_type}"
+                f"uid={sender_uid} normalized_uid={normalized_sender_uid} "
+                f"fallback_type={event_type} mesh_default_type={pli_event_type}"
             )
 
         timestamp = get_tak_timestamp()
@@ -4820,7 +4833,8 @@ class TAKMeshtasticGateway:
         fallback_sender_uid = normalize_meshtastic_uid(
             packet.get("fromId") or packet.get("from") or "MESH-UNKNOWN"
         )
-        sender_uid = _strip_tak_sender_prefix(normalize_meshtastic_uid(raw_sender_uid))
+        normalized_sender_uid = _strip_tak_sender_prefix(normalize_meshtastic_uid(raw_sender_uid))
+        sender_uid = normalized_sender_uid
         if not _looks_like_valid_tak_uid(sender_uid):
             self.logger.debug(
                 "ATAK_PLUGIN-PLI UID wirkt ungültig/binär, nutze Fallback auf Mesh-Absender: "
@@ -4868,13 +4882,14 @@ class TAKMeshtasticGateway:
                 f"uid={sender_uid} cached_type={event_type} cached_how={event_how} "
                 f"cached_class={cot_class} mesh_default_type={pli_event_type}"
             )
-        elif sender_uid != fallback_sender_uid:
+        elif normalized_sender_uid != fallback_sender_uid:
             event_type = "a-u-G"
             cot_class = "marker"
             self.logger.debug(
                 "ATAK_PLUGIN-PLI enthält TAK-fähige UID ohne zwischengespeicherten Marker-Typ; "
                 f"nutze generischen Marker-Fallback statt Meshtastic-PLI-Default: "
-                f"uid={sender_uid} fallback_type={event_type} mesh_default_type={pli_event_type}"
+                f"uid={sender_uid} normalized_uid={normalized_sender_uid} "
+                f"fallback_type={event_type} mesh_default_type={pli_event_type}"
             )
         battery = _clamp_battery_percentage(status.get("battery", 0))
         altitude = max(0, int(pli.get("altitude") or 0))
@@ -6000,15 +6015,50 @@ class TAKMeshtasticGateway:
         with self.chat_cache_lock:
             self.partial_fountain_transfers.pop(cache_key, None)
 
+        decoded_payload_with_padding = _fountain_decode(
+            blocks_snapshot,
+            K,
+            K * FOUNTAIN_BLOCK_SIZE,
+        )
+        decode_candidates = []
+        if decoded_payload_with_padding:
+            candidate_lengths = [total_len]
+            for extra_bytes in (1, 2, 4, 8):
+                candidate_length = total_len + extra_bytes
+                if candidate_length <= len(decoded_payload_with_padding):
+                    candidate_lengths.append(candidate_length)
+            candidate_lengths.append(len(decoded_payload_with_padding))
+            seen_lengths = set()
+            for candidate_length in candidate_lengths:
+                if candidate_length <= 0 or candidate_length in seen_lengths:
+                    continue
+                seen_lengths.add(candidate_length)
+                decode_candidates.append(decoded_payload_with_padding[:candidate_length])
+        if not decode_candidates:
+            decode_candidates.append(decoded_payload)
+
         self.logger.debug(
             f"FTN-Reassembly vollständig: transfer_id=0x{transfer_id:06x} "
-            f"decoded_bytes={len(decoded_payload)} from={from_id}"
+            f"decoded_bytes={len(decoded_payload)} expected_total_len={total_len} "
+            f"candidate_lengths={[len(candidate) for candidate in decode_candidates]} from={from_id}"
         )
-        packet_xml = _fountain_decode_payload(decoded_payload)
+        packet_xml = None
+        successful_candidate_len = None
+        for candidate in decode_candidates:
+            packet_xml = self._decode_meshtastic_forwarder_payload(candidate)
+            if packet_xml:
+                successful_candidate_len = len(candidate)
+                break
+        if packet_xml:
+            self.logger.debug(
+                f"FTN-Payload erfolgreich dekodiert: transfer_id=0x{transfer_id:06x} "
+                f"candidate_len={successful_candidate_len} xml_bytes={len(packet_xml)} from={from_id}"
+            )
         if not packet_xml:
             self.logger.warning(
                 f"FTN-Payload konnte nicht als CoT XML dekodiert werden: "
-                f"transfer_id=0x{transfer_id:06x} first_bytes=0x{decoded_payload[:4].hex()}"
+                f"transfer_id=0x{transfer_id:06x} first_bytes=0x{decoded_payload[:4].hex()} "
+                f"expected_total_len={total_len} candidate_lengths={[len(candidate) for candidate in decode_candidates]}"
             )
             return True
         return self._forward_meshtastic_cot_xml_to_tak(
