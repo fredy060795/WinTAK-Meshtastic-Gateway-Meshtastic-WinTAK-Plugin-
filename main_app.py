@@ -211,11 +211,14 @@ MESHTASTIC_COT_HOW_ENUM_TO_NAME = {
     6: "m-p",
     7: "m-s",
 }
+MESHTASTIC_COT_HOW_ENUM_TO_VALUE = dict(MESHTASTIC_COT_HOW_ENUM_TO_NAME)
 MESHTASTIC_COT_TYPE_ENUM_TO_NAME = {
     1: "a-f-G-U-C",
     2: "a-f-G-U-C-I",
     25: "b-t-f",
     32: "a-f-G",
+    33: "a-f-G-U",
+    37: "b-m-r",
     34: "a-h-G",
     35: "a-u-G",
     36: "a-n-G",
@@ -254,6 +257,21 @@ MESHTASTIC_V2_MARKER_KIND_TO_COT_TYPE = {
     10: "b-m-p-c-cp",
     11: "b-m-p-s-p-op",
     12: "b-i-x-i",
+}
+MESHTASTIC_MARKER_KIND_TO_COT_TYPE = dict(MESHTASTIC_V2_MARKER_KIND_TO_COT_TYPE)
+MESHTASTIC_MARKER_KIND_TO_LABEL = {
+    1: "Spot",
+    2: "Waypoint",
+    3: "Checkpoint",
+    4: "SelfPosition",
+    5: "Symbol2525",
+    6: "SpotMap",
+    7: "CustomIcon",
+    8: "GoToPoint",
+    9: "InitialPoint",
+    10: "ContactPoint",
+    11: "ObservationPost",
+    12: "ImageMarker",
 }
 
 
@@ -325,6 +343,8 @@ def _load_meshtastic_atak_proto_mappings():
 
 
 MESHTASTIC_COT_TYPE_ENUM_TO_NAME, MESHTASTIC_V2_MARKER_KIND_TO_COT_TYPE = _load_meshtastic_atak_proto_mappings()
+MESHTASTIC_V2_COT_TYPE_ID_TO_VALUE = dict(MESHTASTIC_COT_TYPE_ENUM_TO_NAME)
+MESHTASTIC_MARKER_KIND_TO_COT_TYPE = dict(MESHTASTIC_V2_MARKER_KIND_TO_COT_TYPE)
 TAK_EVENT_PATTERN = re.compile(r"<event\b[^>]*>.*?</event>", re.DOTALL)
 TAK_PING_EVENT_TYPE = "t-x-c-t"
 TAK_PONG_EVENT_TYPE = "t-x-c-t-r"
@@ -1393,7 +1413,18 @@ def _parse_meshtastic_takv2_cot_geopoint(payload):
 
 
 def _parse_meshtastic_takv2_marker(payload):
-    marker = {}
+    marker = {
+        "kind": 0,
+        "kind_label": "",
+        "color": 0,
+        "color_argb": None,
+        "has_readiness": False,
+        "readiness": False,
+        "parent_uid": "",
+        "parent_type": "",
+        "parent_callsign": "",
+        "iconset": "",
+    }
     offset = 0
     payload = bytes(payload or b"")
     while offset < len(payload):
@@ -1412,9 +1443,11 @@ def _parse_meshtastic_takv2_marker(payload):
             value, offset = _read_protobuf_varint(payload, offset)
             if field_number == 1:
                 marker["kind"] = value
+                marker["kind_label"] = MESHTASTIC_MARKER_KIND_TO_LABEL.get(int(value), "")
             elif field_number == 2:
                 marker["color"] = value
             elif field_number == 4:
+                marker["has_readiness"] = True
                 marker["readiness"] = bool(value)
             continue
         if wire_type != 2:
@@ -4198,18 +4231,38 @@ class TAKMeshtasticGateway:
         except (TypeError, ValueError):
             return 0
 
+    def _derive_meshtastic_marker_event_type(self, base_type, marker):
+        event_type = str(base_type or "").strip()
+        marker = marker if isinstance(marker, dict) else {}
+        derived_marker_type = _resolve_meshtastic_marker_cot_type(marker, fallback="")
+        if derived_marker_type and (
+            not event_type
+            or event_type == MESHTASTIC_PLI_COT_EVENT_TYPE
+            or event_type.endswith("-U-C")
+            or event_type in {"a-f-G", "a-h-G", "a-u-G", "a-n-G"}
+        ):
+            event_type = derived_marker_type
+        if not event_type:
+            event_type = str(marker.get("parent_type") or "").strip()
+        if not event_type:
+            event_type = _resolve_meshtastic_marker_cot_type(marker, fallback="a-u-G")
+        return event_type
+
     def _resolve_meshtastic_v2_event_type(self, tak_packet):
         cot_type_id = int(tak_packet.get("cot_type_id") or 0)
         event_type = MESHTASTIC_COT_TYPE_ENUM_TO_NAME.get(cot_type_id)
-        if event_type:
-            return event_type
         fallback_type = str(tak_packet.get("cot_type_str") or "").strip()
-        if fallback_type:
-            return fallback_type
         payload_variant = tak_packet.get("payload_variant")
         if payload_variant == "marker":
             marker = tak_packet.get("marker") or {}
-            return _resolve_meshtastic_marker_cot_type(marker, fallback="a-u-G")
+            return self._derive_meshtastic_marker_event_type(
+                event_type or fallback_type,
+                marker,
+            )
+        if event_type:
+            return event_type
+        if fallback_type:
+            return fallback_type
         if payload_variant == "rab":
             return "u-rb-a"
         if payload_variant == "pli":
@@ -4340,8 +4393,27 @@ class TAKMeshtasticGateway:
 
         sender_uid = self._resolve_meshtastic_v2_event_uid(tak_packet, packet, node=node)
         event_how = MESHTASTIC_COT_HOW_ENUM_TO_NAME.get(int(tak_packet.get("how") or 0), "m-g")
-        callsign = str(tak_packet.get("callsign") or sender_uid).strip() or sender_uid
         marker = tak_packet.get("marker") or {}
+        user = node.get("user", {}) if node else {}
+        callsign = str(
+            tak_packet.get("callsign")
+            or marker.get("parent_callsign")
+            or user.get("longName")
+            or user.get("shortName")
+            or sender_uid
+        ).strip() or sender_uid
+        team_name = MESHTASTIC_TEAM_ENUM_TO_NAME.get(
+            int(tak_packet.get("team") or MESHTASTIC_DEFAULT_TEAM_ENUM),
+            MESHTASTIC_TEAM_ENUM_TO_NAME.get(MESHTASTIC_DEFAULT_TEAM_ENUM, "White"),
+        )
+        role_name = MESHTASTIC_ROLE_ENUM_TO_NAME.get(
+            int(tak_packet.get("role") or MESHTASTIC_DEFAULT_ROLE_ENUM),
+            MESHTASTIC_ROLE_ENUM_TO_NAME.get(MESHTASTIC_DEFAULT_ROLE_ENUM, "Team Member"),
+        )
+        color_team_name = MESHTASTIC_TEAM_ENUM_TO_NAME.get(int(marker.get("color") or 0), "")
+        marker_kind = int(marker.get("kind") or 0)
+        marker_kind_label = str(marker.get("kind_label") or f"Kind_{marker_kind}")
+        iconset = str(marker.get("iconset") or "").strip()
 
         timestamp = get_tak_timestamp()
         stale_seconds = max(int(tak_packet.get("stale_seconds") or 0), 45)
@@ -4366,29 +4438,63 @@ class TAKMeshtasticGateway:
         })
         detail = SubElement(event, "detail")
         SubElement(detail, "contact", {"callsign": callsign})
-        if marker.get("readiness"):
-            SubElement(detail, "status", {"readiness": "true"})
-        if marker.get("parent_uid"):
+        parent_uid = str(marker.get("parent_uid") or "").strip()
+        parent_type = str(marker.get("parent_type") or "").strip() or event_type
+        if parent_uid:
             link_attrs = {
-                "uid": str(marker.get("parent_uid") or ""),
+                "uid": parent_uid,
                 "relation": "p-p",
+                "type": parent_type,
             }
-            if marker.get("parent_type"):
-                link_attrs["type"] = str(marker["parent_type"])
             if marker.get("parent_callsign"):
                 link_attrs["parent_callsign"] = str(marker["parent_callsign"])
             SubElement(detail, "link", link_attrs)
+        SubElement(detail, "__group", {
+            "name": color_team_name or team_name,
+            "role": role_name,
+        })
         color_argb = self._resolve_meshtastic_v2_argb(
             marker.get("color"),
             marker.get("color_argb"),
         )
         if color_argb:
             SubElement(detail, "color", {"argb": str(_decode_protobuf_sfixed32(color_argb.to_bytes(4, "little")))})
-        if marker.get("iconset"):
-            SubElement(detail, "usericon", {"iconsetpath": str(marker["iconset"])})
+        if iconset:
+            SubElement(detail, "usericon", {"iconsetpath": iconset})
+        status_attrs = {}
+        if marker.get("has_readiness"):
+            status_attrs["readiness"] = "true" if marker.get("readiness") else "false"
+        battery = _clamp_battery_percentage(tak_packet.get("battery", 0))
+        if battery > 0:
+            status_attrs["battery"] = str(battery)
+        if status_attrs:
+            SubElement(detail, "status", status_attrs)
+        marker_meta_attrs = {
+            "kind": marker_kind_label,
+            "kindId": str(marker_kind),
+            "derivedType": event_type,
+        }
+        if iconset:
+            marker_meta_attrs["iconset"] = iconset
+        if parent_uid:
+            marker_meta_attrs["parentUid"] = parent_uid
+        if parent_type:
+            marker_meta_attrs["parentType"] = parent_type
+        if marker.get("parent_callsign"):
+            marker_meta_attrs["parentCallsign"] = str(marker.get("parent_callsign"))
+        SubElement(detail, "meshtastic_marker", marker_meta_attrs)
         SubElement(detail, "archive")
         if tak_packet.get("remarks"):
             SubElement(detail, "remarks").text = str(tak_packet["remarks"])
+        self.logger.debug(
+            "ATAK_PLUGIN_V2 Marker aus dem Mesh dekodiert: "
+            f"uid={sender_uid} marker_kind={marker_kind_label} marker_kind_id={marker_kind} "
+            f"iconset={iconset or '-'} color_team={color_team_name or '-'} color_argb={color_argb} "
+            f"parent_uid={parent_uid or '-'} parent_type={parent_type or '-'} "
+            f"parent_callsign={marker.get('parent_callsign') or '-'} "
+            f"cot_type_input={MESHTASTIC_COT_TYPE_ENUM_TO_NAME.get(int(tak_packet.get('cot_type_id') or 0)) or str(tak_packet.get('cot_type_str') or '-').strip() or '-'} "
+            f"derived_type={event_type}"
+        )
         return tostring(event, encoding="utf-8")
 
     def _build_meshtastic_takv2_rab_cot_xml(self, tak_packet, packet, node=None):
