@@ -233,6 +233,17 @@ MESHTASTIC_COT_TYPE_ENUM_TO_NAME = {
     121: "b-t-f-d",
     122: "b-t-f-r",
 }
+MESHTASTIC_PROTO_MARKER_KIND_NAME_TO_COT_TYPE = {
+    "SPOT": "b-m-p-s-m",
+    "WAYPOINT": "b-m-p-w",
+    "CHECKPOINT": "b-m-p-c",
+    "SELFPOSITION": "b-m-p-s-p-i",
+    "GOTOPOINT": "b-m-p-w-GOTO",
+    "INITIALPOINT": "b-m-p-c-ip",
+    "CONTACTPOINT": "b-m-p-c-cp",
+    "OBSERVATIONPOST": "b-m-p-s-p-op",
+    "IMAGEMARKER": "b-i-x-i",
+}
 MESHTASTIC_V2_MARKER_KIND_TO_COT_TYPE = {
     1: "b-m-p-s-m",
     2: "b-m-p-w",
@@ -244,6 +255,76 @@ MESHTASTIC_V2_MARKER_KIND_TO_COT_TYPE = {
     11: "b-m-p-s-p-op",
     12: "b-i-x-i",
 }
+
+
+def _enum_identifier_to_cot_type(identifier):
+    normalized = str(identifier or "").strip()
+    if not normalized:
+        return ""
+    if normalized.startswith("CotType_"):
+        normalized = normalized[len("CotType_"):]
+    parts = [part for part in normalized.split("_") if part]
+    return "-".join(parts)
+
+
+def _load_proto_enum_value_map(proto_path, enum_name, scope=None):
+    try:
+        with open(proto_path, "r", encoding="utf-8") as proto_file:
+            proto_text = proto_file.read()
+    except OSError:
+        return {}
+
+    if scope:
+        scope_match = re.search(
+            rf"\b(?:message|enum)\s+{re.escape(scope)}\s*\{{(?P<body>.*?)\n\}}",
+            proto_text,
+            re.DOTALL,
+        )
+        if not scope_match:
+            return {}
+        proto_text = scope_match.group("body")
+
+    enum_match = re.search(
+        rf"\benum\s+{re.escape(enum_name)}\s*\{{(?P<body>.*?)\n\s*\}}",
+        proto_text,
+        re.DOTALL,
+    )
+    if not enum_match:
+        return {}
+
+    values = {}
+    for name, raw_value in re.findall(
+        r"^\s*([A-Za-z][A-Za-z0-9_]*)\s*=\s*(-?\d+)\s*;",
+        enum_match.group("body"),
+        re.MULTILINE,
+    ):
+        try:
+            values[int(raw_value)] = name
+        except ValueError:
+            continue
+    return values
+
+
+def _load_meshtastic_atak_proto_mappings():
+    proto_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "atak.proto")
+    cot_type_map = dict(MESHTASTIC_COT_TYPE_ENUM_TO_NAME)
+    for value, enum_name in _load_proto_enum_value_map(proto_path, "CotType").items():
+        cot_type = _enum_identifier_to_cot_type(enum_name)
+        if cot_type and cot_type.lower() != "other":
+            cot_type_map[value] = cot_type
+
+    marker_kind_map = dict(MESHTASTIC_V2_MARKER_KIND_TO_COT_TYPE)
+    for value, enum_name in _load_proto_enum_value_map(proto_path, "Kind", scope="Marker").items():
+        normalized_name = re.sub(r"[^A-Z0-9]", "", str(enum_name or "").upper())
+        if normalized_name.startswith("KIND"):
+            normalized_name = normalized_name[4:]
+        cot_type = MESHTASTIC_PROTO_MARKER_KIND_NAME_TO_COT_TYPE.get(normalized_name)
+        if cot_type:
+            marker_kind_map[value] = cot_type
+    return cot_type_map, marker_kind_map
+
+
+MESHTASTIC_COT_TYPE_ENUM_TO_NAME, MESHTASTIC_V2_MARKER_KIND_TO_COT_TYPE = _load_meshtastic_atak_proto_mappings()
 TAK_EVENT_PATTERN = re.compile(r"<event\b[^>]*>.*?</event>", re.DOTALL)
 TAK_PING_EVENT_TYPE = "t-x-c-t"
 TAK_PONG_EVENT_TYPE = "t-x-c-t-r"
@@ -1504,6 +1585,27 @@ def _normalize_meshtastic_enum_key(value):
 def _resolve_meshtastic_team_cot_event_type(team_value, default=MESHTASTIC_PLI_COT_EVENT_TYPE):
     normalized_team = _normalize_meshtastic_enum_key(team_value)
     return MESHTASTIC_TEAM_NAME_TO_COT_EVENT_TYPE.get(normalized_team, default)
+
+
+def _resolve_meshtastic_marker_cot_type(marker, fallback="a-u-G"):
+    marker = marker or {}
+    try:
+        kind_value = int(marker.get("kind") or 0)
+    except (TypeError, ValueError):
+        kind_value = 0
+    mapped_kind_type = MESHTASTIC_V2_MARKER_KIND_TO_COT_TYPE.get(kind_value)
+    if mapped_kind_type:
+        return mapped_kind_type
+
+    iconset = str(marker.get("iconset") or "").strip()
+    if iconset:
+        icon_parts = [part for part in iconset.split("/") if part]
+        if len(icon_parts) >= 3 and icon_parts[0] == "COT_MAPPING_2525B":
+            return icon_parts[-1]
+        if len(icon_parts) >= 2 and icon_parts[0] == "COT_MAPPING_SPOTMAP":
+            return icon_parts[1]
+
+    return str(fallback or "a-u-G").strip() or "a-u-G"
 
 
 def _is_persistable_cot_type(event_type):
@@ -4107,7 +4209,7 @@ class TAKMeshtasticGateway:
         payload_variant = tak_packet.get("payload_variant")
         if payload_variant == "marker":
             marker = tak_packet.get("marker") or {}
-            return MESHTASTIC_V2_MARKER_KIND_TO_COT_TYPE.get(int(marker.get("kind") or 0), "a-u-G")
+            return _resolve_meshtastic_marker_cot_type(marker, fallback="a-u-G")
         if payload_variant == "rab":
             return "u-rb-a"
         if payload_variant == "pli":
