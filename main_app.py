@@ -1620,6 +1620,26 @@ def _resolve_meshtastic_team_cot_event_type(team_value, default=MESHTASTIC_PLI_C
     return MESHTASTIC_TEAM_NAME_TO_COT_EVENT_TYPE.get(normalized_team, default)
 
 
+def _extract_meshtastic_iconset_cot_type(iconset):
+    icon_parts = [str(part).strip() for part in str(iconset or "").split("/") if str(part).strip()]
+    if not icon_parts:
+        return ""
+
+    normalized_parts = [part.upper() for part in icon_parts]
+    if "COT_MAPPING_2525B" in normalized_parts:
+        mapping_index = normalized_parts.index("COT_MAPPING_2525B")
+        for candidate in reversed(icon_parts[mapping_index + 1:]):
+            if "-" in candidate and re.fullmatch(r"[A-Za-z0-9-]+", candidate):
+                return candidate
+    if "COT_MAPPING_SPOTMAP" in normalized_parts:
+        mapping_index = normalized_parts.index("COT_MAPPING_SPOTMAP")
+        for candidate in icon_parts[mapping_index + 1:]:
+            if "-" in candidate and re.fullmatch(r"[A-Za-z0-9-]+", candidate):
+                return candidate
+
+    return ""
+
+
 def _resolve_meshtastic_marker_cot_type(marker, fallback="a-u-G"):
     marker = marker or {}
     try:
@@ -1630,13 +1650,9 @@ def _resolve_meshtastic_marker_cot_type(marker, fallback="a-u-G"):
     if mapped_kind_type:
         return mapped_kind_type
 
-    iconset = str(marker.get("iconset") or "").strip()
-    if iconset:
-        icon_parts = [part for part in iconset.split("/") if part]
-        if len(icon_parts) >= 3 and icon_parts[0] == "COT_MAPPING_2525B":
-            return icon_parts[-1]
-        if len(icon_parts) >= 2 and icon_parts[0] == "COT_MAPPING_SPOTMAP":
-            return icon_parts[1]
+    iconset_cot_type = _extract_meshtastic_iconset_cot_type(marker.get("iconset"))
+    if iconset_cot_type:
+        return iconset_cot_type
 
     return str(fallback or "a-u-G").strip() or "a-u-G"
 
@@ -4583,6 +4599,130 @@ class TAKMeshtasticGateway:
         )
         return tostring(event, encoding="utf-8")
 
+    def _append_meshtastic_takv2_detail_fragment(self, detail, raw_detail):
+        raw_detail_text = _strip_invalid_xml_chars(
+            _ensure_bytes(raw_detail).decode("utf-8", errors="ignore")
+        ).strip()
+        if not raw_detail_text:
+            return False
+        try:
+            raw_detail_root = fromstring(raw_detail_text)
+        except (ParseError, TypeError, ValueError):
+            try:
+                raw_detail_root = fromstring(f"<detail>{raw_detail_text}</detail>")
+            except (ParseError, TypeError, ValueError):
+                return False
+        if _xml_local_name(raw_detail_root.tag) == "detail":
+            for attr_name, attr_value in raw_detail_root.attrib.items():
+                if attr_name not in detail.attrib:
+                    detail.set(attr_name, attr_value)
+            for child in list(raw_detail_root):
+                detail.append(child)
+        else:
+            detail.append(raw_detail_root)
+        return True
+
+    def _build_meshtastic_takv2_raw_detail_cot_xml(self, tak_packet, packet, node=None):
+        lat_i = tak_packet.get("latitude_i")
+        lon_i = tak_packet.get("longitude_i")
+        if lat_i is None or lon_i is None:
+            return None
+        normalized_coords = normalize_coordinates(lat_i * 1e-7, lon_i * 1e-7)
+        if normalized_coords is None:
+            return None
+        lat, lon = normalized_coords
+
+        event_type = self._resolve_meshtastic_v2_event_type(tak_packet)
+        if not event_type:
+            return None
+
+        sender_uid = self._resolve_meshtastic_v2_event_uid(tak_packet, packet, node=node)
+        event_how = MESHTASTIC_COT_HOW_ENUM_TO_NAME.get(int(tak_packet.get("how") or 0), "m-g")
+        user = node.get("user", {}) if node else {}
+        callsign = str(
+            tak_packet.get("callsign")
+            or user.get("longName")
+            or user.get("shortName")
+            or sender_uid
+        ).strip() or sender_uid
+        team_name = MESHTASTIC_TEAM_ENUM_TO_NAME.get(
+            int(tak_packet.get("team") or MESHTASTIC_DEFAULT_TEAM_ENUM),
+            MESHTASTIC_TEAM_ENUM_TO_NAME.get(MESHTASTIC_DEFAULT_TEAM_ENUM, "White"),
+        )
+        role_name = MESHTASTIC_ROLE_ENUM_TO_NAME.get(
+            int(tak_packet.get("role") or MESHTASTIC_DEFAULT_ROLE_ENUM),
+            MESHTASTIC_ROLE_ENUM_TO_NAME.get(MESHTASTIC_DEFAULT_ROLE_ENUM, "Team Member"),
+        )
+
+        timestamp = get_tak_timestamp()
+        stale_seconds = max(int(tak_packet.get("stale_seconds") or 0), 45)
+        stale = (
+            datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=stale_seconds)
+        ).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+        event = Element("event", {
+            "version": "2.0",
+            "uid": sender_uid,
+            "type": event_type,
+            "how": event_how,
+            "start": timestamp,
+            "time": timestamp,
+            "stale": stale,
+        })
+        SubElement(event, "point", {
+            "lat": f"{lat:.6f}",
+            "lon": f"{lon:.6f}",
+            "hae": str(int(tak_packet.get("altitude") or 0)),
+            "ce": "9999999.0",
+            "le": "9999999.0",
+        })
+        detail = SubElement(event, "detail")
+        raw_detail = bytes(tak_packet.get("raw_detail") or b"").strip()
+        if raw_detail and not self._append_meshtastic_takv2_detail_fragment(detail, raw_detail):
+            self.logger.debug(
+                "ATAK_PLUGIN_V2 raw_detail konnte nicht als XML-Detail geparst werden: "
+                f"{_build_safe_payload_snippet(raw_detail)}"
+            )
+
+        contact = _find_child_by_local_name(detail, "contact")
+        if contact is None:
+            contact = SubElement(detail, "contact")
+        if callsign and not str(contact.get("callsign") or "").strip():
+            contact.set("callsign", callsign)
+
+        group = _find_child_by_local_name(detail, "__group")
+        if group is None:
+            group = SubElement(detail, "__group")
+        if not str(group.get("name") or "").strip():
+            group.set("name", team_name)
+        if not str(group.get("role") or "").strip():
+            group.set("role", role_name)
+
+        if tak_packet.get("device_callsign"):
+            uid_detail = _find_child_by_local_name(detail, "uid")
+            if uid_detail is None:
+                uid_detail = SubElement(detail, "uid")
+            if not str(uid_detail.get("Droid") or "").strip():
+                uid_detail.set("Droid", str(tak_packet.get("device_callsign")))
+
+        battery = _clamp_battery_percentage(tak_packet.get("battery", 0))
+        if battery > 0:
+            status = _find_child_by_local_name(detail, "status")
+            if status is None:
+                status = SubElement(detail, "status")
+            if not str(status.get("battery") or "").strip():
+                status.set("battery", str(battery))
+
+        if _is_persistable_cot_type(event_type) and _find_child_by_local_name(detail, "archive") is None:
+            SubElement(detail, "archive")
+        if tak_packet.get("remarks") and _find_child_by_local_name(detail, "remarks") is None:
+            SubElement(detail, "remarks").text = str(tak_packet["remarks"])
+        self.logger.debug(
+            "ATAK_PLUGIN_V2 raw_detail aus dem Mesh dekodiert: "
+            f"uid={sender_uid} type={event_type} how={event_how} "
+            f"callsign={callsign} raw_detail_bytes={len(raw_detail)}"
+        )
+        return tostring(event, encoding="utf-8")
+
     def _build_meshtastic_takv2_rab_cot_xml(self, tak_packet, packet, node=None):
         lat_i = tak_packet.get("latitude_i")
         lon_i = tak_packet.get("longitude_i")
@@ -4671,6 +4811,8 @@ class TAKMeshtasticGateway:
             return self._build_meshtastic_takv2_rab_cot_xml(tak_packet, packet, node=node)
         if payload_variant == "pli":
             return self._build_meshtastic_takv2_pli_cot_xml(tak_packet, packet, node=node)
+        if payload_variant == "raw_detail":
+            return self._build_meshtastic_takv2_raw_detail_cot_xml(tak_packet, packet, node=node)
         return None
 
     def _is_atak_forwarder_packet(self, packet):
