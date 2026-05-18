@@ -14,6 +14,7 @@ Covers:
 import zlib
 import sys
 import types
+import threading
 import unittest
 
 sys.path.insert(0, ".")
@@ -54,12 +55,93 @@ def _make_stub_gateway():
     return gw
 
 
+class _FakeRecvConn:
+    def __init__(self, recv_chunks):
+        self._recv_chunks = list(recv_chunks)
+        self.timeout = None
+
+    def settimeout(self, timeout):
+        self.timeout = timeout
+
+    def recv(self, _size):
+        if self._recv_chunks:
+            return self._recv_chunks.pop(0)
+        return b""
+
+    def close(self):
+        pass
+
+
 class TestGuiLogAutoscroll(unittest.TestCase):
     def test_detects_when_log_widget_is_at_bottom(self):
         self.assertTrue(_text_widget_is_at_bottom(_FakeTextWidget((0.2, 1.0))))
 
     def test_detects_when_log_widget_is_not_at_bottom(self):
         self.assertFalse(_text_widget_is_at_bottom(_FakeTextWidget((0.2, 0.8))))
+
+
+class TestTakTcpKeepalive(unittest.TestCase):
+    def test_ping_reply_uses_newline_framing_for_peer_writes(self):
+        gw = _make_stub_gateway()
+        gw.gateway_uid = "GW-01"
+        gw.shutdown_flag = threading.Event()
+        gw._extract_tak_events_from_stream_buffer = types.MethodType(
+            TAKMeshtasticGateway._extract_tak_events_from_stream_buffer, gw
+        )
+        recorded = []
+
+        def fake_send_local_tak_tcp_payload(peer, payload, **kwargs):
+            recorded.append({"peer": peer, "payload": payload, "kwargs": kwargs})
+            return True
+
+        gw._send_local_tak_tcp_payload = fake_send_local_tak_tcp_payload
+        ping_xml = (
+            b'<?xml version="1.0" encoding="UTF-8"?>'
+            b'<event version="2.0" uid="PING-1" type="t-x-c-t" how="m-g">'
+            b'<point lat="0" lon="0" hae="0" ce="9999999" le="9999999"/>'
+            b'<detail/></event>'
+        )
+        conn = _FakeRecvConn([ping_xml, b""])
+        peer = {"conn": object(), "endpoint": "127.0.0.1:8088", "lock": threading.Lock()}
+
+        TAKMeshtasticGateway._consume_tak_tcp_stream(
+            gw,
+            conn,
+            ("127.0.0.1", 8088),
+            send_peer=peer,
+        )
+
+        self.assertEqual(len(recorded), 1, "Ping should trigger exactly one pong reply")
+        self.assertTrue(
+            recorded[0]["kwargs"].get("append_newline", True),
+            "Pong reply must stay newline-framed so WinTAK keeps the TCP stream open",
+        )
+
+
+class TestTakTcpDelivery(unittest.TestCase):
+    def test_skip_peer_avoids_duplicate_receiver_delivery(self):
+        gw = _make_stub_gateway()
+        primary_peer = {"conn": object(), "endpoint": "127.0.0.1:8087", "lock": threading.Lock()}
+        listener_peer = {"conn": object(), "endpoint": "192.168.8.124:8088", "lock": threading.Lock()}
+        gw.local_tak_tcp_peers = [primary_peer, listener_peer]
+        gw.local_tak_tcp_peer_lock = threading.RLock()
+        delivered_to = []
+
+        def fake_send_local_tak_tcp_payload(peer, payload, **kwargs):
+            delivered_to.append(peer["endpoint"])
+            return True
+
+        gw._send_local_tak_tcp_payload = fake_send_local_tak_tcp_payload
+
+        sent = TAKMeshtasticGateway._send_packet_to_local_tak_tcp(
+            gw,
+            b"<event/>",
+            "test",
+            skip_peer=primary_peer,
+        )
+
+        self.assertEqual(sent, 1)
+        self.assertEqual(delivered_to, ["192.168.8.124:8088"])
 
 
 # ---------------------------------------------------------------------------

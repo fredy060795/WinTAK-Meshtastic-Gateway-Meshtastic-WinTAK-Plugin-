@@ -3455,6 +3455,7 @@ class TAKMeshtasticGateway:
         # makes marker delivery more reliable when WinTAK is configured as a TAK server
         # (localhost:8087) instead of relying solely on UDP 4242.
         self._local_tak_tcp_push_conn = None
+        self._local_tak_tcp_push_peer = None
         self._local_tak_tcp_push_lock = threading.Lock()
 
         # When True (default) the gateway sends CoT to the local TCP receiver
@@ -5265,7 +5266,7 @@ class TAKMeshtasticGateway:
                 pass
             return False
 
-    def _send_packet_to_local_tak_tcp(self, packet_xml, label):
+    def _send_packet_to_local_tak_tcp(self, packet_xml, label, *, skip_peer=None):
         packet_bytes = _ensure_bytes(packet_xml).strip()
         if not packet_bytes:
             return 0
@@ -5273,6 +5274,8 @@ class TAKMeshtasticGateway:
             peers = list(self.local_tak_tcp_peers)
         delivered = 0
         for peer in peers:
+            if peer is skip_peer:
+                continue
             if self._send_local_tak_tcp_payload(peer, packet_bytes):
                 delivered += 1
         if delivered:
@@ -5307,25 +5310,23 @@ class TAKMeshtasticGateway:
         """
         with self._local_tak_tcp_push_lock:
             tcp_push_conn = self._local_tak_tcp_push_conn
-        if tcp_push_conn is not None:
-            try:
-                tcp_push_conn.sendall(packet_xml + b"\n")
+            tcp_push_peer = self._local_tak_tcp_push_peer
+        if tcp_push_conn is not None and tcp_push_peer is not None:
+            if self._send_local_tak_tcp_payload(tcp_push_peer, packet_xml, log_errors=False):
                 self.logger.debug(
                     f"[LastHop-TCP] Lokal an WinTAK gesendet via TCP: "
                     f"{self.tcp_chat_receiver_host}:{self.tcp_chat_receiver_port} "
                     f"label={label} bytes={len(packet_xml)}"
                 )
-            except OSError as e:
-                self.logger.debug(
-                    f"[LastHop-TCP] Lokaler TCP-Push fehlgeschlagen ({e}); Socket wird zurückgesetzt."
-                )
-                with self._local_tak_tcp_push_lock:
-                    if self._local_tak_tcp_push_conn is tcp_push_conn:
-                        self._local_tak_tcp_push_conn = None
-                try:
-                    tcp_push_conn.close()
-                except Exception:
-                    pass
+                return 1
+            self.logger.debug(
+                "[LastHop-TCP] Lokaler TCP-Push fehlgeschlagen; Socket wird zurückgesetzt."
+            )
+            with self._local_tak_tcp_push_lock:
+                if self._local_tak_tcp_push_conn is tcp_push_conn:
+                    self._local_tak_tcp_push_conn = None
+                    self._local_tak_tcp_push_peer = None
+        return 0
 
     def _send_packet_to_tak(self, packet_xml, label):
         cot_dedupe_key = self._build_cot_dedupe_key(packet_xml)
@@ -5338,8 +5339,10 @@ class TAKMeshtasticGateway:
             # first because UDP/4242 may be blocked on some Windows systems
             # (WinError 10013).  Registered TCP listener peers are included as
             # part of the TCP delivery pass before multicast and UDP fallback.
-            self._send_packet_to_local_tak_tcp_push(packet_xml, label)
-            self._send_packet_to_local_tak_tcp(packet_xml, label)
+            pushed = self._send_packet_to_local_tak_tcp_push(packet_xml, label)
+            with self._local_tak_tcp_push_lock:
+                tcp_push_peer = self._local_tak_tcp_push_peer
+            self._send_packet_to_local_tak_tcp(packet_xml, label, skip_peer=tcp_push_peer if pushed else None)
             self._send_packet_to_tak_multicast(packet_xml, label)
             # ── Local UDP send (fallback path) ────────────────────────────────
             try:
@@ -7354,11 +7357,10 @@ class TAKMeshtasticGateway:
                                         send_peer,
                                         self._build_pong_xml(),
                                         log_errors=False,
-                                        append_newline=False,
                                     ):
                                         return
                                 else:
-                                    conn.sendall(self._build_pong_xml().encode("utf-8"))
+                                    conn.sendall(self._build_pong_xml().encode("utf-8") + b"\n")
                                 self.logger.debug(
                                     f"{ping_label}-Ping von {_format_network_endpoint(addr)} "
                                     "beantwortet (Pong gesendet)."
@@ -7497,6 +7499,7 @@ class TAKMeshtasticGateway:
                 # Expose this socket for bidirectional CoT push to WinTAK (marker delivery).
                 with self._local_tak_tcp_push_lock:
                     self._local_tak_tcp_push_conn = conn
+                    self._local_tak_tcp_push_peer = peer
                 if cb:
                     try:
                         cb("connect", None, None, target_addr)
@@ -7522,6 +7525,7 @@ class TAKMeshtasticGateway:
                 with self._local_tak_tcp_push_lock:
                     if self._local_tak_tcp_push_conn is conn:
                         self._local_tak_tcp_push_conn = None
+                        self._local_tak_tcp_push_peer = None
                 if cb:
                     try:
                         cb("disconnect", None, None, target_addr)
