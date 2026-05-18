@@ -4435,18 +4435,11 @@ class TAKMeshtasticGateway:
                 f"cached_class={cot_class} mesh_default_type={pli_event_type}"
             )
         elif normalized_sender_uid != fallback_sender_uid:
-            # Keep pli_event_type (already derived from team colour in the PLI payload) so
-            # that the correct affiliation is preserved:
-            #   Blue   → a-f-G-U-C (Friendly)
-            #   Yellow → a-u-G-U-C (Unknown)
-            #   Red    → a-h-G-U-C (Hostile)
-            #   Green  → a-n-G-U-C (Neutral)
-            # Overwriting with the generic a-u-G would degrade Friendly → Unknown and
-            # break cache entries for subsequent PLI packets from the same UID.
+            event_type = "a-u-G"
             cot_class = "marker"
             self.logger.debug(
                 "ATAK_PLUGIN_V2-PLI enthält TAK-fähige UID ohne zwischengespeicherten Marker-Typ; "
-                f"nutze PLI-Teamfarbe als Marker-Affilierung statt generischem Fallback: "
+                f"nutze generischen Marker-Fallback statt PLI-Default: "
                 f"uid={sender_uid} normalized_uid={normalized_sender_uid} "
                 f"inferred_type={event_type} mesh_default_type={pli_event_type}"
             )
@@ -5052,18 +5045,11 @@ class TAKMeshtasticGateway:
                 f"cached_class={cot_class} mesh_default_type={pli_event_type}"
             )
         elif normalized_sender_uid != fallback_sender_uid:
-            # Keep pli_event_type (already derived from team colour in the PLI payload) so
-            # that the correct affiliation is preserved:
-            #   Blue   → a-f-G-U-C (Friendly)
-            #   Yellow → a-u-G-U-C (Unknown)
-            #   Red    → a-h-G-U-C (Hostile)
-            #   Green  → a-n-G-U-C (Neutral)
-            # Overwriting with the generic a-u-G would degrade Friendly → Unknown and
-            # break cache entries for subsequent PLI packets from the same UID.
+            event_type = "a-u-G"
             cot_class = "marker"
             self.logger.debug(
                 "ATAK_PLUGIN-PLI enthält TAK-fähige UID ohne zwischengespeicherten Marker-Typ; "
-                f"nutze PLI-Teamfarbe als Marker-Affilierung statt generischem Fallback: "
+                f"nutze generischen Marker-Fallback statt PLI-Default: "
                 f"uid={sender_uid} normalized_uid={normalized_sender_uid} "
                 f"inferred_type={event_type} mesh_default_type={pli_event_type}"
             )
