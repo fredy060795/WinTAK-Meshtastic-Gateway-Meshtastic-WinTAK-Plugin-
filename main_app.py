@@ -5921,9 +5921,14 @@ class TAKMeshtasticGateway:
         payload_bytes = _ensure_bytes(payload).strip()
         if not payload_bytes:
             return []
-        # Small enough for a single direct packet — reference sends raw zlib here
-        if len(payload_bytes) <= MESHTASTIC_DATA_PAYLOAD_MAX_BYTES:
-            return [payload_bytes]
+        # Small enough for a single direct packet.  Prepend the CoT transfer-type
+        # byte (0x00) so the packet format matches the reference meshtastic/ATAK-Plugin
+        # behaviour and FTN fountain packets: ATAK/iTAK clients strip this byte before
+        # decompressing.  The gateway receive side already handles both prefixed and
+        # unprefixed payloads via decode_candidates fallback.
+        prefixed = bytes([MESHTASTIC_TRANSFER_TYPE_COT]) + payload_bytes
+        if len(prefixed) <= MESHTASTIC_DATA_PAYLOAD_MAX_BYTES:
+            return [prefixed]
         # Large payload — use FTN fountain code (reference behaviour)
         transfer_id = (uuid.uuid4().int >> 104) & 0xFFFFFF  # 24-bit random ID
         self.logger.debug(
@@ -6314,31 +6319,44 @@ class TAKMeshtasticGateway:
                     "ATAK_PLUGIN-PLI-Senden fehlgeschlagen, versuche ATAK_FORWARDER-Fallback: "
                     f"{exc}"
                 )
-        else:
+
+        # Marker CoT events are sent directly via ATAK_FORWARDER (port 257) so that
+        # real ATAK/iTAK clients can decode them.  The ATAK_PLUGIN detail=7 path below
+        # uses a gateway-internal protobuf field that ATAK devices do not process,
+        # which caused WinTAK→ATAK markers to disappear silently.  Generic (non-marker,
+        # non-PLI) CoT still tries the compact detail=7 path first because those events
+        # are usually gateway-to-gateway and the receiver understands the format.
+        if cot_class == "marker":
             self.logger.debug(
                 f"{_get_cot_subject_label(metadata)} Typ {metadata['type']} "
-                "nutzt aus Kompatibilitätsgründen direkt ATAK_FORWARDER."
+                "ist ein Marker – verwende direkt ATAK_FORWARDER für maximale ATAK-Kompatibilität "
+                "(ATAK_PLUGIN-detail=7 wird von echten ATAK/iTAK-Clients ignoriert)."
             )
-
-        detail_packet = self._prepare_meshtastic_detail_packet(normalized_packet)
-        if detail_packet is not None:
-            try:
+        else:
+            if pli_packet is None:
                 self.logger.debug(
-                    f"{_get_cot_subject_label(metadata)} wird als ATAK_PLUGIN-detail=7 gesendet: "
-                    f"uid={detail_packet['uid']} callsign={detail_packet['callsign']} "
-                    f"compressed={detail_packet['is_compressed']} payload_bytes={len(detail_packet['payload'])}"
+                    f"{_get_cot_subject_label(metadata)} Typ {metadata['type']} "
+                    "nutzt aus Kompatibilitätsgründen direkt ATAK_FORWARDER."
                 )
-                self._send_data_to_interfaces(
-                    detail_packet["payload"],
-                    interfaces,
-                    MESHTASTIC_ATAK_PLUGIN_PORTNUM,
-                )
-                return {"transport": "ATAK_PLUGIN_DETAIL", "count": 1}
-            except Exception as exc:
-                self.logger.warning(
-                    "ATAK_PLUGIN-detail=7-Senden fehlgeschlagen, versuche ATAK_FORWARDER-Fallback: "
-                    f"{exc}"
-                )
+            detail_packet = self._prepare_meshtastic_detail_packet(normalized_packet)
+            if detail_packet is not None:
+                try:
+                    self.logger.debug(
+                        f"{_get_cot_subject_label(metadata)} wird als ATAK_PLUGIN-detail=7 gesendet: "
+                        f"uid={detail_packet['uid']} callsign={detail_packet['callsign']} "
+                        f"compressed={detail_packet['is_compressed']} payload_bytes={len(detail_packet['payload'])}"
+                    )
+                    self._send_data_to_interfaces(
+                        detail_packet["payload"],
+                        interfaces,
+                        MESHTASTIC_ATAK_PLUGIN_PORTNUM,
+                    )
+                    return {"transport": "ATAK_PLUGIN_DETAIL", "count": 1}
+                except Exception as exc:
+                    self.logger.warning(
+                        "ATAK_PLUGIN-detail=7-Senden fehlgeschlagen, versuche ATAK_FORWARDER-Fallback: "
+                        f"{exc}"
+                    )
 
         forwarder_payload = self._prepare_meshtastic_forwarder_payload(normalized_packet)
         if not forwarder_payload:
