@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CoT Data-Flow Monitor – LPU5 ↔ ATAK</title>
+<title>CoT Data-Flow Monitor – Meshtastic Gateway ↔ TAK</title>
 <link rel="icon" type="image/png" href="/browser-logo.png">
 <style>
 /* ── Reset & Variables ── */
@@ -124,7 +124,7 @@ td input.notes:focus { border-color: var(--accent); outline: none; }
 
 <!-- ═══════════════ HEADER ═══════════════ -->
 <header>
-  <h1>🔍 CoT Monitor <span class="arr">→</span><span class="arr2">←</span> LPU5 ↔ ATAK</h1>
+  <h1>🔍 CoT Monitor <span class="arr">→</span><span class="arr2">←</span> Meshtastic Gateway ↔ TAK</h1>
   <div class="status-badge" id="connBadge">
     <span class="dot off" id="connDot"></span>
     <span id="connText">Verbinde…</span>
@@ -143,11 +143,11 @@ td input.notes:focus { border-color: var(--accent); outline: none; }
   <label>Richtung:</label>
   <select id="filterDir">
     <option value="">Alle</option>
-    <option value="in">← Eingehend (ATAK→LPU5)</option>
-    <option value="out">→ Ausgehend (LPU5→ATAK)</option>
+    <option value="in">← Eingehend (TAK→Gateway)</option>
+    <option value="out">→ Ausgehend (Gateway→TAK)</option>
   </select>
   <div class="sep"></div>
-  <label>LPU5 Typ:</label>
+  <label>Gateway / Marker Typ:</label>
   <select id="filterType">
     <option value="">Alle Typen</option>
     <option value="friendly">friendly</option>
@@ -197,7 +197,7 @@ td input.notes:focus { border-color: var(--accent); outline: none; }
   <th>CoT Type</th>
   <th>How</th>
   <th>Position</th>
-  <th>LPU5 erkennt als</th>
+  <th>Gateway erkennt als</th>
   <th style="min-width:160px">Korrektur (Soll-Typ)</th>
   <th>Notiz</th>
   <th style="width:30px"></th>
@@ -222,8 +222,8 @@ td input.notes:focus { border-color: var(--accent); outline: none; }
 <script>
 "use strict";
 
-// ── All LPU5 marker types for the correction dropdown ──
-const LPU5_TYPES = [
+// ── Supported gateway marker types for the correction dropdown ──
+const GATEWAY_TYPES = [
   { value: '',                label: '— unverändert —',              group: 'Standard' },
   { value: 'friendly',       label: 'friendly (Blau, Rechteck)',     group: 'Standard' },
   { value: 'hostile',        label: 'hostile (Rot, Diamant)',        group: 'Standard' },
@@ -249,6 +249,16 @@ let corrCount = 0;
 let meshCount = 0;
 let inCount = 0, outCount = 0;
 let serviceStatus = null;
+
+function ensureFilterTypeOption(type) {
+  if (!type) return;
+  const select = document.getElementById('filterType');
+  if (!select || Array.from(select.options).some((option) => option.value === type)) return;
+  const option = document.createElement('option');
+  option.value = type;
+  option.textContent = `${type} (weiterer Typ)`;
+  select.appendChild(option);
+}
 
 // ── SSE Connection ──
 let evtSource = null;
@@ -294,6 +304,7 @@ function addEvent(data) {
     notes: '',
   };
   events.push(evt);
+  ensureFilterTypeOption(evt.parsed.detected_type);
 
   // update counters
   if (evt.direction === '<<<') inCount++; else outCount++;
@@ -391,7 +402,7 @@ function appendRow(evt) {
   // Build correction dropdown
   let selHtml = `<select class="correction" data-idx="${evt.idx}" onchange="onCorrection(this)">`;
   let currentGroup = '';
-  for (const opt of LPU5_TYPES) {
+  for (const opt of GATEWAY_TYPES) {
     if (opt.group !== currentGroup) {
       if (currentGroup) selHtml += '</optgroup>';
       selHtml += `<optgroup label="${opt.group}">`;
@@ -405,7 +416,7 @@ function appendRow(evt) {
   tr.innerHTML = `
     <td>${evt.idx + 1}</td>
     <td style="white-space:nowrap;font-size:11px;color:var(--text2)">${ts}</td>
-    <td class="dir ${dirClass}" title="${isIn ? 'ATAK → LPU5' : 'LPU5 → ATAK'}">${dirSymbol}</td>
+    <td class="dir ${dirClass}" title="${isIn ? 'TAK → Gateway' : 'Gateway → TAK'}">${dirSymbol}</td>
     <td class="uid" title="${esc(p.uid)}">${esc(p.uid)}</td>
     <td>${esc(p.callsign || '—')}${flags}</td>
     <td style="font-family:monospace;font-size:11px" title="${esc(p.cot_type)}">${esc(p.cot_type)}</td>
@@ -470,7 +481,7 @@ function showDetail(idx) {
   const panel = document.getElementById('detailPanel');
 
   const fields = [
-    ['Richtung', evt.direction === '<<<' ? 'ATAK → LPU5 (Eingehend)' : 'LPU5 → ATAK (Ausgehend)'],
+    ['Richtung', evt.direction === '<<<' ? 'TAK → Gateway (Eingehend)' : 'Gateway → TAK (Ausgehend)'],
     ['Quelle', evt.source],
     ['UID', p.uid],
     ['Callsign', p.callsign],
@@ -486,12 +497,12 @@ function showDetail(idx) {
     ['Remarks', p.remarks],
     ['Meshtastic', p.has_meshtastic ? `✓  longName=${p.mesh_longName}  shortName=${p.mesh_shortName}` : '✗'],
     ['Archive', p.has_archive ? 'Ja (statisch)' : 'Nein (Live-Kontakt)'],
-    ['Echo-Back', p.is_echo_back ? '⚠ Ja – LPU5 würde dieses Event überspringen' : 'Nein'],
+    ['Echo-Back', p.is_echo_back ? '⚠ Ja – das Gateway würde dieses Event überspringen' : 'Nein'],
     ['Time', p.time],
     ['Stale', p.stale],
     ['', ''],
-    ['LPU5 Basis-Typ', p.base_lpu5_type],
-    ['LPU5 Erkannt als', p.detected_type],
+    ['Gateway Basis-Typ', p.base_lpu5_type],
+    ['Gateway erkannt als', p.detected_type],
     ['Erkennungsgrund', p.detection_reason],
     ['', ''],
     ['Korrektur (Soll)', evt.correction || '— nicht gesetzt —'],
@@ -575,12 +586,12 @@ function exportLog() {
       notes: e.notes,
       has_meshtastic: e.parsed.has_meshtastic,
       is_echo_back: e.parsed.is_echo_back,
-      direction: e.direction === '<<<' ? 'ATAK->LPU5' : 'LPU5->ATAK',
+      direction: e.direction === '<<<' ? 'TAK->Gateway' : 'Gateway->TAK',
       raw_xml: e.raw_xml,
     })),
     all_events: all.map(e => ({
       event_index: e.idx + 1,
-      direction: e.direction === '<<<' ? 'ATAK->LPU5' : 'LPU5->ATAK',
+      direction: e.direction === '<<<' ? 'TAK->Gateway' : 'Gateway->TAK',
       source: e.source,
       uid: e.parsed.uid,
       callsign: e.parsed.callsign,
