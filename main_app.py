@@ -6319,6 +6319,26 @@ class TAKMeshtasticGateway:
                 "nutzt aus Kompatibilitätsgründen direkt ATAK_FORWARDER."
             )
 
+        detail_packet = self._prepare_meshtastic_detail_packet(normalized_packet)
+        if detail_packet is not None:
+            try:
+                self.logger.debug(
+                    f"{_get_cot_subject_label(metadata)} wird als ATAK_PLUGIN-detail=7 gesendet: "
+                    f"uid={detail_packet['uid']} callsign={detail_packet['callsign']} "
+                    f"compressed={detail_packet['is_compressed']} payload_bytes={len(detail_packet['payload'])}"
+                )
+                self._send_data_to_interfaces(
+                    detail_packet["payload"],
+                    interfaces,
+                    MESHTASTIC_ATAK_PLUGIN_PORTNUM,
+                )
+                return {"transport": "ATAK_PLUGIN_DETAIL", "count": 1}
+            except Exception as exc:
+                self.logger.warning(
+                    "ATAK_PLUGIN-detail=7-Senden fehlgeschlagen, versuche ATAK_FORWARDER-Fallback: "
+                    f"{exc}"
+                )
+
         forwarder_payload = self._prepare_meshtastic_forwarder_payload(normalized_packet)
         if not forwarder_payload:
             raise ValueError(EMPTY_MESHTASTIC_COT_ERROR)
