@@ -24,10 +24,13 @@ from main_app import (
     MESHTASTIC_DATA_PAYLOAD_MAX_BYTES,
     MESHTASTIC_TRANSFER_TYPE_COT,
     FOUNTAIN_MAGIC,
+    _apply_settings_payload_to_cfg,
+    _build_browser_ui_form_state,
     build_service_web_ui_url,
     detect_reachable_local_ip,
     _ensure_bytes,
     _text_widget_is_at_bottom,
+    resolve_app_start_mode,
     TAKMeshtasticGateway,
 )
 
@@ -121,6 +124,54 @@ class TestServiceWebUiHelpers(unittest.TestCase):
             detected = detect_reachable_local_ip()
 
         self.assertEqual(detected, "127.0.0.1")
+
+    def test_resolve_app_start_mode_defaults_to_browser(self):
+        args = types.SimpleNamespace(gui=False, no_gui=False)
+        self.assertEqual(resolve_app_start_mode(args, has_tk=True), "browser")
+
+    def test_resolve_app_start_mode_honors_terminal_override(self):
+        args = types.SimpleNamespace(gui=False, no_gui=True)
+        self.assertEqual(resolve_app_start_mode(args, has_tk=True), "terminal")
+
+    def test_apply_settings_payload_to_cfg_accepts_browser_form_values(self):
+        cfg = {}
+        payload = {
+            "meshtastic_port": "COM7, COM8",
+            "tak_server_host": "tak.example.org",
+            "tak_server_port": "8089",
+            "tak_server_protocol": "udp",
+            "local_tak_ip": "127.0.0.1",
+            "local_tak_port": "4243",
+            "local_tak_chat_listen_port": "4244",
+            "local_tak_tcp_listen_port": "8088",
+            "log_level": "debug",
+            "sync_interval_seconds": "60",
+            "log_raw_meshtastic_payloads": True,
+            "log_raw_meshtastic_payloads_full": True,
+            "relay_text_messages": True,
+            "relay_text_from_ports": "COM7",
+            "relay_text_to_mode": "custom",
+            "relay_text_to_ports": "COM8",
+            "send_nodes_without_gps": False,
+            "set_gateway_position_on_start": True,
+            "park_lat": "52.5",
+            "park_lon": "13.4",
+        }
+
+        _apply_settings_payload_to_cfg(cfg, payload, ["COM7", "COM8"])
+
+        self.assertEqual(cfg["meshtastic_port"], ["COM7", "COM8"])
+        self.assertEqual(cfg["tak_server_protocol"], "UDP")
+        self.assertEqual(cfg["log_level"], "DEBUG")
+        self.assertEqual(cfg["relay_text_from_ports"], "COM7")
+        self.assertEqual(cfg["relay_text_to_ports"], "COM8")
+        self.assertEqual(cfg["park_lat"], 52.5)
+        self.assertEqual(cfg["park_lon"], 13.4)
+
+    def test_build_browser_ui_form_state_marks_all_other_ports_mode(self):
+        state = _build_browser_ui_form_state({"meshtastic_port": ["COM7", "COM8"], "relay_text_to_ports": []})
+        self.assertEqual(state["meshtastic_port"], "COM7, COM8")
+        self.assertEqual(state["relay_text_to_mode"], "all-other-selected-ports")
 
 
 class TestTakTcpKeepalive(unittest.TestCase):
