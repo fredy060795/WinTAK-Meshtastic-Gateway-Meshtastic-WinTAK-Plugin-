@@ -322,7 +322,7 @@ class TestServiceWebUiMonitorCapture(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["source"], "Manual CoT -> Mesh")
         self.assertEqual(events[0]["parsed"]["uid"], "manual-marker")
-        self.assertEqual(events[0]["parsed"]["detected_type"], "hostile")
+        self.assertEqual(events[0]["parsed"]["detected_type"], "cbt_hostile")
 
 
 # ---------------------------------------------------------------------------
