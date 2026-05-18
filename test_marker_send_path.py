@@ -23,6 +23,7 @@ from main_app import (
     MESHTASTIC_TRANSFER_TYPE_COT,
     FOUNTAIN_MAGIC,
     _ensure_bytes,
+    _text_widget_is_at_bottom,
     TAKMeshtasticGateway,
 )
 
@@ -38,11 +39,27 @@ class _FakeLogger:
     def isEnabledFor(self, level): return False
 
 
+class _FakeTextWidget:
+    def __init__(self, yview_result):
+        self._yview_result = yview_result
+
+    def yview(self):
+        return self._yview_result
+
+
 def _make_stub_gateway():
     """Return an object that exposes the ATAK_FORWARDER packet helpers."""
     gw = object.__new__(TAKMeshtasticGateway)
     gw.logger = _FakeLogger()
     return gw
+
+
+class TestGuiLogAutoscroll(unittest.TestCase):
+    def test_detects_when_log_widget_is_at_bottom(self):
+        self.assertTrue(_text_widget_is_at_bottom(_FakeTextWidget((0.2, 1.0))))
+
+    def test_detects_when_log_widget_is_not_at_bottom(self):
+        self.assertFalse(_text_widget_is_at_bottom(_FakeTextWidget((0.2, 0.8))))
 
 
 # ---------------------------------------------------------------------------
