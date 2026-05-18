@@ -17,9 +17,14 @@ import base64
 import codecs
 import datetime
 import hashlib
+import http.server
 import ipaddress
 import inspect
+import json
 import math
+import mimetypes
+import pathlib
+import queue
 import re
 import socket
 import sqlite3
@@ -27,6 +32,7 @@ import time
 import logging
 import threading
 import traceback
+import urllib.parse
 import uuid
 import zlib
 import warnings
@@ -98,6 +104,16 @@ TCP_LISTENER_BACKLOG = 5
 TCP_RECV_BUFFER_SIZE = 4096
 MAX_TCP_STREAM_BUFFER_BYTES = 262144
 TCP_STREAM_BUFFER_TAIL_BYTES = 64
+SERVICE_WEB_UI_PORT = 5013
+SERVICE_WEB_UI_PRIMARY_FILE = "cot_monitor_ui.html"
+SERVICE_WEB_UI_ALLOWED_FILES = {
+    "cot_monitor_ui.html",
+    "maker.html",
+    "cot-client.js",
+    "logo.png",
+    "Meshgateway logo.png",
+    "Icon ATAK Mesh Setup.ico",
+}
 TCP_RECEIVER_RECONNECT_SECONDS = 5.0
 INBOUND_TAK_DEBUG_SNIPPET_CHARS = 240
 UTF8_BOM_CHAR = "\ufeff"
@@ -132,6 +148,342 @@ def _text_widget_is_at_bottom(widget, threshold=0.999):
         return float(widget.yview()[1]) >= threshold
     except Exception:
         return True
+
+
+def detect_reachable_local_ip(preferred_host=None):
+    """Best-effort LAN IPv4 detection for URLs users can open in a browser."""
+    connect_targets = []
+    preferred = str(preferred_host or "").strip()
+    if preferred and preferred not in ("0.0.0.0", "127.0.0.1", "localhost"):
+        connect_targets.append((preferred, 80))
+    connect_targets.extend((("8.8.8.8", 80), ("1.1.1.1", 80)))
+
+    for host, port in connect_targets:
+        probe = None
+        try:
+            probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            probe.connect((host, port))
+            detected_ip = str(probe.getsockname()[0]).strip()
+            if detected_ip and not detected_ip.startswith(("127.", "169.254.")):
+                return detected_ip
+        except OSError:
+            pass
+        finally:
+            if probe is not None:
+                try:
+                    probe.close()
+                except OSError:
+                    pass
+
+    try:
+        for detected_ip in socket.gethostbyname_ex(socket.gethostname())[2]:
+            detected_ip = str(detected_ip).strip()
+            if detected_ip and not detected_ip.startswith(("127.", "169.254.")):
+                return detected_ip
+    except OSError:
+        pass
+
+    try:
+        detected_ip = str(socket.gethostbyname(socket.gethostname())).strip()
+        if detected_ip:
+            return detected_ip
+    except OSError:
+        pass
+
+    return "127.0.0.1"
+
+
+def build_service_web_ui_url(bind_ip, port=SERVICE_WEB_UI_PORT):
+    return f"http://{str(bind_ip).strip() or '127.0.0.1'}:{int(port)}/"
+
+
+class _ServiceWebUIEventStore:
+    """Small thread-safe event store that keeps browser monitor state alive."""
+
+    def __init__(self, max_events=512):
+        self._max_events = max(1, int(max_events))
+        self._events = []
+        self._lock = threading.Lock()
+        self._sse_queues = []
+
+    def add(self, record):
+        with self._lock:
+            stored = dict(record)
+            stored.setdefault("idx", len(self._events))
+            self._events.append(stored)
+            if len(self._events) > self._max_events:
+                self._events = self._events[-self._max_events:]
+                for idx, item in enumerate(self._events):
+                    item["idx"] = idx
+            for subscriber in list(self._sse_queues):
+                try:
+                    subscriber.put_nowait(dict(stored))
+                except queue.Full:
+                    try:
+                        self._sse_queues.remove(subscriber)
+                    except ValueError:
+                        pass
+
+    def get_all(self):
+        with self._lock:
+            return [dict(event) for event in self._events]
+
+    def set_correction(self, idx, correction, notes):
+        with self._lock:
+            if 0 <= idx < len(self._events):
+                self._events[idx]["correction"] = correction
+                self._events[idx]["notes"] = notes
+
+    def clear(self):
+        with self._lock:
+            self._events = []
+
+    def subscribe_sse(self):
+        subscriber = queue.Queue(maxsize=100)
+        with self._lock:
+            self._sse_queues.append(subscriber)
+        return subscriber
+
+    def unsubscribe_sse(self, subscriber):
+        with self._lock:
+            try:
+                self._sse_queues.remove(subscriber)
+            except ValueError:
+                pass
+
+
+def _build_service_web_ui_status(bind_ip, port, cfg=None):
+    listen_ip = str(bind_ip).strip() or "127.0.0.1"
+    url = build_service_web_ui_url(listen_ip, port)
+    cfg = cfg or {}
+    return {
+        "listen_ip": listen_ip,
+        "port": int(port),
+        "url": url,
+        "primary_path": "/",
+        "monitor_path": f"/{SERVICE_WEB_UI_PRIMARY_FILE}",
+        "maker_path": "/maker.html",
+        "remote_tak": {
+            "host": str(cfg.get("tak_server_host", "")).strip(),
+            "port": int(cfg.get("tak_server_port", 8088)),
+            "protocol": str(cfg.get("tak_server_protocol", "TCP")).upper(),
+        },
+    }
+
+
+def _build_service_web_ui_startup_event(status_payload):
+    timestamp = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    service_url = status_payload.get("url", "")
+    listen_ip = status_payload.get("listen_ip", "127.0.0.1")
+    return {
+        "parsed": {
+            "uid": f"gateway-service-ui-{listen_ip}",
+            "cot_type": "service-status",
+            "how": "m-g",
+            "time": timestamp,
+            "start": timestamp,
+            "stale": timestamp,
+            "lat": None,
+            "lon": None,
+            "hae": None,
+            "ce": None,
+            "le": None,
+            "callsign": "Gateway HTML UI",
+            "uid_droid": None,
+            "endpoint": service_url,
+            "team": None,
+            "role": None,
+            "remarks": f"HTML UI verfügbar unter {service_url}",
+            "color_argb": None,
+            "has_meshtastic": False,
+            "mesh_longName": None,
+            "mesh_shortName": None,
+            "has_archive": False,
+            "speed": None,
+            "course": None,
+            "base_lpu5_type": "gateway",
+            "detected_type": "gateway",
+            "detection_reason": "Gateway backend serves the browser UI on the detected LAN IP",
+            "is_echo_back": False,
+        },
+        "direction": ">>>",
+        "source": "Gateway Service",
+        "raw_xml": "",
+        "notes": f"Open {service_url} in a browser.",
+    }
+
+
+class _ServiceWebUIRequestHandler(http.server.BaseHTTPRequestHandler):
+    asset_dir = pathlib.Path(".")
+    event_store = None
+    status_payload = {}
+    logger = None
+
+    def log_message(self, format, *args):
+        return
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+
+    def do_GET(self):
+        request_path = urllib.parse.unquote(urllib.parse.urlparse(self.path).path or "/")
+        if request_path == "/api/service/status":
+            self._send_json(self.status_payload)
+            return
+        if request_path == "/api/cot/monitor/events":
+            store = self.event_store
+            self._send_json({"events": store.get_all() if store is not None else []})
+            return
+        if request_path == "/api/cot/monitor/stream":
+            self._stream_events()
+            return
+        if request_path == "/api/cot/monitor/export":
+            self._send_json({"events": self.event_store.get_all() if self.event_store is not None else []})
+            return
+        self._serve_static(request_path)
+
+    def do_POST(self):
+        request_path = urllib.parse.unquote(urllib.parse.urlparse(self.path).path or "/")
+        if request_path == "/api/cot/monitor/clear":
+            if self.event_store is not None:
+                self.event_store.clear()
+            self._send_json({"ok": True})
+            return
+        if request_path.startswith("/api/cot/monitor/events/") and request_path.endswith("/correction"):
+            body = self._read_json_body()
+            if body is None:
+                return
+            try:
+                idx = int(request_path.split("/")[5])
+            except (IndexError, ValueError):
+                self.send_error(400, "Invalid event index")
+                return
+            if self.event_store is not None:
+                self.event_store.set_correction(idx, body.get("correction", ""), body.get("notes", ""))
+            self._send_json({"ok": True})
+            return
+        if request_path == "/api/cot/monitor/export":
+            body = self._read_json_body()
+            if body is None:
+                return
+            timestamp = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            export_path = self.asset_dir / f"cot_monitor_log_{timestamp}.json"
+            try:
+                export_path.write_text(json.dumps(body, ensure_ascii=False, indent=2), encoding="utf-8")
+                self._send_json({"ok": True, "file": str(export_path)})
+            except OSError as exc:
+                if self.logger is not None:
+                    self.logger.warning("Konnte Browser-Export nicht speichern: %s", exc)
+                self._send_json({"ok": False, "error": str(exc)}, status=500)
+            return
+        self.send_error(404)
+
+    def _send_json(self, payload, status=200):
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _read_json_body(self):
+        try:
+            body_length = int(self.headers.get("Content-Length", "0"))
+            return json.loads(self.rfile.read(body_length) or b"{}")
+        except (ValueError, json.JSONDecodeError):
+            self.send_error(400, "Invalid JSON")
+            return None
+
+    def _stream_events(self):
+        store = self.event_store
+        if store is None:
+            self.send_error(503, "Web UI event stream unavailable")
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        subscriber = store.subscribe_sse()
+        try:
+            while True:
+                try:
+                    record = subscriber.get(timeout=15)
+                    payload = json.dumps(record, ensure_ascii=False)
+                    self.wfile.write(f"event: cot_event\ndata: {payload}\n\n".encode("utf-8"))
+                    self.wfile.flush()
+                except queue.Empty:
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            store.unsubscribe_sse(subscriber)
+
+    def _serve_static(self, request_path):
+        relative_path = request_path.lstrip("/") or SERVICE_WEB_UI_PRIMARY_FILE
+        if relative_path in ("", "index.html"):
+            relative_path = SERVICE_WEB_UI_PRIMARY_FILE
+        if relative_path == "browser-logo.png":
+            relative_path = "logo.png"
+        if relative_path not in SERVICE_WEB_UI_ALLOWED_FILES:
+            self.send_error(404)
+            return
+        asset_path = (self.asset_dir / relative_path).resolve()
+        try:
+            asset_path.relative_to(self.asset_dir.resolve())
+        except ValueError:
+            self.send_error(403)
+            return
+        if not asset_path.exists():
+            self.send_error(404)
+            return
+        try:
+            body = asset_path.read_bytes()
+        except OSError as exc:
+            self.send_error(500, str(exc))
+            return
+        content_type = mimetypes.guess_type(str(asset_path))[0] or "application/octet-stream"
+        if asset_path.suffix.lower() == ".js":
+            content_type = "application/javascript; charset=utf-8"
+        elif asset_path.suffix.lower() == ".html":
+            content_type = "text/html; charset=utf-8"
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def start_gateway_service_web_ui(bind_ip, port=SERVICE_WEB_UI_PORT, asset_dir=None, logger=None, cfg=None):
+    asset_root = pathlib.Path(asset_dir or pathlib.Path(__file__).resolve().parent).resolve()
+    status_payload = _build_service_web_ui_status(bind_ip, port, cfg=cfg)
+    event_store = _ServiceWebUIEventStore()
+    event_store.add(_build_service_web_ui_startup_event(status_payload))
+    handler_cls = type("GatewayServiceWebUIHandler", (_ServiceWebUIRequestHandler,), {})
+    handler_cls.asset_dir = asset_root
+    handler_cls.event_store = event_store
+    handler_cls.status_payload = status_payload
+    handler_cls.logger = logger
+    server = http.server.ThreadingHTTPServer((str(bind_ip), int(port)), handler_cls)
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, daemon=True, name="gateway-service-web-ui")
+    thread.start()
+    return {
+        "bind_ip": status_payload["listen_ip"],
+        "port": int(port),
+        "url": status_payload["url"],
+        "status": status_payload,
+        "event_store": event_store,
+        "server": server,
+        "thread": thread,
+    }
 
 # Fountain code (FTN) constants — matching meshtastic/ATAK-Plugin FountainPacket.java
 FOUNTAIN_MAGIC = b"FTN"
@@ -3474,6 +3826,34 @@ class TAKMeshtasticGateway:
 
         # interne State
         self.logger = self.setup_logging()
+        self.service_web_ui = None
+        self.service_web_ui_port = SERVICE_WEB_UI_PORT
+        self.service_web_ui_bind_ip = detect_reachable_local_ip(self.server_ip)
+        try:
+            self.service_web_ui = start_gateway_service_web_ui(
+                self.service_web_ui_bind_ip,
+                port=self.service_web_ui_port,
+                asset_dir=pathlib.Path(__file__).resolve().parent,
+                logger=self.logger,
+                cfg=self.cfg,
+            )
+            self.logger.info("=" * 72)
+            self.logger.info("HTML-BROWSER-UI AKTIV: %s", self.service_web_ui["url"])
+            self.logger.info(
+                "Backend-Dienst läuft weiter. Öffne diese URL im Browser für die Hauptoberfläche."
+            )
+            self.logger.info(
+                "Falls die Seite nicht erreichbar ist, prüfe Firewall, IP-Adresse und Port %s.",
+                self.service_web_ui_port,
+            )
+            self.logger.info("=" * 72)
+        except OSError as exc:
+            self.logger.warning(
+                "HTML-Browser-UI konnte auf %s:%s nicht gestartet werden: %s",
+                self.service_web_ui_bind_ip,
+                self.service_web_ui_port,
+                exc,
+            )
         self.interfaces = []
         self.interface_lock = threading.RLock()
         self._meshtastic_pubsub_registered = False
@@ -7982,6 +8362,13 @@ class TAKMeshtasticGateway:
                 peer["conn"].close()
             except Exception:
                 pass
+
+        try:
+            if self.service_web_ui is not None:
+                self.service_web_ui["server"].shutdown()
+                self.service_web_ui["server"].server_close()
+        except Exception:
+            pass
         
         # Close remote socket
         self._cleanup_server_socket()
@@ -8161,6 +8548,10 @@ if __name__ == "__main__":
             help="Alle verfügbaren seriellen USB-Ports automatisch verwenden (kein interaktiver Dialog)"
         )
         parser.add_argument(
+            "--gui", action="store_true",
+            help="Tk-Desktopoberfläche explizit aktivieren (Standard ist die Browser-UI auf Port 5013)"
+        )
+        parser.add_argument(
             "--no-gui", action="store_true",
             help="GUI deaktivieren und im Terminal-Modus starten"
         )
@@ -8168,8 +8559,8 @@ if __name__ == "__main__":
 
         cfg = load_config()
 
-        # GUI-Modus wenn Tkinter verfügbar und nicht explizit deaktiviert
-        if tk is not None and not args.no_gui:
+        # Browser-UI ist jetzt Standard; die Tk-GUI bleibt als explizite Option verfügbar.
+        if tk is not None and args.gui and not args.no_gui:
             try:
                 app = GatewayApp(cfg)
                 app.run()

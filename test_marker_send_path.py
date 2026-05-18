@@ -16,6 +16,7 @@ import sys
 import types
 import threading
 import unittest
+from unittest import mock
 
 sys.path.insert(0, ".")
 
@@ -23,6 +24,8 @@ from main_app import (
     MESHTASTIC_DATA_PAYLOAD_MAX_BYTES,
     MESHTASTIC_TRANSFER_TYPE_COT,
     FOUNTAIN_MAGIC,
+    build_service_web_ui_url,
+    detect_reachable_local_ip,
     _ensure_bytes,
     _text_widget_is_at_bottom,
     TAKMeshtasticGateway,
@@ -78,6 +81,46 @@ class TestGuiLogAutoscroll(unittest.TestCase):
 
     def test_detects_when_log_widget_is_not_at_bottom(self):
         self.assertFalse(_text_widget_is_at_bottom(_FakeTextWidget((0.2, 0.8))))
+
+
+class TestServiceWebUiHelpers(unittest.TestCase):
+    def test_build_service_web_ui_url_uses_detected_ip_and_port(self):
+        self.assertEqual(
+            build_service_web_ui_url("192.168.1.25"),
+            "http://192.168.1.25:5013/",
+        )
+
+    def test_detect_reachable_local_ip_prefers_udp_detected_address(self):
+        fake_socket = mock.Mock()
+        fake_socket.getsockname.return_value = ("192.168.1.55", 43210)
+
+        with mock.patch("main_app.socket.socket", return_value=fake_socket):
+            detected = detect_reachable_local_ip("10.0.0.1")
+
+        self.assertEqual(detected, "192.168.1.55")
+        fake_socket.connect.assert_called_once_with(("10.0.0.1", 80))
+        fake_socket.close.assert_called_once()
+
+    def test_detect_reachable_local_ip_falls_back_to_hostname_lookup(self):
+        failing_socket = mock.Mock()
+        failing_socket.connect.side_effect = OSError("unreachable")
+
+        with mock.patch("main_app.socket.socket", return_value=failing_socket), \
+             mock.patch("main_app.socket.gethostbyname_ex", return_value=("host", [], ["127.0.0.1", "192.168.8.44"])):
+            detected = detect_reachable_local_ip()
+
+        self.assertEqual(detected, "192.168.8.44")
+
+    def test_detect_reachable_local_ip_uses_loopback_as_last_resort(self):
+        failing_socket = mock.Mock()
+        failing_socket.connect.side_effect = OSError("unreachable")
+
+        with mock.patch("main_app.socket.socket", return_value=failing_socket), \
+             mock.patch("main_app.socket.gethostbyname_ex", side_effect=OSError("dns down")), \
+             mock.patch("main_app.socket.gethostbyname", side_effect=OSError("dns down")):
+            detected = detect_reachable_local_ip()
+
+        self.assertEqual(detected, "127.0.0.1")
 
 
 class TestTakTcpKeepalive(unittest.TestCase):

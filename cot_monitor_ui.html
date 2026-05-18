@@ -43,6 +43,10 @@ header h1 span.arr2 { color: var(--red); }
 .btn.primary:hover { background: #2074d4; }
 .btn.danger { background: #da3633; border-color: #f85149; color: #fff; }
 .btn.danger:hover { background: #f85149; }
+.service-banner { background: rgba(32,116,212,.12); border-bottom: 1px solid var(--border); padding: 10px 20px; color: var(--text2); font-size: 13px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.service-banner a { color: var(--blue); text-decoration: none; font-weight: 600; }
+.service-banner a:hover { text-decoration: underline; }
+.service-banner code { background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; color: var(--text); }
 
 /* ── Event Table ── */
 .table-wrap { overflow-x: auto; }
@@ -173,6 +177,11 @@ td input.notes:focus { border-color: var(--accent); outline: none; }
   <button class="btn" onclick="clearEvents()" title="Alle Events löschen">🗑 Löschen</button>
   <button class="btn" onclick="pauseToggle()" id="pauseBtn" title="Pause / Fortsetzen">⏸ Pause</button>
   <button class="btn primary" onclick="exportLog()" title="Annotiertes Log speichern">💾 Log Speichern</button>
+  <a class="btn" href="/maker.html" target="_blank" rel="noopener" title="Marker / Icon Referenz im Browser öffnen">🗺️ Marker Referenz</a>
+</div>
+
+<div class="service-banner" id="serviceBanner">
+  <span>Backend startet…</span>
 </div>
 
 <!-- ═══════════════ TABLE ═══════════════ -->
@@ -239,6 +248,7 @@ let evtCounter = 0;
 let corrCount = 0;
 let meshCount = 0;
 let inCount = 0, outCount = 0;
+let serviceStatus = null;
 
 // ── SSE Connection ──
 let evtSource = null;
@@ -306,6 +316,23 @@ function updateCounters() {
   document.getElementById('cntOut').textContent = outCount;
   document.getElementById('cntCorr').textContent = corrCount;
   document.getElementById('cntMesh').textContent = meshCount;
+}
+
+async function loadServiceStatus() {
+  const banner = document.getElementById('serviceBanner');
+  try {
+    const res = await fetch('/api/service/status');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    serviceStatus = await res.json();
+    banner.innerHTML = `
+      <strong>Gateway Backend aktiv</strong>
+      <span>HTML-Hauptoberfläche:</span>
+      <code>${esc(serviceStatus.url || window.location.href)}</code>
+      <a href="${serviceStatus.maker_path || '/maker.html'}" target="_blank" rel="noopener">Marker / Icon Referenz</a>
+    `;
+  } catch (err) {
+    banner.textContent = 'Gateway Backend aktiv – Status-URL konnte nicht geladen werden.';
+  }
 }
 
 // ── Filtering ──
@@ -619,7 +646,7 @@ async function loadExisting() {
 }
 
 // ── Init ──
-loadExisting().then(() => connect());
+loadServiceStatus().finally(() => loadExisting().then(() => connect()));
 </script>
 </body>
 </html>
