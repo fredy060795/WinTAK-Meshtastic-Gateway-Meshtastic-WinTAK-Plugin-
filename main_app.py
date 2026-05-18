@@ -273,8 +273,17 @@ def _build_service_web_ui_status(bind_ip, port, cfg=None):
     }
 
 
+def _utc_now():
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
+def _utc_isoformat_z(value=None):
+    timestamp = (value or _utc_now()).replace(microsecond=0).isoformat()
+    return timestamp.replace("+00:00", "Z")
+
+
 def _build_service_web_ui_startup_event(status_payload):
-    timestamp = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    timestamp = _utc_isoformat_z()
     service_url = status_payload.get("url", "")
     listen_ip = status_payload.get("listen_ip", "127.0.0.1")
     return {
@@ -313,6 +322,22 @@ def _build_service_web_ui_startup_event(status_payload):
         "raw_xml": "",
         "notes": f"Open {service_url} in a browser.",
     }
+
+
+class _GatewayServiceWebUIServer(http.server.ThreadingHTTPServer):
+    logger = None
+
+    def handle_error(self, request, client_address):
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)):
+            if self.logger is not None and self.logger.isEnabledFor(logging.DEBUG):
+                self.logger.debug(
+                    "Service Web UI client disconnected: %s (%s)",
+                    client_address,
+                    exc,
+                )
+            return
+        super().handle_error(request, client_address)
 
 
 class _ServiceWebUIRequestHandler(http.server.BaseHTTPRequestHandler):
@@ -382,7 +407,7 @@ class _ServiceWebUIRequestHandler(http.server.BaseHTTPRequestHandler):
             body = self._read_json_body()
             if body is None:
                 return
-            timestamp = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            timestamp = _utc_now().strftime("%Y%m%d_%H%M%S")
             export_path = self.asset_dir / f"cot_monitor_log_{timestamp}.json"
             try:
                 export_path.write_text(json.dumps(body, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -520,7 +545,8 @@ def start_gateway_service_web_ui(bind_ip, port=SERVICE_WEB_UI_PORT, asset_dir=No
     handler_cls.status_payload = status_payload
     handler_cls.logger = logger
     handler_cls.controller = controller
-    server = http.server.ThreadingHTTPServer((str(bind_ip), int(port)), handler_cls)
+    server = _GatewayServiceWebUIServer((str(bind_ip), int(port)), handler_cls)
+    server.logger = logger
     server.daemon_threads = True
     thread = threading.Thread(target=server.serve_forever, daemon=True, name="gateway-service-web-ui")
     thread.start()
