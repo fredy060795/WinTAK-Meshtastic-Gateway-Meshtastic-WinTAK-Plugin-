@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WinTAK Meshtastic Gateway</title>
+  <link rel="icon" type="image/png" href="/browser-logo.png">
+  <style>
+    :root {
+      --bg: #0d1117;
+      --panel: #161b22;
+      --panel-2: #1f2630;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #2f81f7;
+      --green: #3fb950;
+      --yellow: #d29922;
+      --red: #f85149;
+      --field: #0f141b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    a { color: #58a6ff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .page { max-width: 1500px; margin: 0 auto; padding: 20px; }
+    .hero, .toolbar, .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      box-shadow: 0 10px 30px rgba(0,0,0,.18);
+    }
+    .hero {
+      padding: 18px 20px;
+      margin-bottom: 14px;
+      display: flex;
+      gap: 14px;
+      align-items: flex-start;
+      justify-content: space-between;
+      flex-wrap: wrap;
+    }
+    .hero h1 { margin: 0 0 8px; font-size: 24px; }
+    .hero p { margin: 0; color: var(--muted); }
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      font-weight: 600;
+    }
+    .status-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--yellow); }
+    .status-dot.running { background: var(--green); box-shadow: 0 0 10px rgba(63,185,80,.6); }
+    .status-dot.stopped { background: var(--red); }
+    .toolbar {
+      margin-bottom: 14px;
+      padding: 12px 16px;
+      display: flex;
+      gap: 14px;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+    }
+    .toolbar-links { display: flex; gap: 14px; flex-wrap: wrap; }
+    .notice {
+      margin-bottom: 14px;
+      padding: 12px 14px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: rgba(47,129,247,.12);
+      color: var(--text);
+      display: none;
+    }
+    .notice.warn { background: rgba(210,153,34,.12); border-color: rgba(210,153,34,.5); }
+    .grid {
+      display: grid;
+      grid-template-columns: minmax(420px, 1fr) minmax(420px, 1fr);
+      gap: 14px;
+    }
+    .stack { display: grid; gap: 14px; }
+    .panel { padding: 16px; }
+    .panel h2, .panel h3 { margin: 0 0 12px; font-size: 16px; }
+    .sub { color: var(--muted); font-size: 13px; margin-bottom: 10px; }
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px 14px;
+    }
+    .field, .field-full { display: grid; gap: 6px; }
+    .field-full { grid-column: 1 / -1; }
+    label { font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
+    input, select, textarea, button {
+      font: inherit;
+    }
+    input[type="text"], input[type="number"], select, textarea {
+      width: 100%;
+      background: var(--field);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 12px;
+    }
+    textarea { min-height: 120px; resize: vertical; }
+    select[multiple] { min-height: 120px; }
+    .check-grid {
+      grid-column: 1 / -1;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .check {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      background: var(--panel-2);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 14px;
+      text-transform: none;
+      letter-spacing: 0;
+      font-weight: 400;
+    }
+    .btn-row { display: flex; gap: 10px; flex-wrap: wrap; }
+    button {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 14px;
+      background: var(--panel-2);
+      color: var(--text);
+      cursor: pointer;
+    }
+    button.primary { background: #1f6feb; border-color: #388bfd; }
+    button.danger { background: #da3633; border-color: #f85149; }
+    button:disabled { opacity: .6; cursor: not-allowed; }
+    .status-line { padding: 10px 12px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--border); }
+    .console {
+      background: #0b0f14;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px;
+      min-height: 180px;
+      max-height: 320px;
+      overflow: auto;
+      font-family: Consolas, "Cascadia Code", monospace;
+      font-size: 12px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .log-line { margin-bottom: 4px; }
+    .log-line.DEBUG { color: #8b949e; }
+    .log-line.INFO { color: #e6edf3; }
+    .log-line.WARNING { color: #d29922; }
+    .log-line.ERROR, .log-line.CRITICAL { color: #f85149; }
+    .log-line.CMD { color: #58a6ff; }
+    .tiny { color: var(--muted); font-size: 12px; }
+    @media (max-width: 1100px) {
+      .grid { grid-template-columns: 1fr; }
+      .form-grid, .check-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="hero">
+      <div>
+        <h1>WinTAK Meshtastic Gateway</h1>
+        <p>Browser-Hauptoberfläche mit denselben Kernfunktionen wie die frühere Desktop-UI.</p>
+      </div>
+      <div class="status-pill">
+        <span class="status-dot stopped" id="statusDot"></span>
+        <span id="statusText">Lade Status …</span>
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <div class="toolbar-links">
+        <a href="/maker.html" target="_blank" rel="noopener">🗺️ Marker-Referenz</a>
+        <a href="/cot_monitor_ui.html" target="_blank" rel="noopener">🔍 CoT-Monitor</a>
+      </div>
+      <div class="tiny" id="serviceInfo">Service wird geladen …</div>
+    </div>
+
+    <div class="notice" id="notice"></div>
+
+    <div class="grid">
+      <div class="stack">
+        <section class="panel">
+          <h2>Gateway Settings</h2>
+          <div class="sub">Alle wichtigen Felder aus der alten Oberfläche direkt im Browser.</div>
+          <div class="form-grid">
+            <div class="field-full">
+              <label for="meshtastic_port">Meshtastic Port(s)</label>
+              <input id="meshtastic_port" type="text" placeholder="z. B. COM7, COM8">
+            </div>
+            <div class="field-full">
+              <label for="detectedPorts">Erkannte serielle Ports</label>
+              <select id="detectedPorts" multiple></select>
+              <div class="btn-row">
+                <button type="button" onclick="useSelectedPorts()">Auswahl übernehmen</button>
+                <button type="button" onclick="refreshPorts()">Ports aktualisieren</button>
+              </div>
+            </div>
+            <div class="field">
+              <label for="tak_server_host">Remote TAK Host</label>
+              <input id="tak_server_host" type="text">
+            </div>
+            <div class="field">
+              <label for="tak_server_port">Remote Port</label>
+              <input id="tak_server_port" type="number">
+            </div>
+            <div class="field">
+              <label for="tak_server_protocol">Remote Protocol</label>
+              <select id="tak_server_protocol">
+                <option>TCP</option>
+                <option>UDP</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="log_level">Log-Level</label>
+              <select id="log_level">
+                <option>DEBUG</option>
+                <option>INFO</option>
+                <option>WARNING</option>
+                <option>ERROR</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="local_tak_ip">WinTAK UDP Target IP</label>
+              <input id="local_tak_ip" type="text">
+            </div>
+            <div class="field">
+              <label for="local_tak_port">WinTAK UDP Port</label>
+              <input id="local_tak_port" type="number">
+            </div>
+            <div class="field">
+              <label for="local_tak_tcp_listen_port">WinTAK TCP Port</label>
+              <input id="local_tak_tcp_listen_port" type="number">
+            </div>
+            <div class="field">
+              <label for="local_tak_chat_listen_port">WinTAK Chat TCP Port</label>
+              <input id="local_tak_chat_listen_port" type="number">
+            </div>
+            <div class="field">
+              <label for="sync_interval_seconds">Sync Interval (s)</label>
+              <input id="sync_interval_seconds" type="number" min="1">
+            </div>
+            <div class="field">
+              <label for="relay_text_from_ports">Relay From COM Port(s)</label>
+              <input id="relay_text_from_ports" type="text">
+            </div>
+            <div class="field">
+              <label for="relay_text_to_mode">Relay To</label>
+              <select id="relay_text_to_mode">
+                <option value="all-other-selected-ports">All other selected ports</option>
+                <option value="custom">Custom list</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="relay_text_to_ports">Relay To COM Port(s)</label>
+              <input id="relay_text_to_ports" type="text">
+            </div>
+            <div class="field">
+              <label for="park_lat">Fallback Lat</label>
+              <input id="park_lat" type="text">
+            </div>
+            <div class="field">
+              <label for="park_lon">Fallback Lon</label>
+              <input id="park_lon" type="text">
+            </div>
+            <div class="check-grid">
+              <label class="check"><input id="log_raw_meshtastic_payloads" type="checkbox"> Enable RAW Meshtastic output</label>
+              <label class="check"><input id="log_raw_meshtastic_payloads_full" type="checkbox"> Log complete RAW payload</label>
+              <label class="check"><input id="relay_text_messages" type="checkbox"> Enable relay between selected COM ports</label>
+              <label class="check"><input id="send_nodes_without_gps" type="checkbox"> Send nodes without GPS fix</label>
+              <label class="check"><input id="set_gateway_position_on_start" type="checkbox"> Set gateway position on start</label>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>Event Log</h2>
+          <div class="btn-row" style="margin-bottom:10px">
+            <button type="button" onclick="runQuickCommand('clear')">Log leeren</button>
+            <button type="button" onclick="runQuickCommand('help')">Hilfe ausgeben</button>
+          </div>
+          <div class="console" id="logConsole"></div>
+        </section>
+      </div>
+
+      <div class="stack">
+        <section class="panel">
+          <h2>Operations</h2>
+          <div class="btn-row">
+            <button class="primary" id="startBtn" type="button" onclick="startGateway()">Start Gateway</button>
+            <button class="danger" id="stopBtn" type="button" onclick="stopGateway()">Stop Gateway</button>
+            <button id="syncBtn" type="button" onclick="manualSync()">Manual Sync</button>
+          </div>
+          <div class="status-line" style="margin-top:12px" id="gatewayStatus">⬛ Stopped</div>
+        </section>
+
+        <section class="panel">
+          <h3>Quick Command Console</h3>
+          <div class="btn-row">
+            <input id="quickCommand" type="text" placeholder="z. B. nodes, sync, log debug, setpos UID lat lon">
+            <button type="button" onclick="sendCommand()">Run</button>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h3>Direct Text → Mesh</h3>
+          <textarea id="meshMessage" placeholder="Textnachricht an das Mesh senden"></textarea>
+          <div class="btn-row" style="margin-top:10px">
+            <button type="button" onclick="sendMeshText()">Send Text</button>
+          </div>
+          <div class="status-line" style="margin-top:10px" id="meshStatus">Gateway not started.</div>
+        </section>
+
+        <section class="panel">
+          <h3>WinTAK CoT → Mesh</h3>
+          <textarea id="cotPayload" placeholder="Vollständiges &lt;event&gt; XML hier einfügen"></textarea>
+          <div class="btn-row" style="margin-top:10px">
+            <button type="button" onclick="sendCot()">Send CoT</button>
+          </div>
+          <div class="status-line" style="margin-top:10px" id="cotStatus">Gateway not started.</div>
+        </section>
+
+        <section class="panel">
+          <h2>WinTAK Monitor</h2>
+          <div class="console" id="wintakConsole"></div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let formInitialized = false;
+
+    function escapeHtml(value) {
+      return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;');
+    }
+
+    function setNotice(message, isWarn = false) {
+      const el = document.getElementById('notice');
+      if (!message) {
+        el.style.display = 'none';
+        el.textContent = '';
+        el.classList.remove('warn');
+        return;
+      }
+      el.textContent = message;
+      el.style.display = 'block';
+      el.classList.toggle('warn', isWarn);
+    }
+
+    async function api(path, body = {}) {
+      const response = await fetch(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const payload = await response.json().catch(() => ({ ok: false, error: 'Ungültige Antwort vom Backend.' }));
+      if (!response.ok || payload.ok === false) {
+        throw new Error(payload.error || `Request failed: ${response.status}`);
+      }
+      return payload;
+    }
+
+    function collectForm() {
+      const ids = [
+        'meshtastic_port', 'tak_server_host', 'tak_server_port', 'tak_server_protocol',
+        'local_tak_ip', 'local_tak_port', 'local_tak_chat_listen_port', 'local_tak_tcp_listen_port',
+        'log_level', 'sync_interval_seconds', 'relay_text_from_ports', 'relay_text_to_mode',
+        'relay_text_to_ports', 'park_lat', 'park_lon'
+      ];
+      const payload = {};
+      ids.forEach((id) => payload[id] = document.getElementById(id).value);
+      ['log_raw_meshtastic_payloads', 'log_raw_meshtastic_payloads_full', 'relay_text_messages', 'send_nodes_without_gps', 'set_gateway_position_on_start']
+        .forEach((id) => payload[id] = document.getElementById(id).checked);
+      return payload;
+    }
+
+    function applyForm(config) {
+      Object.entries(config || {}).forEach(([key, value]) => {
+        const field = document.getElementById(key);
+        if (!field) return;
+        if (field.type === 'checkbox') field.checked = Boolean(value);
+        else field.value = value ?? '';
+      });
+    }
+
+    function renderDetectedPorts(ports, selectedText) {
+      const select = document.getElementById('detectedPorts');
+      const selected = new Set(String(selectedText || '').split(/[\s,;]+/).filter(Boolean).map((item) => item.toUpperCase()));
+      select.innerHTML = '';
+      (ports || []).forEach((entry) => {
+        const option = document.createElement('option');
+        option.value = entry.device;
+        option.textContent = entry.label;
+        option.selected = selected.has(String(entry.device || '').toUpperCase());
+        select.appendChild(option);
+      });
+    }
+
+    function renderConsole(id, entries) {
+      const lines = (entries || []).map((entry) => (
+        `<div class="log-line ${escapeHtml(entry.level || 'INFO')}">[${escapeHtml(entry.time || '')}] ${escapeHtml(entry.message || '')}</div>`
+      ));
+      document.getElementById(id).innerHTML = lines.join('') || '<span class="tiny">Noch keine Einträge.</span>';
+    }
+
+    function applyState(state) {
+      if (!formInitialized) {
+        applyForm(state.config || {});
+        formInitialized = true;
+      }
+      renderDetectedPorts(state.detected_ports, document.getElementById('meshtastic_port').value || (state.config || {}).meshtastic_port);
+      renderConsole('logConsole', state.logs);
+      renderConsole('wintakConsole', state.wintak_monitor);
+      document.getElementById('statusText').textContent = state.running ? 'Gateway läuft' : 'Gateway gestoppt';
+      document.getElementById('gatewayStatus').textContent = state.status_text || '⬛ Stopped';
+      document.getElementById('meshStatus').textContent = state.mesh_status || 'Gateway not started.';
+      document.getElementById('cotStatus').textContent = state.cot_status || 'Gateway not started.';
+      document.getElementById('stopBtn').disabled = !state.running;
+      document.getElementById('syncBtn').disabled = !state.running;
+      const dot = document.getElementById('statusDot');
+      dot.classList.toggle('running', Boolean(state.running));
+      dot.classList.toggle('stopped', !state.running);
+      const service = state.service || {};
+      document.getElementById('serviceInfo').innerHTML =
+        `HTML UI: <a href="${escapeHtml(service.url || '/')}">${escapeHtml(service.url || '/')}</a>`;
+      if ((state.dependencies || []).length) {
+        setNotice(`Fehlende Python-Pakete: ${state.dependencies.join(', ')}. Das Gateway kann damit ggf. nicht starten.`, true);
+      } else {
+        setNotice('');
+      }
+    }
+
+    async function fetchState() {
+      const response = await fetch('/api/browser/state');
+      const state = await response.json();
+      applyState(state);
+    }
+
+    async function startGateway() {
+      try {
+        setNotice('');
+        await api('/api/browser/start', collectForm());
+        await fetchState();
+      } catch (error) {
+        setNotice(error.message, true);
+      }
+    }
+
+    async function stopGateway() {
+      try {
+        setNotice('');
+        await api('/api/browser/stop', {});
+        await fetchState();
+      } catch (error) {
+        setNotice(error.message, true);
+      }
+    }
+
+    async function manualSync() {
+      try {
+        setNotice('');
+        await api('/api/browser/manual-sync', {});
+        await fetchState();
+      } catch (error) {
+        setNotice(error.message, true);
+      }
+    }
+
+    async function sendMeshText() {
+      try {
+        setNotice('');
+        await api('/api/browser/send-text', { message: document.getElementById('meshMessage').value });
+        document.getElementById('meshMessage').value = '';
+        await fetchState();
+      } catch (error) {
+        setNotice(error.message, true);
+      }
+    }
+
+    async function sendCot() {
+      try {
+        setNotice('');
+        await api('/api/browser/send-cot', { packet_xml: document.getElementById('cotPayload').value });
+        document.getElementById('cotPayload').value = '';
+        await fetchState();
+      } catch (error) {
+        setNotice(error.message, true);
+      }
+    }
+
+    async function sendCommand() {
+      const input = document.getElementById('quickCommand');
+      const command = input.value.trim();
+      if (!command) return;
+      try {
+        setNotice('');
+        await api('/api/browser/command', { command });
+        input.value = '';
+        await fetchState();
+      } catch (error) {
+        setNotice(error.message, true);
+      }
+    }
+
+    async function runQuickCommand(command) {
+      try {
+        setNotice('');
+        await api('/api/browser/command', { command });
+        await fetchState();
+      } catch (error) {
+        setNotice(error.message, true);
+      }
+    }
+
+    async function refreshPorts() {
+      try {
+        setNotice('');
+        await api('/api/browser/refresh-ports', {});
+        await fetchState();
+      } catch (error) {
+        setNotice(error.message, true);
+      }
+    }
+
+    function useSelectedPorts() {
+      const select = document.getElementById('detectedPorts');
+      const selected = Array.from(select.selectedOptions).map((option) => option.value);
+      document.getElementById('meshtastic_port').value = selected.join(', ');
+    }
+
+    document.getElementById('quickCommand').addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        sendCommand();
+      }
+    });
+
+    fetchState();
+    setInterval(fetchState, 2000);
+  </script>
+</body>
+</html>

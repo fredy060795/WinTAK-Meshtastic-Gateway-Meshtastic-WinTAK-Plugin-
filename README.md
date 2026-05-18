@@ -137,24 +137,28 @@ The script automatically requests Administrator privileges and launches the gate
 python main_app.py
 ```
 
-Das Programm öffnet automatisch ein **GUI-Fenster**, das auf die wichtigsten Punkte reduziert ist:
+Das Programm startet standardmäßig eine **HTML-Browseroberfläche** auf Port **5013** und öffnet dort die Hauptoberfläche:
 
 | Bereich | Beschreibung |
 |---|---|
 | **WinTAK-Hinweis** | Zeigt direkt an, dass in WinTAK zwingend ein lokaler Server `127.0.0.1:8088` mit **TCP** angelegt werden muss. |
-| **Basis-Einstellungen** | Nur die wesentlichen Einstellungen im Fenster: Meshtastic-Port(s), Remote TAK, WinTAK UDP/TCP, Log-Level, Sync und GPS-Fallback. |
-| **▶ Start / ■ Stop** | Gateway starten und stoppen ohne Neustart |
+| **Basis-Einstellungen** | Meshtastic-Port(s), Remote TAK, WinTAK UDP/TCP, Log-Level, Sync, Relay-Optionen und GPS-Fallback direkt im Browser. |
+| **▶ Start / ■ Stop** | Gateway starten und stoppen ohne Neustart – keine Eingabe mehr im Backend-Fenster nötig. |
 | **WinTAK-Nachrichten (TCP Monitor)** | Zeigt in Echtzeit jede über den konfigurierten TCP-Listener empfangene WinTAK-Nachricht samt Verbindungsstatus. |
-| **Log-Ausgabe** | Alle Meldungen erscheinen live farbig im Fenster (DEBUG=grau, INFO=weiß, WARNING=gelb, ERROR=rot). |
+| **Log-Ausgabe** | Alle Meldungen erscheinen live farbig im Browser (DEBUG=grau, INFO=weiß, WARNING=gelb, ERROR=rot). |
+| **Zusatzseiten** | Marker-Referenz und separater CoT-Monitor bleiben über Links in der Browseroberfläche erreichbar. |
 
-Bei kleinen Displays ist der mittlere Fensterinhalt weiterhin vertikal scrollbar.
+Die klassische Tk-Desktopoberfläche bleibt mit `--gui` weiterhin verfügbar.
 
 ```bash
-# Terminal-Modus erzwingen (z. B. auf Server ohne Display)
+# Tk-Desktopoberfläche explizit starten
+python main_app.py --gui
+
+# Terminal-Modus erzwingen (z. B. auf Server ohne Browser)
 python main_app.py --no-gui
 ```
 
-Falls kein Display verfügbar ist (z. B. Server ohne Desktop), startet die Anwendung automatisch im Terminal-Modus.
+Ohne `--no-gui` bleibt das Backend-Fenster nur als laufender Dienst offen; die Bedienung erfolgt über die HTML-Oberfläche.
 
 ### Option 3 — Build a standalone EXE with PyInstaller
 

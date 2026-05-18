@@ -34,6 +34,7 @@ import threading
 import traceback
 import urllib.parse
 import uuid
+import webbrowser
 import zlib
 import warnings
 from xml.etree.ElementTree import Element, ParseError, SubElement, tostring, fromstring
@@ -105,8 +106,9 @@ TCP_RECV_BUFFER_SIZE = 4096
 MAX_TCP_STREAM_BUFFER_BYTES = 262144
 TCP_STREAM_BUFFER_TAIL_BYTES = 64
 SERVICE_WEB_UI_PORT = 5013
-SERVICE_WEB_UI_PRIMARY_FILE = "cot_monitor_ui.html"
+SERVICE_WEB_UI_PRIMARY_FILE = "gateway_ui.html"
 SERVICE_WEB_UI_ALLOWED_FILES = {
+    "gateway_ui.html",
     "cot_monitor_ui.html",
     "maker.html",
     "cot-client.js",
@@ -318,6 +320,7 @@ class _ServiceWebUIRequestHandler(http.server.BaseHTTPRequestHandler):
     event_store = None
     status_payload = {}
     logger = None
+    controller = None
 
     def log_message(self, format, *args):
         return
@@ -334,6 +337,12 @@ class _ServiceWebUIRequestHandler(http.server.BaseHTTPRequestHandler):
         if request_path == "/api/service/status":
             self._send_json(self.status_payload)
             return
+        if request_path == "/api/browser/state":
+            if self.controller is None:
+                self.send_error(503, "Browser UI controller unavailable")
+                return
+            self._send_json(self.controller.get_state())
+            return
         if request_path == "/api/cot/monitor/events":
             store = self.event_store
             self._send_json({"events": store.get_all() if store is not None else []})
@@ -348,6 +357,9 @@ class _ServiceWebUIRequestHandler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         request_path = urllib.parse.unquote(urllib.parse.urlparse(self.path).path or "/")
+        if request_path.startswith("/api/browser/"):
+            self._handle_browser_post(request_path)
+            return
         if request_path == "/api/cot/monitor/clear":
             if self.event_store is not None:
                 self.event_store.clear()
@@ -381,6 +393,42 @@ class _ServiceWebUIRequestHandler(http.server.BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": str(exc)}, status=500)
             return
         self.send_error(404)
+
+    def _handle_browser_post(self, request_path):
+        if self.controller is None:
+            self.send_error(503, "Browser UI controller unavailable")
+            return
+        body = self._read_json_body()
+        if body is None:
+            return
+        controller = self.controller
+        try:
+            if request_path == "/api/browser/start":
+                response = controller.start_gateway(body)
+            elif request_path == "/api/browser/stop":
+                response = controller.stop_gateway()
+            elif request_path == "/api/browser/manual-sync":
+                response = controller.manual_sync()
+            elif request_path == "/api/browser/send-text":
+                response = controller.send_mesh_text(body.get("message", ""))
+            elif request_path == "/api/browser/send-cot":
+                response = controller.send_cot(body.get("packet_xml", ""))
+            elif request_path == "/api/browser/command":
+                response = controller.run_command(body.get("command", ""))
+            elif request_path == "/api/browser/refresh-ports":
+                response = controller.refresh_detected_ports()
+            else:
+                self.send_error(404)
+                return
+        except ValueError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=400)
+            return
+        except Exception as exc:
+            if self.logger is not None:
+                self.logger.error("Browser UI request failed: %s", exc)
+            self._send_json({"ok": False, "error": str(exc)}, status=500)
+            return
+        self._send_json(response)
 
     def _send_json(self, payload, status=200):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -461,7 +509,7 @@ class _ServiceWebUIRequestHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def start_gateway_service_web_ui(bind_ip, port=SERVICE_WEB_UI_PORT, asset_dir=None, logger=None, cfg=None):
+def start_gateway_service_web_ui(bind_ip, port=SERVICE_WEB_UI_PORT, asset_dir=None, logger=None, cfg=None, controller=None):
     asset_root = pathlib.Path(asset_dir or pathlib.Path(__file__).resolve().parent).resolve()
     status_payload = _build_service_web_ui_status(bind_ip, port, cfg=cfg)
     event_store = _ServiceWebUIEventStore()
@@ -471,6 +519,7 @@ def start_gateway_service_web_ui(bind_ip, port=SERVICE_WEB_UI_PORT, asset_dir=No
     handler_cls.event_store = event_store
     handler_cls.status_payload = status_payload
     handler_cls.logger = logger
+    handler_cls.controller = controller
     server = http.server.ThreadingHTTPServer((str(bind_ip), int(port)), handler_cls)
     server.daemon_threads = True
     thread = threading.Thread(target=server.serve_forever, daemon=True, name="gateway-service-web-ui")
@@ -2188,6 +2237,152 @@ def _store_ports_in_config(cfg, key, ports):
         cfg.pop(key, None)
 
 
+def _parse_int_field_value(raw_value, field_name, min_value=MIN_PORT_NUMBER, max_value=MAX_PORT_NUMBER):
+    try:
+        value = int(str(raw_value).strip())
+    except (TypeError, ValueError):
+        raise ValueError(f"{field_name} must be a whole number.")
+    if not (min_value <= value <= max_value):
+        raise ValueError(f"{field_name} must be between {min_value} and {max_value}.")
+    return value
+
+
+def _config_bool_value(source, key, default=False):
+    if isinstance(source, dict) and key in source:
+        return as_bool(source.get(key))
+    return as_bool(default)
+
+
+def _apply_settings_payload_to_cfg(cfg, payload, ports):
+    cfg["log_level"] = str(payload.get("log_level", cfg.get("log_level", "INFO"))).strip().upper() or "INFO"
+    if cfg["log_level"] not in ("DEBUG", "INFO", "WARNING", "ERROR"):
+        cfg["log_level"] = "INFO"
+    cfg["meshtastic_port"] = ports[0] if len(ports) == 1 else ports
+    cfg["tak_server_host"] = str(payload.get("tak_server_host", cfg.get("tak_server_host", ""))).strip()
+    cfg["tak_server_protocol"] = str(
+        payload.get("tak_server_protocol", cfg.get("tak_server_protocol", "TCP"))
+    ).strip().upper() or "TCP"
+    if cfg["tak_server_protocol"] not in ("TCP", "UDP"):
+        cfg["tak_server_protocol"] = "TCP"
+    cfg["local_tak_ip"] = str(
+        payload.get("local_tak_ip", cfg.get("local_tak_ip", WINTAK_REQUIRED_HOST))
+    ).strip() or WINTAK_REQUIRED_HOST
+
+    cfg["tak_server_port"] = _parse_int_field_value(
+        payload.get("tak_server_port", cfg.get("tak_server_port", 8088)), "Remote Port"
+    )
+    cfg["local_tak_port"] = _parse_int_field_value(
+        payload.get("local_tak_port", cfg.get("local_tak_port", 4242)), "Local TAK Port"
+    )
+    cfg["local_tak_chat_listen_port"] = _parse_int_field_value(
+        payload.get("local_tak_chat_listen_port", cfg.get("local_tak_chat_listen_port", DEFAULT_CHAT_LISTEN_PORT)),
+        "Local TAK Chat Listen Port",
+    )
+    cfg["local_tak_tcp_listen_port"] = _parse_int_field_value(
+        payload.get("local_tak_tcp_listen_port", cfg.get("local_tak_tcp_listen_port", TCP_LISTENER_DEFAULT_PORT)),
+        "Local TAK TCP Listen Port",
+    )
+    cfg["sync_interval_seconds"] = _parse_int_field_value(
+        payload.get("sync_interval_seconds", cfg.get("sync_interval_seconds", 300)),
+        "Sync Interval",
+        min_value=1,
+        max_value=86400,
+    )
+
+    cfg["log_raw_meshtastic_payloads"] = _config_bool_value(
+        payload, "log_raw_meshtastic_payloads", cfg.get("log_raw_meshtastic_payloads", False)
+    )
+    cfg["log_raw_meshtastic_payloads_full"] = bool(
+        cfg["log_raw_meshtastic_payloads"]
+        and _config_bool_value(
+            payload, "log_raw_meshtastic_payloads_full", cfg.get("log_raw_meshtastic_payloads_full", False)
+        )
+    )
+    cfg["relay_text_messages"] = _config_bool_value(
+        payload, "relay_text_messages", cfg.get("relay_text_messages", True)
+    )
+    relay_from_ports = _parse_ports_text(
+        payload.get("relay_text_from_ports", _format_ports_for_entry(cfg.get("relay_text_from_ports")))
+    )
+    relay_to_mode = str(payload.get("relay_text_to_mode", "")).strip().lower()
+    relay_to_text = payload.get("relay_text_to_ports", _format_ports_for_entry(cfg.get("relay_text_to_ports")))
+    relay_to_ports = [] if relay_to_mode == "all-other-selected-ports" else _parse_ports_text(relay_to_text)
+    selected_ports_upper = {port.upper() for port in ports}
+    unknown_relay_from = [port for port in relay_from_ports if port.upper() not in selected_ports_upper]
+    unknown_relay_to = [port for port in relay_to_ports if port.upper() not in selected_ports_upper]
+    if unknown_relay_from:
+        raise ValueError(
+            "Relay From COM Port(s) contains ports that are not selected above: " + ", ".join(unknown_relay_from)
+        )
+    if unknown_relay_to:
+        raise ValueError(
+            "Relay To COM Port(s) contains ports that are not selected above: " + ", ".join(unknown_relay_to)
+        )
+    _store_ports_in_config(cfg, "relay_text_from_ports", relay_from_ports)
+    _store_ports_in_config(cfg, "relay_text_to_ports", relay_to_ports)
+
+    cfg["send_nodes_without_gps"] = _config_bool_value(
+        payload, "send_nodes_without_gps", cfg.get("send_nodes_without_gps", True)
+    )
+    cfg["set_gateway_position_on_start"] = _config_bool_value(
+        payload, "set_gateway_position_on_start", cfg.get("set_gateway_position_on_start", False)
+    )
+
+    park_lat_text = str(payload.get("park_lat", "" if cfg.get("park_lat") is None else cfg.get("park_lat"))).strip()
+    park_lon_text = str(payload.get("park_lon", "" if cfg.get("park_lon") is None else cfg.get("park_lon"))).strip()
+    if park_lat_text and park_lon_text:
+        try:
+            lat_val = float(park_lat_text)
+        except ValueError:
+            raise ValueError("park_lat must be a valid number.")
+        try:
+            lon_val = float(park_lon_text)
+        except ValueError:
+            raise ValueError("park_lon must be a valid number.")
+        if lat_val == 0.0 and lon_val == 0.0:
+            raise ValueError(
+                "park_lat and park_lon cannot both be 0.0 (Null Island / invalid location). "
+                "Enter real coordinates or leave both fields empty."
+            )
+        cfg["park_lat"] = lat_val
+        cfg["park_lon"] = lon_val
+    elif not park_lat_text and not park_lon_text:
+        cfg.pop("park_lat", None)
+        cfg.pop("park_lon", None)
+    else:
+        missing = "park_lon" if park_lat_text else "park_lat"
+        raise ValueError(
+            "Both coordinates (park_lat and park_lon) must be filled in, or both must stay empty. "
+            f"Currently missing: {missing}."
+        )
+
+
+def _build_browser_ui_form_state(cfg):
+    relay_to_ports = _config_ports_to_list(cfg.get("relay_text_to_ports"))
+    return {
+        "meshtastic_port": _format_ports_for_entry(cfg.get("meshtastic_port")),
+        "tak_server_host": str(cfg.get("tak_server_host", "")),
+        "tak_server_port": str(cfg.get("tak_server_port", 8088)),
+        "tak_server_protocol": str(cfg.get("tak_server_protocol", "TCP")).upper(),
+        "local_tak_ip": str(cfg.get("local_tak_ip", WINTAK_REQUIRED_HOST)),
+        "local_tak_port": str(cfg.get("local_tak_port", 4242)),
+        "local_tak_chat_listen_port": str(cfg.get("local_tak_chat_listen_port", DEFAULT_CHAT_LISTEN_PORT)),
+        "local_tak_tcp_listen_port": str(cfg.get("local_tak_tcp_listen_port", TCP_LISTENER_DEFAULT_PORT)),
+        "log_level": str(cfg.get("log_level", "INFO")).upper(),
+        "sync_interval_seconds": str(cfg.get("sync_interval_seconds", 300)),
+        "log_raw_meshtastic_payloads": as_bool(cfg.get("log_raw_meshtastic_payloads", False)),
+        "log_raw_meshtastic_payloads_full": as_bool(cfg.get("log_raw_meshtastic_payloads_full", False)),
+        "relay_text_messages": as_bool(cfg.get("relay_text_messages", True)),
+        "relay_text_from_ports": _format_ports_for_entry(cfg.get("relay_text_from_ports")),
+        "relay_text_to_ports": ", ".join(relay_to_ports),
+        "relay_text_to_mode": "all-other-selected-ports" if not relay_to_ports else "custom",
+        "send_nodes_without_gps": as_bool(cfg.get("send_nodes_without_gps", True)),
+        "set_gateway_position_on_start": as_bool(cfg.get("set_gateway_position_on_start", False)),
+        "park_lat": "" if cfg.get("park_lat") is None else str(cfg.get("park_lat")),
+        "park_lon": "" if cfg.get("park_lon") is None else str(cfg.get("park_lon")),
+    }
+
+
 def _normalize_tak_multicast_endpoint(value):
     if isinstance(value, dict):
         group = str(value.get("group") or value.get("host") or value.get("ip") or "").strip()
@@ -2353,6 +2548,329 @@ class _GUILogHandler(logging.Handler):
             self._callback(msg, record.levelname)
         except Exception:
             pass
+
+
+class _ServiceWebUIController:
+    """Browser-first controller that mirrors the legacy desktop UI actions."""
+
+    def __init__(self, cfg, service_status=None):
+        self.cfg = dict(cfg or {})
+        self.service_status = service_status or {}
+        self._lock = threading.RLock()
+        self._gateway = None
+        self._gateway_thread = None
+        self._log_handler = None
+        self._logs = []
+        self._wintak_monitor = []
+        self._status_text = "⬛ Stopped"
+        self._mesh_status = "Gateway not started."
+        self._cot_status = "Gateway not started."
+        self._active_ports = []
+        self._detected_ports = detect_serial_port_details()
+
+    def _append_log(self, msg, level="INFO"):
+        entry = {
+            "time": datetime.datetime.now().strftime("%H:%M:%S"),
+            "level": level if level in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "CMD") else "INFO",
+            "message": str(msg),
+        }
+        with self._lock:
+            self._logs.append(entry)
+            if len(self._logs) > 400:
+                self._logs = self._logs[-400:]
+
+    def _append_wintak_monitor(self, msg, level="INFO"):
+        entry = {
+            "time": datetime.datetime.now().strftime("%H:%M:%S"),
+            "level": level if level in ("INFO", "WARNING", "ERROR") else "INFO",
+            "message": str(msg),
+        }
+        with self._lock:
+            self._wintak_monitor.append(entry)
+            if len(self._wintak_monitor) > MAX_WINTAK_MONITOR_LINES:
+                self._wintak_monitor = self._wintak_monitor[-MAX_WINTAK_MONITOR_LINES:]
+
+    def get_state(self):
+        with self._lock:
+            return {
+                "ok": True,
+                "service": dict(self.service_status),
+                "config": _build_browser_ui_form_state(self.cfg),
+                "running": self._gateway is not None and not self._gateway.shutdown_flag.is_set(),
+                "status_text": self._status_text,
+                "mesh_status": self._mesh_status,
+                "cot_status": self._cot_status,
+                "active_ports": list(self._active_ports),
+                "detected_ports": [dict(item) for item in self._detected_ports],
+                "logs": list(self._logs),
+                "wintak_monitor": list(self._wintak_monitor),
+                "dependencies": self._missing_dependencies(),
+            }
+
+    def refresh_detected_ports(self):
+        with self._lock:
+            self._detected_ports = detect_serial_port_details()
+            detected_ports = [dict(item) for item in self._detected_ports]
+        return {"ok": True, "detected_ports": detected_ports}
+
+    def _missing_dependencies(self):
+        missing = []
+        if meshtastic is None:
+            missing.append("meshtastic")
+        if pub is None:
+            missing.append("pypubsub")
+        if serial is None:
+            missing.append("pyserial")
+        return missing
+
+    def start_gateway(self, payload):
+        ports = _parse_ports_text(payload.get("meshtastic_port", ""))
+        if not ports:
+            raise ValueError("No port specified.")
+        with self._lock:
+            if (self._gateway is not None and not self._gateway.shutdown_flag.is_set()) or (
+                self._gateway_thread is not None and self._gateway_thread.is_alive()
+            ):
+                raise ValueError("Gateway is already running.")
+            updated_cfg = dict(self.cfg)
+        _apply_settings_payload_to_cfg(updated_cfg, payload, ports)
+        updated_cfg["enable_service_web_ui"] = False
+        save_config(updated_cfg)
+
+        log_level = getattr(logging, updated_cfg.get("log_level", "INFO"), logging.INFO)
+        log_handler = _GUILogHandler(self._append_log)
+        log_handler.setLevel(log_level)
+        log_handler.setFormatter(
+            logging.Formatter("[%(asctime)s] %(levelname)s: %(message)s", datefmt="%H:%M:%S")
+        )
+        logger = logging.getLogger("TAK_Meshtastic_Gateway")
+        logger.setLevel(log_level)
+        logger.addHandler(log_handler)
+
+        with self._lock:
+            self.cfg = updated_cfg
+            self._log_handler = log_handler
+            self._status_text = "🟡 Starting …"
+            self._mesh_status = "Gateway starting …"
+            self._cot_status = "Gateway starting …"
+            self._active_ports = list(ports)
+            self._append_log("Browser UI start requested.", "INFO")
+            self._gateway_thread = threading.Thread(
+                target=self._run_gateway_thread,
+                args=(list(ports),),
+                daemon=True,
+                name="gateway-browser-controller",
+            )
+            self._gateway_thread.start()
+        return {"ok": True}
+
+    def _run_gateway_thread(self, ports):
+        try:
+            gw = TAKMeshtasticGateway(ports, dict(self.cfg))
+            gw.wintak_tcp_chat_callback = self._on_wintak_tcp_chat
+            with self._lock:
+                self._gateway = gw
+                self._status_text = f"🟢 Running  –  {', '.join(ports)}"
+                self._mesh_status = "Ready for manual mesh test sending."
+                self._cot_status = "Ready for manual CoT injection."
+            gw.run()
+        except Exception:
+            self._append_log("Gateway thread error:\n" + traceback.format_exc(), "ERROR")
+        finally:
+            self._on_gateway_stopped()
+
+    def stop_gateway(self):
+        with self._lock:
+            gw = self._gateway
+            if gw is None and not (self._gateway_thread is not None and self._gateway_thread.is_alive()):
+                return {"ok": True}
+            if gw is not None:
+                gw.shutdown_flag.set()
+            self._status_text = "🟡 Stopping …"
+            self._mesh_status = "Gateway stopping …"
+            self._cot_status = "Gateway stopping …"
+        return {"ok": True}
+
+    def _on_gateway_stopped(self):
+        with self._lock:
+            if self._log_handler is not None:
+                logging.getLogger("TAK_Meshtastic_Gateway").removeHandler(self._log_handler)
+                self._log_handler = None
+            self._gateway = None
+            self._gateway_thread = None
+            self._status_text = "⬛ Stopped"
+            self._mesh_status = "Gateway not started."
+            self._cot_status = "Gateway not started."
+
+    def manual_sync(self):
+        with self._lock:
+            gw = self._gateway
+        if gw is None:
+            raise ValueError("Gateway is not running.")
+        threading.Thread(target=gw.full_sync, daemon=True, name="gateway-manual-sync").start()
+        self._append_log("Manual full sync started.", "INFO")
+        return {"ok": True}
+
+    def send_mesh_text(self, message):
+        text = str(message or "").strip()
+        if not text:
+            raise ValueError("Please enter a test message first.")
+        with self._lock:
+            gw = self._gateway
+        if gw is None:
+            raise ValueError("Gateway is not running.")
+        with self._lock:
+            self._mesh_status = "🟡 Sending test message …"
+        threading.Thread(
+            target=self._send_mesh_text_worker,
+            args=(gw, text),
+            daemon=True,
+            name="gateway-browser-send-text",
+        ).start()
+        return {"ok": True}
+
+    def _send_mesh_text_worker(self, gw, message):
+        try:
+            total_sent = gw._send_text_to_meshtastic(message)
+        except Exception as exc:
+            self._append_log(f"Manual mesh send failed: {exc}", "ERROR")
+            self._append_log("Manual mesh send error details:\n" + traceback.format_exc(), "DEBUG")
+            with self._lock:
+                self._mesh_status = f"❌ Send failed: {exc}"
+            return
+        self._append_log(f"Test message sent to the mesh successfully (interfaces: {total_sent}).", "INFO")
+        with self._lock:
+            self._mesh_status = f"✅ Sent (interfaces: {total_sent})."
+
+    def send_cot(self, packet_xml):
+        payload = str(packet_xml or "").strip()
+        if not payload:
+            raise ValueError("Please paste a CoT <event> XML first.")
+        with self._lock:
+            gw = self._gateway
+        if gw is None:
+            raise ValueError("Gateway is not running.")
+        with self._lock:
+            self._cot_status = "🟡 Sending CoT to mesh …"
+        threading.Thread(
+            target=self._send_cot_worker,
+            args=(gw, payload),
+            daemon=True,
+            name="gateway-browser-send-cot",
+        ).start()
+        return {"ok": True}
+
+    def _send_cot_worker(self, gw, packet_xml):
+        try:
+            send_result = gw.send_cot_to_meshtastic(packet_xml)
+        except Exception as exc:
+            self._append_log(f"Manual CoT send failed: {exc}", "ERROR")
+            self._append_log("Manual CoT send error details:\n" + traceback.format_exc(), "DEBUG")
+            with self._lock:
+                self._cot_status = f"❌ Send failed: {exc}"
+            return
+        transport = send_result.get("transport", "UNKNOWN")
+        count = send_result.get("count", 0)
+        self._append_log(
+            f"Manual CoT sent to the mesh successfully (transport: {transport}, packets: {count}).",
+            "INFO",
+        )
+        with self._lock:
+            self._cot_status = f"✅ Sent via {transport} ({count} packet(s))."
+
+    def _on_wintak_tcp_chat(self, kind, sender, message, addr=None):
+        if kind == "connect":
+            ip = addr[0] if addr else "?"
+            listen_ip, listen_port = _get_tak_tcp_listener_endpoint_from_cfg(self.cfg)
+            monitor_line = f"LINK UP  {ip} -> {listen_ip}:{listen_port}"
+            self._append_log(f"WinTAK connected from {ip} to TCP listener {listen_ip}:{listen_port}.", "INFO")
+            self._append_wintak_monitor(monitor_line, "INFO")
+        elif kind == "disconnect":
+            self._append_log("WinTAK TCP connection closed.", "INFO")
+            self._append_wintak_monitor("LINK DOWN  WinTAK TCP connection closed.", "WARNING")
+        elif kind == "chat":
+            ts = datetime.datetime.now().strftime("%H:%M:%S")
+            self._append_log(f"[WinTAK {ts}] {sender}: {message}", "INFO")
+            self._append_wintak_monitor(f"[{ts}] {sender}: {message}", "INFO")
+
+    def run_command(self, command):
+        cmd = str(command or "").strip()
+        if not cmd:
+            raise ValueError("Command must not be empty.")
+        self._append_log(f"> {cmd}", "CMD")
+        parts_raw = cmd.split()
+        parts = [p.lower() for p in parts_raw]
+        action = parts[0]
+        if action == "sync":
+            return self.manual_sync()
+        if action == "log" and len(parts) >= 2:
+            new_level = parts[1].upper()
+            if new_level not in ("DEBUG", "INFO", "WARNING", "ERROR"):
+                raise ValueError("Unknown level. Valid values: debug|info|warning|error")
+            with self._lock:
+                self.cfg["log_level"] = new_level
+                if self._log_handler is not None:
+                    self._log_handler.setLevel(getattr(logging, new_level, logging.INFO))
+                logging.getLogger("TAK_Meshtastic_Gateway").setLevel(getattr(logging, new_level, logging.INFO))
+            save_config(self.cfg)
+            self._append_log(f"Log level changed to {new_level}.", "INFO")
+            return {"ok": True}
+        if action == "clear":
+            with self._lock:
+                self._logs = []
+            return {"ok": True}
+        if action == "nodes":
+            with self._lock:
+                gw = self._gateway
+            if gw is None:
+                raise ValueError("Gateway is not running.")
+            rows = gw.node_db.get_all_nodes()
+            if not rows:
+                self._append_log("No nodes in the database.", "INFO")
+            else:
+                self._append_log(
+                    f"{'UID':<22} {'Callsign':<20} {'Lat':>10} {'Lon':>11} {'Alt':>6}  {'Source':<10} Last Seen",
+                    "INFO",
+                )
+                for uid, callsign, lat, lon, alt, last_seen, source in rows:
+                    self._append_log(
+                        f"{uid:<22} {callsign:<20} {lat:>10.5f} {lon:>11.5f} {alt:>6.0f}  {source:<10} {last_seen or '-'}",
+                        "INFO",
+                    )
+            return {"ok": True}
+        if action == "setpos" and len(parts_raw) >= 4:
+            try:
+                lat = float(parts_raw[2])
+                lon = float(parts_raw[3])
+                alt = float(parts_raw[4]) if len(parts_raw) >= 5 else 0.0
+            except ValueError:
+                raise ValueError("setpos: invalid coordinates. Syntax: setpos <uid> <lat> <lon> [alt]")
+            normalized = normalize_coordinates(lat, lon)
+            if normalized is None:
+                raise ValueError(f"setpos: invalid coordinates ({lat}, {lon}).")
+            with self._lock:
+                gw = self._gateway
+            if gw is None:
+                raise ValueError("Gateway is not running.")
+            uid = parts_raw[1]
+            lat, lon = normalized
+            gw.node_db.set_manual_position(uid, lat, lon, alt)
+            gw.last_known_positions[uid] = (lat, lon, alt)
+            self._append_log(f"Position for '{uid}' set to ({lat:.6f}, {lon:.6f}, {alt:.0f}m).", "INFO")
+            return {"ok": True}
+        if action == "help":
+            for line in [
+                "Available commands:",
+                "  sync                         – Start a manual full sync for all nodes",
+                "  nodes                        – Show all nodes from the database",
+                "  setpos <uid> <lat> <lon> [alt] – Set a node position manually",
+                "  log <level>                  – Set the log level (debug/info/warning/error)",
+                "  clear                        – Clear the log output",
+                "  help                         – Show this help",
+            ]:
+                self._append_log(line, "INFO")
+            return {"ok": True}
+        raise ValueError(f"Unknown command: '{cmd}'. Type 'help' for help.")
 
 
 class GatewayApp:
@@ -3298,87 +3816,38 @@ class GatewayApp:
         self._raw_payloads_full_check.configure(state="normal" if enabled else "disabled")
 
     def _parse_int_field(self, raw_value, field_name, min_value=MIN_PORT_NUMBER, max_value=MAX_PORT_NUMBER):
-        try:
-            value = int(str(raw_value).strip())
-        except (TypeError, ValueError):
-            raise ValueError(f"{field_name} must be a whole number.")
-        if not (min_value <= value <= max_value):
-            raise ValueError(f"{field_name} must be between {min_value} and {max_value}.")
-        return value
+        return _parse_int_field_value(raw_value, field_name, min_value=min_value, max_value=max_value)
 
     def _apply_form_to_cfg(self, ports):
-        self.cfg["log_level"] = self._log_level_var.get()
-        self.cfg["meshtastic_port"] = ports[0] if len(ports) == 1 else ports
-        self.cfg["tak_server_host"] = self._server_host_var.get().strip()
-        self.cfg["tak_server_protocol"] = self._server_protocol_var.get().strip().upper() or "TCP"
-        self.cfg["local_tak_ip"] = self._local_tak_ip_var.get().strip() or WINTAK_REQUIRED_HOST
-
-        self.cfg["tak_server_port"] = self._parse_int_field(self._server_port_var.get(), "Remote Port")
-        self.cfg["local_tak_port"] = self._parse_int_field(self._local_tak_port_var.get(), "Local TAK Port")
-        self.cfg["local_tak_chat_listen_port"] = self._parse_int_field(
-            self._local_tak_chat_listen_port_var.get(), "Local TAK Chat Listen Port"
+        _apply_settings_payload_to_cfg(
+            self.cfg,
+            {
+                "log_level": self._log_level_var.get(),
+                "tak_server_host": self._server_host_var.get(),
+                "tak_server_protocol": self._server_protocol_var.get(),
+                "local_tak_ip": self._local_tak_ip_var.get(),
+                "tak_server_port": self._server_port_var.get(),
+                "local_tak_port": self._local_tak_port_var.get(),
+                "local_tak_chat_listen_port": self._local_tak_chat_listen_port_var.get(),
+                "local_tak_tcp_listen_port": self._local_tak_tcp_listen_port_var.get(),
+                "sync_interval_seconds": self._sync_interval_var.get(),
+                "log_raw_meshtastic_payloads": bool(self._log_raw_meshtastic_payloads_var.get()),
+                "log_raw_meshtastic_payloads_full": bool(self._log_raw_meshtastic_payloads_full_var.get()),
+                "relay_text_messages": bool(self._relay_text_messages_var.get()),
+                "relay_text_from_ports": self._relay_text_from_ports_var.get(),
+                "relay_text_to_mode": (
+                    "all-other-selected-ports"
+                    if self._relay_text_to_picker_var.get().strip() == "All other selected ports"
+                    else "custom"
+                ),
+                "relay_text_to_ports": self._relay_text_to_ports_var.get(),
+                "send_nodes_without_gps": bool(self._send_nodes_without_gps_var.get()),
+                "set_gateway_position_on_start": bool(self._set_gateway_position_var.get()),
+                "park_lat": self._park_lat_var.get(),
+                "park_lon": self._park_lon_var.get(),
+            },
+            ports,
         )
-        self.cfg["local_tak_tcp_listen_port"] = self._parse_int_field(
-            self._local_tak_tcp_listen_port_var.get(), "Local TAK TCP Listen Port"
-        )
-        self.cfg["sync_interval_seconds"] = self._parse_int_field(
-            self._sync_interval_var.get(), "Sync Interval", min_value=1, max_value=86400
-        )
-        self.cfg["log_raw_meshtastic_payloads"] = bool(self._log_raw_meshtastic_payloads_var.get())
-        self.cfg["log_raw_meshtastic_payloads_full"] = bool(
-            self._log_raw_meshtastic_payloads_var.get() and self._log_raw_meshtastic_payloads_full_var.get()
-        )
-        self.cfg["relay_text_messages"] = bool(self._relay_text_messages_var.get())
-        relay_from_ports = _parse_ports_text(self._relay_text_from_ports_var.get())
-        relay_to_choice = self._relay_text_to_picker_var.get().strip()
-        if relay_to_choice == "All other selected ports":
-            relay_to_ports = []
-        else:
-            relay_to_ports = _parse_ports_text(self._relay_text_to_ports_var.get())
-        selected_ports_upper = {port.upper() for port in ports}
-        unknown_relay_from = [port for port in relay_from_ports if port.upper() not in selected_ports_upper]
-        unknown_relay_to = [port for port in relay_to_ports if port.upper() not in selected_ports_upper]
-        if unknown_relay_from:
-            raise ValueError(
-                "Relay From COM Port(s) contains ports that are not selected above: " + ", ".join(unknown_relay_from)
-            )
-        if unknown_relay_to:
-            raise ValueError(
-                "Relay To COM Port(s) contains ports that are not selected above: " + ", ".join(unknown_relay_to)
-            )
-        _store_ports_in_config(self.cfg, "relay_text_from_ports", relay_from_ports)
-        _store_ports_in_config(self.cfg, "relay_text_to_ports", relay_to_ports)
-
-        self.cfg["send_nodes_without_gps"] = bool(self._send_nodes_without_gps_var.get())
-        self.cfg["set_gateway_position_on_start"] = bool(self._set_gateway_position_var.get())
-
-        park_lat_text = self._park_lat_var.get().strip()
-        park_lon_text = self._park_lon_var.get().strip()
-        if park_lat_text and park_lon_text:
-            try:
-                lat_val = float(park_lat_text)
-            except ValueError:
-                raise ValueError("park_lat must be a valid number.")
-            try:
-                lon_val = float(park_lon_text)
-            except ValueError:
-                raise ValueError("park_lon must be a valid number.")
-            if lat_val == 0.0 and lon_val == 0.0:
-                raise ValueError(
-                    "park_lat and park_lon cannot both be 0.0 (Null Island / invalid location). "
-                    "Enter real coordinates or leave both fields empty."
-                )
-            self.cfg["park_lat"] = lat_val
-            self.cfg["park_lon"] = lon_val
-        elif not park_lat_text and not park_lon_text:
-            self.cfg.pop("park_lat", None)
-            self.cfg.pop("park_lon", None)
-        else:
-            missing = "park_lon" if park_lat_text else "park_lat"
-            raise ValueError(
-                "Both coordinates (park_lat and park_lon) must be filled in, or both must stay empty. "
-                f"Currently missing: {missing}."
-            )
 
     # ─────────────────────────── Gateway-Steuerung ────────────────────────────
 
@@ -3829,31 +4298,32 @@ class TAKMeshtasticGateway:
         self.service_web_ui = None
         self.service_web_ui_port = SERVICE_WEB_UI_PORT
         self.service_web_ui_bind_ip = detect_reachable_local_ip(self.server_ip)
-        try:
-            self.service_web_ui = start_gateway_service_web_ui(
-                self.service_web_ui_bind_ip,
-                port=self.service_web_ui_port,
-                asset_dir=pathlib.Path(__file__).resolve().parent,
-                logger=self.logger,
-                cfg=self.cfg,
-            )
-            self.logger.info("=" * 72)
-            self.logger.info("HTML-BROWSER-UI AKTIV: %s", self.service_web_ui["url"])
-            self.logger.info(
-                "Backend-Dienst läuft weiter. Öffne diese URL im Browser für die Hauptoberfläche."
-            )
-            self.logger.info(
-                "Falls die Seite nicht erreichbar ist, prüfe Firewall, IP-Adresse und Port %s.",
-                self.service_web_ui_port,
-            )
-            self.logger.info("=" * 72)
-        except OSError as exc:
-            self.logger.warning(
-                "HTML-Browser-UI konnte auf %s:%s nicht gestartet werden: %s",
-                self.service_web_ui_bind_ip,
-                self.service_web_ui_port,
-                exc,
-            )
+        if as_bool(self.cfg.get("enable_service_web_ui", True)):
+            try:
+                self.service_web_ui = start_gateway_service_web_ui(
+                    self.service_web_ui_bind_ip,
+                    port=self.service_web_ui_port,
+                    asset_dir=pathlib.Path(__file__).resolve().parent,
+                    logger=self.logger,
+                    cfg=self.cfg,
+                )
+                self.logger.info("=" * 72)
+                self.logger.info("HTML-BROWSER-UI AKTIV: %s", self.service_web_ui["url"])
+                self.logger.info(
+                    "Backend-Dienst läuft weiter. Öffne diese URL im Browser für die Hauptoberfläche."
+                )
+                self.logger.info(
+                    "Falls die Seite nicht erreichbar ist, prüfe Firewall, IP-Adresse und Port %s.",
+                    self.service_web_ui_port,
+                )
+                self.logger.info("=" * 72)
+            except OSError as exc:
+                self.logger.warning(
+                    "HTML-Browser-UI konnte auf %s:%s nicht gestartet werden: %s",
+                    self.service_web_ui_bind_ip,
+                    self.service_web_ui_port,
+                    exc,
+                )
         self.interfaces = []
         self.interface_lock = threading.RLock()
         self._meshtastic_pubsub_registered = False
@@ -8516,6 +8986,44 @@ def choose_serial_ports(cfg, all_ports_mode=False):
     return selected_ports
 
 
+def resolve_app_start_mode(args, has_tk):
+    if getattr(args, "no_gui", False):
+        return "terminal"
+    if getattr(args, "gui", False):
+        return "tk" if has_tk else "terminal"
+    return "browser"
+
+
+def _run_browser_mode(cfg, _args):
+    bind_ip = detect_reachable_local_ip(cfg.get("tak_server_host"))
+    service = start_gateway_service_web_ui(
+        bind_ip,
+        port=SERVICE_WEB_UI_PORT,
+        asset_dir=pathlib.Path(__file__).resolve().parent,
+        cfg=cfg,
+    )
+    controller = _ServiceWebUIController(cfg, service_status=service["status"])
+    service["server"].RequestHandlerClass.controller = controller
+    url = service["url"]
+    print("=" * 72)
+    print(f"HTML-Browser-UI aktiv: {url}")
+    print("Konfiguriere und starte das Gateway jetzt im Browser.")
+    print("Zum Beenden im Backend-Fenster Strg+C drücken.")
+    print("=" * 72)
+    try:
+        webbrowser.open(url, new=2)
+    except Exception:
+        pass
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        controller.stop_gateway()
+    finally:
+        service["server"].shutdown()
+        service["server"].server_close()
+
+
 def _run_terminal_mode(cfg, args):
     """Terminal-Fallback: Klassische Konsoleninteraktion ohne GUI."""
     # Fehlende Abhängigkeiten anzeigen
@@ -8559,14 +9067,16 @@ if __name__ == "__main__":
 
         cfg = load_config()
 
-        # Browser-UI ist jetzt Standard; die Tk-GUI bleibt als explizite Option verfügbar.
-        if tk is not None and args.gui and not args.no_gui:
+        start_mode = resolve_app_start_mode(args, has_tk=tk is not None)
+        if start_mode == "tk":
             try:
                 app = GatewayApp(cfg)
                 app.run()
             except (tk.TclError, RuntimeError):
                 # Kein Display / Tkinter-Fehler → Terminal-Fallback
                 _run_terminal_mode(cfg, args)
+        elif start_mode == "browser":
+            _run_browser_mode(cfg, args)
         else:
             _run_terminal_mode(cfg, args)
 
