@@ -9,12 +9,12 @@
 /* ── Reset & Variables ── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
-  --bg: #0d1117; --bg2: #161b22; --bg3: #21262d; --border: #30363d;
-  --text: #c9d1d9; --text2: #8b949e; --accent: #58a6ff;
-  --green: #3fb950; --red: #f85149; --yellow: #d29922; --purple: #bc8cff;
-  --blue: #58a6ff; --cyan: #39d5ff; --magenta: #f778ba; --orange: #f0883e;
-  --row-in: rgba(248,81,73,.06); --row-out: rgba(63,185,80,.06);
-  --row-hover: rgba(88,166,255,.08);
+  --bg: #0d0f14; --bg2: #131c2e; --bg3: #1a2540; --border: #2d4a7a;
+  --text: #e2eaf5; --text2: #7b9bbf; --accent: #2074d4;
+  --green: #22c55e; --red: #ef4444; --yellow: #f59e0b; --purple: #a78bfa;
+  --blue: #4a99f5; --cyan: #22d3ee; --magenta: #e879f9; --orange: #fb923c;
+  --row-in: rgba(239,68,68,.07); --row-out: rgba(34,197,94,.07);
+  --row-hover: rgba(32,116,212,.12);
   font-size: 14px;
 }
 body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif; min-height: 100vh; }
@@ -39,8 +39,8 @@ header h1 span.arr2 { color: var(--red); }
 .toolbar .sep { width: 1px; height: 24px; background: var(--border); }
 .btn { background: var(--bg3); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 5px 14px; cursor: pointer; font-size: 12px; display: inline-flex; align-items: center; gap: 5px; transition: .15s; }
 .btn:hover { background: var(--border); }
-.btn.primary { background: #238636; border-color: #2ea043; color: #fff; }
-.btn.primary:hover { background: #2ea043; }
+.btn.primary { background: #1a4d9e; border-color: #2074d4; color: #fff; }
+.btn.primary:hover { background: #2074d4; }
 .btn.danger { background: #da3633; border-color: #f85149; color: #fff; }
 .btn.danger:hover { background: #f85149; }
 

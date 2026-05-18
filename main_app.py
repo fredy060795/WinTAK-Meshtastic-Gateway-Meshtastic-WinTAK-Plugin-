@@ -2023,7 +2023,7 @@ class GatewayApp:
         self._root.geometry("1100x760")
         self._root.minsize(960, 700)
         self._root.protocol("WM_DELETE_WINDOW", self._on_close)
-        self._root.configure(bg="#1f2937")
+        self._root.configure(bg="#0d0f14")
 
         self._setup_styles()
         self._build_ui()
@@ -2034,19 +2034,19 @@ class GatewayApp:
         style = ttk.Style(self._root)
         style.theme_use("clam")
 
-        # ── Farben ──
-        BG        = "#081311"   # Window background
-        PANEL     = "#12231f"   # Header/panel background
-        CARD      = "#17302a"   # Card/frame background
-        BORDER    = "#2f5b4e"   # Border color
-        FG        = "#effaf4"   # Main text
-        FG_SUB    = "#9ec3b6"   # Subtle helper text
-        ACCENT    = "#3fd48b"   # Primary accent
-        ACCENT_H  = "#69e8a5"   # Hover
-        SUCCESS   = "#63e6af"   # Success
-        WARNING   = "#f2d16b"   # Warning
-        DANGER    = "#ff7b72"   # Danger
-        TEXT_BG   = "#0b1916"   # Text/log background
+        # ── Farben (WinTAK-inspired dark blue military palette) ──
+        BG        = "#0d0f14"   # Window background – near black, slight blue
+        PANEL     = "#131c2e"   # Header/panel background – dark navy
+        CARD      = "#1a2540"   # Card/frame background – navy
+        BORDER    = "#2d4a7a"   # Border color – blue-grey
+        FG        = "#e2eaf5"   # Main text – cool white
+        FG_SUB    = "#7b9bbf"   # Subtle helper text – steel blue
+        ACCENT    = "#2074d4"   # Primary accent – WinTAK blue
+        ACCENT_H  = "#4a99f5"   # Hover – lighter blue
+        SUCCESS   = "#22c55e"   # Success – green
+        WARNING   = "#f59e0b"   # Warning – amber
+        DANGER    = "#ef4444"   # Danger – red
+        TEXT_BG   = "#080a10"   # Text/log background – darkest
 
         # ── Allgemein ──
         style.configure(".",
@@ -2079,8 +2079,9 @@ class GatewayApp:
                          font=("Segoe UI", 9, "bold"))
 
         # ── TEntry ──
+        FIELD_BG  = "#111827"   # Input field background – dark blue-grey
         style.configure("TEntry",
-                         fieldbackground="#1f2937",
+                         fieldbackground=FIELD_BG,
                          foreground=FG,
                          insertcolor=FG,
                          selectbackground=ACCENT,
@@ -2097,7 +2098,7 @@ class GatewayApp:
 
         # ── TCombobox ──
         style.configure("TCombobox",
-                         fieldbackground="#1f2937",
+                         fieldbackground=FIELD_BG,
                          foreground=FG,
                          selectbackground=ACCENT,
                          selectforeground=FG,
@@ -2105,14 +2106,14 @@ class GatewayApp:
                          arrowcolor=FG_SUB)
         style.map("TCombobox",
                   bordercolor=[("focus", ACCENT)],
-                  fieldbackground=[("readonly", "#1f2937")])
-        self._root.option_add("*TCombobox*Listbox.background", "#1f2937")
+                  fieldbackground=[("readonly", FIELD_BG)])
+        self._root.option_add("*TCombobox*Listbox.background", FIELD_BG)
         self._root.option_add("*TCombobox*Listbox.foreground", FG)
         self._root.option_add("*TCombobox*Listbox.selectBackground", ACCENT)
 
-        # ── TButton (Primär) ──
+        # ── TButton (standard) ──
         style.configure("TButton",
-                         background="#374151",
+                         background="#243352",
                          foreground=FG,
                          bordercolor=BORDER,
                          focuscolor=ACCENT,
@@ -2120,10 +2121,10 @@ class GatewayApp:
                          relief="flat",
                          font=("Segoe UI", 9))
         style.map("TButton",
-                  background=[("active", BORDER), ("disabled", "#1f2937")],
+                  background=[("active", BORDER), ("disabled", "#1a2540")],
                   foreground=[("disabled", FG_SUB)])
 
-        # ── Accent.TButton ──
+        # ── Accent.TButton (primary / start) ──
         style.configure("Accent.TButton",
                          background=ACCENT,
                          foreground="#ffffff",
@@ -2135,7 +2136,7 @@ class GatewayApp:
                   background=[("active", ACCENT_H), ("disabled", BORDER)],
                   foreground=[("disabled", FG_SUB)])
 
-        # ── Danger.TButton ──
+        # ── Danger.TButton (stop) ──
         style.configure("Danger.TButton",
                          background="#7f1d1d",
                          foreground="#fca5a5",
@@ -2151,8 +2152,8 @@ class GatewayApp:
         style.configure("TCheckbutton",
                          background=CARD,
                          foreground=FG,
-                         indicatorcolor="#1f2937",
-                         indicatorbackground="#1f2937",
+                         indicatorcolor=FIELD_BG,
+                         indicatorbackground=FIELD_BG,
                          indicatorforeground="#ffffff",
                          indicatorrelief="flat")
         style.map("TCheckbutton",
@@ -2166,7 +2167,7 @@ class GatewayApp:
         # ── TScrollbar ──
         style.configure("TScrollbar",
                          background=CARD,
-                         troughcolor="#1f2937",
+                         troughcolor=FIELD_BG,
                          arrowcolor=FG_SUB,
                          bordercolor=BORDER,
                          relief="flat")
@@ -2174,7 +2175,7 @@ class GatewayApp:
                   background=[("active", BORDER)])
 
         # ── Listbox (nicht-ttk, via option_add) ──
-        self._root.option_add("*Listbox.background", "#1f2937")
+        self._root.option_add("*Listbox.background", FIELD_BG)
         self._root.option_add("*Listbox.foreground", FG)
         self._root.option_add("*Listbox.selectBackground", ACCENT)
         self._root.option_add("*Listbox.selectForeground", "#ffffff")
@@ -2187,7 +2188,7 @@ class GatewayApp:
             "bg": BG, "panel": PANEL, "card": CARD, "border": BORDER,
             "fg": FG, "fg_sub": FG_SUB, "accent": ACCENT,
             "success": SUCCESS, "warning": WARNING, "danger": DANGER,
-            "text_bg": TEXT_BG,
+            "text_bg": TEXT_BG, "field_bg": FIELD_BG,
         }
 
         # Font-Verfügbarkeit einmalig prüfen und cachen
@@ -2206,9 +2207,12 @@ class GatewayApp:
         root = self._root
         C = self._colors
 
+        # WinTAK-style thin accent stripe at very top
+        tk.Frame(root, bg=C["accent"], height=3).pack(fill="x")
+
         header = tk.Frame(root, bg=C["panel"], bd=0, highlightthickness=1,
                           highlightbackground=C["border"], highlightcolor=C["border"])
-        header.pack(fill="x", padx=10, pady=(10, 0))
+        header.pack(fill="x", padx=10, pady=(6, 0))
 
         header_left = tk.Frame(header, bg=C["panel"])
         header_left.pack(side="left", fill="both", expand=True, padx=(12, 8), pady=10)
@@ -2233,10 +2237,10 @@ class GatewayApp:
         title_block.pack(side="left", fill="both", expand=True)
         tk.Label(
             title_block,
-            text="WinTAK Meshtastic Gateway",
+            text="WINTAK  MESHTASTIC  GATEWAY",
             bg=C["panel"],
             fg=C["fg"],
-            font=("Segoe UI", 18, "bold"),
+            font=("Segoe UI", 16, "bold"),
             anchor="w",
         ).pack(fill="x")
         tk.Label(
@@ -2244,12 +2248,12 @@ class GatewayApp:
             text="Live gateway operations with direct mesh text and WinTAK CoT send controls.",
             bg=C["panel"],
             fg=C["fg_sub"],
-            font=("Segoe UI", 10),
+            font=("Segoe UI", 9),
             anchor="w",
-        ).pack(fill="x", pady=(2, 8))
+        ).pack(fill="x", pady=(2, 6))
         tk.Label(
             title_block,
-            text="MESH <-> TAK CONTROL SURFACE",
+            text="▶  MESH  ⟷  TAK  CONTROL  SURFACE",
             bg=C["panel"],
             fg=C["accent"],
             font=("Segoe UI", 9, "bold"),
@@ -2269,17 +2273,19 @@ class GatewayApp:
         for title, value in endpoint_items:
             card = tk.Frame(
                 header_right,
-                bg=C["bg"],
-                bd=1,
+                bg=C["card"],
+                bd=0,
                 highlightthickness=1,
                 highlightbackground=C["border"],
-                highlightcolor=C["border"],
+                highlightcolor=C["accent"],
                 padx=10,
-                pady=6,
+                pady=5,
             )
             card.pack(fill="x", pady=2)
-            tk.Label(card, text=title, bg=C["bg"], fg=C["fg_sub"], font=("Segoe UI", 8, "bold")).pack(anchor="w")
-            tk.Label(card, text=value, bg=C["bg"], fg=C["fg"], font=("Segoe UI", 9)).pack(anchor="w", pady=(2, 0))
+            tk.Label(card, text=title.upper(), bg=C["card"], fg=C["fg_sub"],
+                     font=("Segoe UI", 7, "bold")).pack(anchor="w")
+            tk.Label(card, text=value, bg=C["card"], fg=C["fg"],
+                     font=("Consolas", 9)).pack(anchor="w", pady=(1, 0))
 
         content_host = tk.Frame(root, bg=C["bg"])
         content_host.pack(fill="both", expand=True, padx=10, pady=(10, 0))
@@ -2375,7 +2381,7 @@ class GatewayApp:
             height=min(max(len(detected), 1), MAX_DETECTED_PORTS_DISPLAY),
             selectmode="extended",
             exportselection=False,
-            bg=C["text_bg"],
+            bg=C["field_bg"],
             fg=C["fg"],
             selectbackground=C["accent"],
             selectforeground="#ffffff",
@@ -2745,8 +2751,10 @@ class GatewayApp:
         self._log_text.tag_configure("CRITICAL", foreground="#ffb4ad", font=("Consolas", 9, "bold"))
         self._log_text.tag_configure("CMD", foreground=C["accent"])
 
+        # Bottom accent stripe + status bar
+        tk.Frame(root, bg=C["border"], height=1).pack(fill="x", side="bottom", padx=10)
         status_bar = tk.Frame(root, bg=C["panel"], height=26)
-        status_bar.pack(fill="x", side="bottom", padx=10, pady=(10, 10))
+        status_bar.pack(fill="x", side="bottom", padx=10, pady=(6, 6))
         status_bar.pack_propagate(False)
         self._bottom_wintak_hint_var = tk.StringVar()
         tk.Label(
