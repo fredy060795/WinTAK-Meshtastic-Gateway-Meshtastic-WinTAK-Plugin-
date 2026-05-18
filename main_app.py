@@ -3755,11 +3755,12 @@ class TAKMeshtasticGateway:
         event_how = (root.get("how") or "").strip() or "m-g"
         if not event_uid or not event_type:
             return None
-        cot_class = (
-            "pli"
-            if _is_live_pli_cot_event(event_type, event_how, detail)
-            else _classify_cot_event_type(event_type)
-        )
+        if _is_live_pli_cot_event(event_type, event_how, detail):
+            cot_class = "pli"
+        elif _is_meshtastic_pli_event_type(event_type) and _is_persistable_cot_type(event_type):
+            cot_class = "marker"
+        else:
+            cot_class = _classify_cot_event_type(event_type)
         return {
             "uid": event_uid,
             "type": event_type,
@@ -4063,14 +4064,14 @@ class TAKMeshtasticGateway:
             return None
 
         event_type = (root.get("type") or "").strip()
-        if _is_meshtastic_pli_event_type(event_type):
+        detail = _find_child_by_local_name(root, "detail")
+        if _is_live_pli_cot_event(event_type, root.get("how"), detail):
             return None
 
         metadata = self._extract_cot_event_metadata(packet_xml)
         if metadata is None:
             return None
 
-        detail = _find_child_by_local_name(root, "detail")
         contact = _find_child_by_local_name(detail, "contact")
         link = _find_child_by_local_name(detail, "link")
         group = _find_child_by_local_name(detail, "__group")
