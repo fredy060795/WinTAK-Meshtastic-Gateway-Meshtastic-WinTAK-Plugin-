@@ -2628,7 +2628,9 @@ class _ServiceWebUIController:
         if not ports:
             raise ValueError("No port specified.")
         with self._lock:
-            if self._gateway is not None and not self._gateway.shutdown_flag.is_set():
+            if (self._gateway is not None and not self._gateway.shutdown_flag.is_set()) or (
+                self._gateway_thread is not None and self._gateway_thread.is_alive()
+            ):
                 raise ValueError("Gateway is already running.")
             updated_cfg = dict(self.cfg)
         _apply_settings_payload_to_cfg(updated_cfg, payload, ports)
@@ -2680,9 +2682,10 @@ class _ServiceWebUIController:
     def stop_gateway(self):
         with self._lock:
             gw = self._gateway
-            if gw is None:
+            if gw is None and not (self._gateway_thread is not None and self._gateway_thread.is_alive()):
                 return {"ok": True}
-            gw.shutdown_flag.set()
+            if gw is not None:
+                gw.shutdown_flag.set()
             self._status_text = "🟡 Stopping …"
             self._mesh_status = "Gateway stopping …"
             self._cot_status = "Gateway stopping …"
@@ -2714,9 +2717,10 @@ class _ServiceWebUIController:
             raise ValueError("Please enter a test message first.")
         with self._lock:
             gw = self._gateway
-            self._mesh_status = "🟡 Sending test message …"
         if gw is None:
             raise ValueError("Gateway is not running.")
+        with self._lock:
+            self._mesh_status = "🟡 Sending test message …"
         threading.Thread(
             target=self._send_mesh_text_worker,
             args=(gw, text),
@@ -2744,9 +2748,10 @@ class _ServiceWebUIController:
             raise ValueError("Please paste a CoT <event> XML first.")
         with self._lock:
             gw = self._gateway
-            self._cot_status = "🟡 Sending CoT to mesh …"
         if gw is None:
             raise ValueError("Gateway is not running.")
+        with self._lock:
+            self._cot_status = "🟡 Sending CoT to mesh …"
         threading.Thread(
             target=self._send_cot_worker,
             args=(gw, payload),
