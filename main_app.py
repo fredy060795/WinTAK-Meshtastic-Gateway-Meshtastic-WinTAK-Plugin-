@@ -1677,6 +1677,21 @@ def _is_persistable_cot_type(event_type):
     ))
 
 
+def _is_live_pli_cot_event(event_type, how="", detail=None):
+    normalized_type = str(event_type or "").strip().lower()
+    if normalized_type != MESHTASTIC_PLI_COT_EVENT_TYPE_NORMALIZED:
+        return False
+
+    normalized_how = str(how or "").strip().lower()
+    if normalized_how.startswith("h-"):
+        return False
+
+    if detail is not None and _find_child_by_local_name(detail, "archive") is not None:
+        return False
+
+    return True
+
+
 def _classify_cot_event_type(event_type):
     normalized = str(event_type or "").strip().lower()
     if normalized == "b-t-f":
@@ -3740,7 +3755,11 @@ class TAKMeshtasticGateway:
         event_how = (root.get("how") or "").strip() or "m-g"
         if not event_uid or not event_type:
             return None
-        cot_class = _classify_cot_event_type(event_type)
+        cot_class = (
+            "pli"
+            if _is_live_pli_cot_event(event_type, event_how, detail)
+            else _classify_cot_event_type(event_type)
+        )
         return {
             "uid": event_uid,
             "type": event_type,
@@ -3890,7 +3909,8 @@ class TAKMeshtasticGateway:
             detail = SubElement(root, "detail")
         if add_meshtastic_marker and _find_child_by_local_name(detail, "__meshtastic") is None:
             SubElement(detail, "__meshtastic")
-        if meshtastic_live_contact:
+        is_live_pli = _is_live_pli_cot_event(event_type, event_how, detail)
+        if meshtastic_live_contact or is_live_pli:
             contact = _find_child_by_local_name(detail, "contact")
             link = _find_child_by_local_name(detail, "link")
             callsign = ""
@@ -3922,7 +3942,8 @@ class TAKMeshtasticGateway:
             return None
 
         event_type = (root.get("type") or "").strip()
-        if not _is_meshtastic_pli_event_type(event_type):
+        detail = _find_child_by_local_name(root, "detail")
+        if not _is_live_pli_cot_event(event_type, root.get("how"), detail):
             return None
 
         point = _find_child_by_local_name(root, "point")
@@ -3935,7 +3956,6 @@ class TAKMeshtasticGateway:
             return None
         lat, lon = normalized_coords
 
-        detail = _find_child_by_local_name(root, "detail")
         contact = _find_child_by_local_name(detail, "contact")
         link = _find_child_by_local_name(detail, "link")
         group = _find_child_by_local_name(detail, "__group")
