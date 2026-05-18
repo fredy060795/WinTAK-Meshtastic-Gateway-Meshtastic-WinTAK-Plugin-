@@ -2215,9 +2215,7 @@ class GatewayApp:
         header.pack(fill="x", padx=10, pady=(6, 0))
 
         header_left = tk.Frame(header, bg=C["panel"])
-        header_left.pack(side="left", fill="both", expand=True, padx=(12, 8), pady=10)
-        header_right = tk.Frame(header, bg=C["panel"])
-        header_right.pack(side="right", fill="y", padx=(8, 12), pady=10)
+        header_left.pack(fill="both", expand=True, padx=12, pady=10)
 
         try:
             _logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.png")
@@ -2259,6 +2257,8 @@ class GatewayApp:
             font=("Segoe UI", 9, "bold"),
             anchor="w",
         ).pack(fill="x")
+        endpoint_row = tk.Frame(title_block, bg=C["panel"])
+        endpoint_row.pack(fill="x", pady=(8, 0), anchor="w")
 
         endpoint_items = [
             ("WinTAK UDP", f"{self.cfg.get('local_tak_ip', WINTAK_REQUIRED_HOST)}:{self.cfg.get('local_tak_port', 4242)}"),
@@ -2272,7 +2272,7 @@ class GatewayApp:
         ]
         for title, value in endpoint_items:
             card = tk.Frame(
-                header_right,
+                endpoint_row,
                 bg=C["card"],
                 bd=0,
                 highlightthickness=1,
@@ -2281,7 +2281,7 @@ class GatewayApp:
                 padx=10,
                 pady=5,
             )
-            card.pack(fill="x", pady=2)
+            card.pack(side="left", anchor="w", padx=(0, 8))
             tk.Label(card, text=title.upper(), bg=C["card"], fg=C["fg_sub"],
                      font=("Segoe UI", 7, "bold")).pack(anchor="w")
             tk.Label(card, text=value, bg=C["card"], fg=C["fg"],
