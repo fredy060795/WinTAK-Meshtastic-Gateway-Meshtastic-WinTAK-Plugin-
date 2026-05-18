@@ -125,6 +125,14 @@ MESHTASTIC_TRANSFER_TYPE_FILE = 0x01
 MESHTASTIC_TRANSFER_TYPE_COT_ASCII = 0x30  # '0'
 MESHTASTIC_TRANSFER_TYPE_FILE_ASCII = 0x31  # '1'
 
+
+def _text_widget_is_at_bottom(widget, threshold=0.999):
+    """Return True when the text widget scrollbar is already at the bottom."""
+    try:
+        return float(widget.yview()[1]) >= threshold
+    except Exception:
+        return True
+
 # Fountain code (FTN) constants — matching meshtastic/ATAK-Plugin FountainPacket.java
 FOUNTAIN_MAGIC = b"FTN"
 FOUNTAIN_BLOCK_SIZE = 214        # FountainPacket.MAX_PAYLOAD_SIZE
@@ -3323,10 +3331,12 @@ class GatewayApp:
         self._root.after(0, self._append_log, msg, level)
 
     def _append_log(self, msg, level="INFO"):
+        should_autoscroll = _text_widget_is_at_bottom(self._log_text)
         self._log_text.configure(state="normal")
         tag = level if level in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "CMD") else "INFO"
         self._log_text.insert("end", msg + "\n", tag)
-        self._log_text.see("end")
+        if should_autoscroll:
+            self._log_text.see("end")
         self._log_text.configure(state="disabled")
 
     # ─────────────────────────── Shutdown ─────────────────────────────────────
