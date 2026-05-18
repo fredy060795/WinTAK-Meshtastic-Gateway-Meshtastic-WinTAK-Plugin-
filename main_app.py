@@ -17,9 +17,12 @@ import base64
 import codecs
 import datetime
 import hashlib
+import http.server
 import ipaddress
 import inspect
+import json
 import math
+import mimetypes
 import re
 import socket
 import sqlite3
@@ -30,6 +33,7 @@ import traceback
 import uuid
 import zlib
 import warnings
+from collections import deque
 from xml.etree.ElementTree import Element, ParseError, SubElement, tostring, fromstring
 try:
     import tkinter as tk
@@ -124,6 +128,13 @@ MESHTASTIC_TRANSFER_TYPE_COT = 0x00
 MESHTASTIC_TRANSFER_TYPE_FILE = 0x01
 MESHTASTIC_TRANSFER_TYPE_COT_ASCII = 0x30  # '0'
 MESHTASTIC_TRANSFER_TYPE_FILE_ASCII = 0x31  # '1'
+WEB_UI_DEFAULT_PORT = 5013
+WEB_UI_LOG_HISTORY_LIMIT = 400
+WEB_UI_STATIC_ASSETS = {
+    "maker.html",
+    "cot_monitor_ui.html",
+    "cot-client.js",
+}
 
 
 def _text_widget_is_at_bottom(widget, threshold=0.999):
@@ -132,6 +143,398 @@ def _text_widget_is_at_bottom(widget, threshold=0.999):
         return float(widget.yview()[1]) >= threshold
     except Exception:
         return True
+
+
+def get_reachable_local_ip():
+    """Return the best-effort LAN IPv4 address for the local machine."""
+    probe_targets = (
+        ("10.255.255.255", 1),
+        ("8.8.8.8", 80),
+    )
+    for host, port in probe_targets:
+        sock = None
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.connect((host, port))
+            candidate = sock.getsockname()[0]
+            if candidate and not candidate.startswith("127."):
+                return candidate
+        except OSError:
+            pass
+        finally:
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+    try:
+        candidate = socket.gethostbyname(socket.gethostname())
+        if candidate:
+            return candidate
+    except OSError:
+        pass
+    return "127.0.0.1"
+
+
+def build_web_ui_url(host, port=WEB_UI_DEFAULT_PORT):
+    """Build the browser URL for the bundled web UI."""
+    return f"http://{host}:{int(port)}/"
+
+
+def _logger_has_console_handler(logger):
+    """Return True when a stream handler is already attached."""
+    for handler in logger.handlers:
+        if isinstance(handler, logging.StreamHandler):
+            return True
+    return False
+
+
+class _WebUILogStore:
+    """Thread-safe in-memory log buffer for the browser UI."""
+
+    def __init__(self, max_entries=WEB_UI_LOG_HISTORY_LIMIT):
+        self._entries = deque(maxlen=max_entries)
+        self._next_id = 1
+        self._condition = threading.Condition()
+
+    def append(self, level, message):
+        with self._condition:
+            entry = {
+                "id": self._next_id,
+                "level": str(level),
+                "message": str(message),
+            }
+            self._entries.append(entry)
+            self._next_id += 1
+            self._condition.notify_all()
+            return entry
+
+    def snapshot(self):
+        with self._condition:
+            return list(self._entries)
+
+    def entries_after(self, last_id):
+        return [entry for entry in self._entries if entry["id"] > last_id]
+
+    def wait_for_entries(self, last_id, timeout=1.0):
+        with self._condition:
+            if not self.entries_after(last_id):
+                self._condition.wait(timeout=timeout)
+            return self.entries_after(last_id)
+
+
+class _WebUILogHandler(logging.Handler):
+    """Forward gateway log lines into the browser UI buffer."""
+
+    def __init__(self, log_store):
+        super().__init__()
+        self._log_store = log_store
+
+    def emit(self, record):
+        try:
+            message = self.format(record)
+        except Exception:
+            message = record.getMessage()
+        self._log_store.append(record.levelname, message)
+
+
+class _GatewayWebUIRequestHandler(http.server.BaseHTTPRequestHandler):
+    """Serve the lightweight browser UI and live log endpoints."""
+
+    server_version = "TAKMeshtasticGatewayUI/1.0"
+
+    def log_message(self, _format, *_args):
+        return
+
+    def do_GET(self):
+        service = self.server.gateway_ui_service
+        path = self.path.split("?", 1)[0]
+        if path in ("/", "/index.html"):
+            self._send_html(service.render_index_html().encode("utf-8"))
+        elif path == "/api/logs":
+            payload = json.dumps({"logs": service.log_store.snapshot()}).encode("utf-8")
+            self._send_bytes(payload, "application/json; charset=utf-8")
+        elif path == "/api/status":
+            payload = json.dumps(service.status_payload()).encode("utf-8")
+            self._send_bytes(payload, "application/json; charset=utf-8")
+        elif path == "/api/logs/stream":
+            self._send_log_stream(service)
+        else:
+            service.serve_static_asset(self, path)
+
+    def _send_html(self, payload):
+        self._send_bytes(payload, "text/html; charset=utf-8")
+
+    def _send_bytes(self, payload, content_type):
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _send_not_found(self):
+        payload = b"Not found"
+        self.send_response(404)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _send_log_stream(self, service):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+        last_id = 0
+        try:
+            for entry in service.log_store.snapshot():
+                self._write_sse_entry(entry)
+                last_id = entry["id"]
+            while not service.stop_event.is_set():
+                entries = service.log_store.wait_for_entries(last_id, timeout=1.0)
+                if not entries:
+                    self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+                    continue
+                for entry in entries:
+                    self._write_sse_entry(entry)
+                    last_id = entry["id"]
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return
+
+    def _write_sse_entry(self, entry):
+        payload = json.dumps(entry).encode("utf-8")
+        self.wfile.write(b"event: log\n")
+        self.wfile.write(b"data: " + payload + b"\n\n")
+        self.wfile.flush()
+
+
+class GatewayWebUIService:
+    """Background HTTP service for the browser-first startup flow."""
+
+    def __init__(self, base_dir, bind_host, port=WEB_UI_DEFAULT_PORT):
+        self.base_dir = os.path.abspath(base_dir)
+        self.bind_host = bind_host
+        self.port = int(port)
+        self.url = build_web_ui_url(bind_host, self.port)
+        self.log_store = _WebUILogStore()
+        self.stop_event = threading.Event()
+        self._server = http.server.ThreadingHTTPServer((self.bind_host, self.port), _GatewayWebUIRequestHandler)
+        self._server.gateway_ui_service = self
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True, name="gateway-web-ui")
+
+    def start(self):
+        self._thread.start()
+
+    def stop(self):
+        self.stop_event.set()
+        try:
+            self._server.shutdown()
+        finally:
+            self._server.server_close()
+        self._thread.join(timeout=2.0)
+
+    def status_payload(self):
+        return {
+            "url": self.url,
+            "bind_host": self.bind_host,
+            "port": self.port,
+            "asset_links": {
+                "maker": "/maker.html",
+                "cot_client": "/cot-client.js",
+                "cot_monitor": "/cot_monitor_ui.html",
+            },
+        }
+
+    def render_index_html(self):
+        html_doc = """
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TAK Meshtastic Gateway</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0f172a;
+      --panel: #111827;
+      --panel-2: #1f2937;
+      --border: #334155;
+      --text: #e5eefc;
+      --muted: #93a4c4;
+      --accent: #38bdf8;
+      --success: #22c55e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Arial, sans-serif;
+      background: linear-gradient(180deg, #020617, var(--bg));
+      color: var(--text);
+      min-height: 100vh;
+      padding: 24px;
+    }
+    .layout {
+      display: grid;
+      gap: 20px;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      max-width: 1280px;
+      margin: 0 auto;
+    }
+    .panel {
+      background: rgba(17, 24, 39, 0.92);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 20px;
+      box-shadow: 0 18px 45px rgba(0, 0, 0, 0.28);
+    }
+    h1, h2 {
+      margin: 0 0 12px;
+    }
+    h1 { font-size: 28px; }
+    h2 { font-size: 18px; }
+    p { color: var(--muted); line-height: 1.5; }
+    .url {
+      display: inline-block;
+      margin: 10px 0 16px;
+      padding: 10px 14px;
+      border-radius: 10px;
+      background: rgba(56, 189, 248, 0.12);
+      border: 1px solid rgba(56, 189, 248, 0.35);
+      color: #f8fafc;
+      font-weight: 600;
+      word-break: break-all;
+    }
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 14px;
+      color: var(--muted);
+    }
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: var(--success);
+      box-shadow: 0 0 10px rgba(34, 197, 94, 0.8);
+    }
+    .links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 12px;
+    }
+    .links a {
+      color: #0f172a;
+      text-decoration: none;
+      background: var(--accent);
+      padding: 9px 12px;
+      border-radius: 10px;
+      font-weight: 600;
+    }
+    .logs, .sample {
+      font-family: Consolas, "Cascadia Code", monospace;
+      background: #020617;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px;
+      min-height: 320px;
+      max-height: 520px;
+      overflow: auto;
+      white-space: pre-wrap;
+      line-height: 1.45;
+    }
+    .sample { min-height: 180px; }
+    .muted { color: var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <section class="panel">
+      <h1>TAK Meshtastic Gateway</h1>
+      <div class="status"><span class="dot"></span><span>Python-Backend läuft als Dienst. Die Browser-Oberfläche ist die primäre UI.</span></div>
+      <p>Öffne diese URL im Browser auf diesem Rechner oder von einem anderen Gerät im selben LAN:</p>
+      <div class="url" id="gatewayUrl">__WEB_UI_URL__</div>
+      <p>Die integrierte Browser-UI zeigt die Live-Backend-Logs und stellt die vorhandenen HTML-/JS-Ressourcen direkt aus dem Python-Backend bereit.</p>
+      <div class="links">
+        <a href="/maker.html" target="_blank" rel="noopener">Marker / Icon Referenz</a>
+        <a href="/cot-client.js" target="_blank" rel="noopener">cot-client.js</a>
+        <a href="/cot_monitor_ui.html" target="_blank" rel="noopener">Bundled CoT Monitor Asset</a>
+      </div>
+    </section>
+    <section class="panel">
+      <h2>Live Backend-Logs</h2>
+      <p class="muted">Diese Ansicht ist für Troubleshooting gedacht und folgt dem Konsolenfenster in Echtzeit.</p>
+      <div class="logs" id="logOutput">Warte auf Log-Daten…</div>
+    </section>
+    <section class="panel">
+      <h2>Bundled JavaScript CoT Helper</h2>
+      <p class="muted">Dieses Beispiel wird direkt mit dem vorhandenen <code>cot-client.js</code> aus dem Repository erzeugt.</p>
+      <div class="sample" id="cotSample">Erzeuge Beispiel…</div>
+    </section>
+  </div>
+  <script src="/cot-client.js"></script>
+  <script>
+    const logOutput = document.getElementById('logOutput');
+    let hasLogs = false;
+    function appendLog(line) {
+      if (!hasLogs) {
+        logOutput.textContent = '';
+        hasLogs = true;
+      }
+      logOutput.textContent += line + "\\n";
+      logOutput.scrollTop = logOutput.scrollHeight;
+    }
+    fetch('/api/logs')
+      .then((resp) => resp.json())
+      .then((payload) => {
+        if (Array.isArray(payload.logs) && payload.logs.length) {
+          payload.logs.forEach((entry) => appendLog(entry.message));
+        }
+      })
+      .catch(() => {});
+    const stream = new EventSource('/api/logs/stream');
+    stream.addEventListener('log', (event) => {
+      const entry = JSON.parse(event.data);
+      appendLog(entry.message);
+    });
+    const sample = document.getElementById('cotSample');
+    if (window.COTEvent) {
+      const event = new COTEvent({
+        callsign: 'Gateway UI',
+        uid: 'gateway-browser-ui',
+        remarks: 'Browser-first startup is active',
+        lat: 48.0,
+        lon: 11.0,
+      });
+      sample.textContent = event.toXML();
+    } else {
+      sample.textContent = 'cot-client.js konnte nicht geladen werden.';
+    }
+  </script>
+</body>
+</html>
+"""
+        return html_doc.replace("__WEB_UI_URL__", self.url)
+
+    def serve_static_asset(self, handler, path):
+        safe_name = os.path.basename(path.lstrip("/"))
+        if not safe_name or safe_name not in WEB_UI_STATIC_ASSETS:
+            handler._send_not_found()
+            return
+        candidate = os.path.join(self.base_dir, safe_name)
+        if not os.path.isfile(candidate):
+            handler._send_not_found()
+            return
+        mime_type, _ = mimetypes.guess_type(candidate)
+        mime_type = mime_type or "application/octet-stream"
+        with open(candidate, "rb") as fh:
+            payload = fh.read()
+        handler._send_bytes(payload, mime_type)
 
 # Fountain code (FTN) constants — matching meshtastic/ATAK-Plugin FountainPacket.java
 FOUNTAIN_MAGIC = b"FTN"
@@ -3600,7 +4003,7 @@ class TAKMeshtasticGateway:
         log_level = getattr(logging, log_level_str, logging.INFO)
         logger = logging.getLogger("TAK_Meshtastic_Gateway")
         logger.setLevel(log_level)
-        if not logger.handlers:
+        if not _logger_has_console_handler(logger):
             if colorlog is not None:
                 handler = colorlog.StreamHandler()
                 handler.setFormatter(colorlog.ColoredFormatter('[%(asctime)s] %(log_color)s%(levelname)s: %(message)s', datefmt="%H:%M:%S"))
@@ -8149,8 +8552,41 @@ def _run_terminal_mode(cfg, args):
 
     p_devs = choose_serial_ports(cfg, all_ports_mode=args.all_ports)
     print(f"Verwende Port(s): {', '.join(p_devs)}")
-    gw = TAKMeshtasticGateway(p_devs, cfg)
-    gw.run()
+    web_ui_service = None
+    web_ui_handler = None
+    logger = logging.getLogger("TAK_Meshtastic_Gateway")
+    try:
+        web_ui_host = get_reachable_local_ip()
+        web_ui_service = GatewayWebUIService(
+            os.path.dirname(os.path.abspath(__file__)),
+            bind_host=web_ui_host,
+            port=WEB_UI_DEFAULT_PORT,
+        )
+        web_ui_service.start()
+        web_ui_service.log_store.append("INFO", f"HTML UI gestartet auf {web_ui_service.url}")
+        web_ui_handler = _WebUILogHandler(web_ui_service.log_store)
+        web_ui_handler.setFormatter(
+            logging.Formatter("[%(asctime)s] %(levelname)s: %(message)s", datefmt="%H:%M:%S")
+        )
+        logger.addHandler(web_ui_handler)
+        print("\n" + "=" * 78)
+        print(" HTML-BROWSEROBERFLÄCHE VERFÜGBAR")
+        print(f" Öffne im Browser: {web_ui_service.url}")
+        print(" Das Python-Backend läuft weiter in diesem Fenster als Dienst.")
+        print("=" * 78 + "\n")
+    except OSError as exc:
+        print(f"WARNUNG: HTML-UI konnte auf Port {WEB_UI_DEFAULT_PORT} nicht gestartet werden: {exc}")
+
+    try:
+        gw = TAKMeshtasticGateway(p_devs, cfg)
+        if web_ui_service is not None:
+            gw.logger.info("HTML Browser-UI verfügbar unter %s", web_ui_service.url)
+        gw.run()
+    finally:
+        if web_ui_handler is not None:
+            logger.removeHandler(web_ui_handler)
+        if web_ui_service is not None:
+            web_ui_service.stop()
 
 
 if __name__ == "__main__":
@@ -8161,15 +8597,19 @@ if __name__ == "__main__":
             help="Alle verfügbaren seriellen USB-Ports automatisch verwenden (kein interaktiver Dialog)"
         )
         parser.add_argument(
+            "--gui", action="store_true",
+            help="Legacy-Tk-GUI explizit starten statt der Browser-Oberfläche"
+        )
+        parser.add_argument(
             "--no-gui", action="store_true",
-            help="GUI deaktivieren und im Terminal-Modus starten"
+            help="Kompatibilitätsalias: ohne Tk-GUI im Dienst-/Terminal-Modus starten"
         )
         args = parser.parse_args()
 
         cfg = load_config()
 
-        # GUI-Modus wenn Tkinter verfügbar und nicht explizit deaktiviert
-        if tk is not None and not args.no_gui:
+        # Browser-/Service-Modus ist der Standard; die Tk-GUI bleibt nur opt-in.
+        if args.gui and not args.no_gui and tk is not None:
             try:
                 app = GatewayApp(cfg)
                 app.run()

@@ -129,7 +129,7 @@ send_nodes_without_gps: true
 ### Option 1 — Batch Starter (recommended on Windows)
 
 Double-click **`Meshtastic_Gateway_Start.bat`**.  
-The script automatically requests Administrator privileges and launches the gateway.
+The script automatically requests Administrator privileges, starts the Python backend as the long-running service, detects the reachable LAN IP, and opens the browser UI on `http://<LAN-IP>:5013/`.
 
 ### Option 2 — Run directly with Python
 
@@ -137,7 +137,17 @@ The script automatically requests Administrator privileges and launches the gate
 python main_app.py
 ```
 
-Das Programm öffnet automatisch ein **GUI-Fenster**, das auf die wichtigsten Punkte reduziert ist:
+Der Standard-Start ist jetzt **browser-first**: das Python-Backend bleibt im Konsolenfenster aktiv und stellt die HTML-Oberfläche auf der erkannten LAN-IP an Port **5013** bereit. Beim Start wird die exakte URL deutlich im Backend-Fenster ausgegeben.
+
+Verfügbare Web-Ressourcen:
+
+| URL | Beschreibung |
+|---|---|
+| `/` | Browser-Hauptoberfläche mit Live-Backend-Logs |
+| `/maker.html` | Marker-/Icon-Referenz |
+| `/cot-client.js` | JavaScript-CoT-Helfer aus dem Repository |
+
+Die optionale Tk-Desktopoberfläche bleibt als Legacy-Modus verfügbar und zeigt weiterhin:
 
 | Bereich | Beschreibung |
 |---|---|
@@ -150,11 +160,14 @@ Das Programm öffnet automatisch ein **GUI-Fenster**, das auf die wichtigsten Pu
 Bei kleinen Displays ist der mittlere Fensterinhalt weiterhin vertikal scrollbar.
 
 ```bash
-# Terminal-Modus erzwingen (z. B. auf Server ohne Display)
+# Legacy-Tk-GUI explizit starten
+python main_app.py --gui
+
+# Dienst-/Terminal-Modus explizit beibehalten (Kompatibilitätsalias)
 python main_app.py --no-gui
 ```
 
-Falls kein Display verfügbar ist (z. B. Server ohne Desktop), startet die Anwendung automatisch im Terminal-Modus.
+Falls kein Display verfügbar ist (z. B. Server ohne Desktop), bleibt die Browser-Oberfläche trotzdem über `http://<LAN-IP>:5013/` erreichbar.
 
 ### Option 3 — Build a standalone EXE with PyInstaller
 

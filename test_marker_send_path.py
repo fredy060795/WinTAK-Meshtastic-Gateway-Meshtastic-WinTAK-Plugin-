@@ -16,6 +16,7 @@ import sys
 import types
 import threading
 import unittest
+from unittest import mock
 
 sys.path.insert(0, ".")
 
@@ -23,8 +24,10 @@ from main_app import (
     MESHTASTIC_DATA_PAYLOAD_MAX_BYTES,
     MESHTASTIC_TRANSFER_TYPE_COT,
     FOUNTAIN_MAGIC,
+    build_web_ui_url,
     _ensure_bytes,
     _text_widget_is_at_bottom,
+    get_reachable_local_ip,
     TAKMeshtasticGateway,
 )
 
@@ -78,6 +81,25 @@ class TestGuiLogAutoscroll(unittest.TestCase):
 
     def test_detects_when_log_widget_is_not_at_bottom(self):
         self.assertFalse(_text_widget_is_at_bottom(_FakeTextWidget((0.2, 0.8))))
+
+
+class TestStartupWebUiHelpers(unittest.TestCase):
+    def test_build_web_ui_url_uses_host_and_port(self):
+        self.assertEqual(build_web_ui_url("192.168.8.24", 5013), "http://192.168.8.24:5013/")
+
+    def test_get_reachable_local_ip_prefers_udp_detected_ip(self):
+        fake_socket = mock.Mock()
+        fake_socket.getsockname.return_value = ("192.168.8.24", 49000)
+        with mock.patch("main_app.socket.socket", return_value=fake_socket):
+            self.assertEqual(get_reachable_local_ip(), "192.168.8.24")
+        fake_socket.close.assert_called()
+
+    def test_get_reachable_local_ip_falls_back_to_hostname_lookup(self):
+        fake_socket = mock.Mock()
+        fake_socket.connect.side_effect = OSError("no route")
+        with mock.patch("main_app.socket.socket", return_value=fake_socket), \
+             mock.patch("main_app.socket.gethostbyname", return_value="192.168.1.10"):
+            self.assertEqual(get_reachable_local_ip(), "192.168.1.10")
 
 
 class TestTakTcpKeepalive(unittest.TestCase):
