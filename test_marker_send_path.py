@@ -16,6 +16,7 @@ import sys
 import types
 import threading
 import unittest
+import datetime
 from unittest import mock
 
 sys.path.insert(0, ".")
@@ -24,6 +25,9 @@ from main_app import (
     MESHTASTIC_DATA_PAYLOAD_MAX_BYTES,
     MESHTASTIC_TRANSFER_TYPE_COT,
     FOUNTAIN_MAGIC,
+    _build_service_web_ui_startup_event,
+    _GatewayServiceWebUIServer,
+    _ServiceWebUIRequestHandler,
     _apply_settings_payload_to_cfg,
     _build_browser_ui_form_state,
     build_service_web_ui_url,
@@ -172,6 +176,42 @@ class TestServiceWebUiHelpers(unittest.TestCase):
         state = _build_browser_ui_form_state({"meshtastic_port": ["COM7", "COM8"], "relay_text_to_ports": []})
         self.assertEqual(state["meshtastic_port"], "COM7, COM8")
         self.assertEqual(state["relay_text_to_mode"], "all-other-selected-ports")
+
+    def test_build_service_web_ui_startup_event_uses_zulu_timestamp(self):
+        fake_now = datetime.datetime(2026, 1, 2, 3, 4, 5, 678900, tzinfo=datetime.timezone.utc)
+        with mock.patch("main_app._utc_now", return_value=fake_now):
+            event = _build_service_web_ui_startup_event(
+                {"url": "http://127.0.0.1:5013/", "listen_ip": "127.0.0.1"}
+            )
+        self.assertEqual(event["parsed"]["time"], "2026-01-02T03:04:05Z")
+        self.assertEqual(event["parsed"]["start"], "2026-01-02T03:04:05Z")
+        self.assertEqual(event["parsed"]["stale"], "2026-01-02T03:04:05Z")
+
+    def test_service_web_ui_server_ignores_aborted_client_disconnects(self):
+        server = _GatewayServiceWebUIServer(("127.0.0.1", 0), _ServiceWebUIRequestHandler)
+        server.logger = _FakeLogger()
+        try:
+            with mock.patch("http.server.ThreadingHTTPServer.handle_error") as super_handle_error:
+                try:
+                    raise ConnectionAbortedError(10053, "aborted")
+                except ConnectionAbortedError:
+                    server.handle_error(None, ("127.0.0.1", 12345))
+                super_handle_error.assert_not_called()
+        finally:
+            server.server_close()
+
+    def test_service_web_ui_server_still_delegates_unexpected_errors(self):
+        server = _GatewayServiceWebUIServer(("127.0.0.1", 0), _ServiceWebUIRequestHandler)
+        server.logger = _FakeLogger()
+        try:
+            with mock.patch("http.server.ThreadingHTTPServer.handle_error") as super_handle_error:
+                try:
+                    raise RuntimeError("boom")
+                except RuntimeError:
+                    server.handle_error(None, ("127.0.0.1", 12345))
+                super_handle_error.assert_called_once_with(None, ("127.0.0.1", 12345))
+        finally:
+            server.server_close()
 
 
 class TestTakTcpKeepalive(unittest.TestCase):
