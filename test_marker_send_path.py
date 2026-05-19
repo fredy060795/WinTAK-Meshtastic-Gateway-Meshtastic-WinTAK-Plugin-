@@ -461,33 +461,33 @@ class TestTakGeoChatParsing(unittest.TestCase):
             ("127.0.0.1", 4242),
         )
 
-    def test_forward_tak_chat_to_meshtastic_prefers_cot_path(self):
+    def test_forward_tak_chat_to_meshtastic_prefers_geochat_path(self):
         gw = _make_stub_gateway()
         packet_xml = b"<event version='2.0' uid='chat-1' type='b-t-f' how='m-g'/>"
         chat_payload = {"message": "Mesh relay check"}
-        gw._forward_cot_to_meshtastic = mock.Mock(return_value={"transport": "ATAK_PLUGIN_DETAIL", "count": 1})
-        gw._send_tak_chat_to_meshtastic = mock.Mock()
-
-        result = TAKMeshtasticGateway._forward_tak_chat_to_meshtastic(gw, packet_xml, chat_payload)
-
-        self.assertEqual(result["transport"], "ATAK_PLUGIN_DETAIL")
-        gw._forward_cot_to_meshtastic.assert_called_once_with(packet_xml)
-        gw._send_tak_chat_to_meshtastic.assert_not_called()
-
-    def test_forward_tak_chat_to_meshtastic_falls_back_to_geochat(self):
-        gw = _make_stub_gateway()
-        packet_xml = b"<event version='2.0' uid='chat-2' type='b-t-f' how='m-g'/>"
-        chat_payload = {"message": "Fallback"}
-        gw._forward_cot_to_meshtastic = mock.Mock(side_effect=RuntimeError("broken cot path"))
         gw._send_tak_chat_to_meshtastic = mock.Mock(
             return_value={"transport": "ATAK_PLUGIN_CHAT", "count": 1, "chunks": 1}
         )
+        gw._forward_cot_to_meshtastic = mock.Mock()
 
         result = TAKMeshtasticGateway._forward_tak_chat_to_meshtastic(gw, packet_xml, chat_payload)
 
         self.assertEqual(result["transport"], "ATAK_PLUGIN_CHAT")
-        gw._forward_cot_to_meshtastic.assert_called_once_with(packet_xml)
         gw._send_tak_chat_to_meshtastic.assert_called_once_with(chat_payload)
+        gw._forward_cot_to_meshtastic.assert_not_called()
+
+    def test_forward_tak_chat_to_meshtastic_falls_back_to_cot(self):
+        gw = _make_stub_gateway()
+        packet_xml = b"<event version='2.0' uid='chat-2' type='b-t-f' how='m-g'/>"
+        chat_payload = {"message": "Fallback"}
+        gw._send_tak_chat_to_meshtastic = mock.Mock(side_effect=RuntimeError("broken chat path"))
+        gw._forward_cot_to_meshtastic = mock.Mock(return_value={"transport": "ATAK_FORWARDER", "count": 1})
+
+        result = TAKMeshtasticGateway._forward_tak_chat_to_meshtastic(gw, packet_xml, chat_payload)
+
+        self.assertEqual(result["transport"], "ATAK_FORWARDER")
+        gw._send_tak_chat_to_meshtastic.assert_called_once_with(chat_payload)
+        gw._forward_cot_to_meshtastic.assert_called_once_with(packet_xml)
 
 
 class TestTakGeoChatMeshRouting(unittest.TestCase):

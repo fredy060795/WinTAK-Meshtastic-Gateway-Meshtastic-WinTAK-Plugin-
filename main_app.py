@@ -8055,13 +8055,13 @@ class TAKMeshtasticGateway:
 
     def _forward_tak_chat_to_meshtastic(self, packet_xml, chat_payload):
         try:
-            return self._forward_cot_to_meshtastic(packet_xml)
-        except Exception as cot_exc:
+            return self._send_tak_chat_to_meshtastic(chat_payload)
+        except Exception as chat_exc:
             self.logger.warning(
-                "TAK-Chat-CoT-Pfad fehlgeschlagen, verwende ATAK GeoChat/Text-Fallback: "
-                f"{cot_exc}"
+                "TAK-Chat-GeoChat/Text-Pfad fehlgeschlagen, verwende CoT-Fallback: "
+                f"{chat_exc}"
             )
-        return self._send_tak_chat_to_meshtastic(chat_payload)
+        return self._forward_cot_to_meshtastic(packet_xml)
 
     def _normalize_inbound_tak_packet(self, packet_xml):
         return _normalize_tak_xml_payload(packet_xml)
