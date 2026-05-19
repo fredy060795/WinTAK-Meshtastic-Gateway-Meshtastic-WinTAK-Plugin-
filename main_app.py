@@ -947,6 +947,28 @@ def normalize_meshtastic_uid(raw_uid):
     return raw_uid.replace("!", "ID-", 1)
 
 
+def resolve_meshtastic_destination_id(raw_uid, default="^all"):
+    """Convert TAK-facing chat destinations to Meshtastic sendData destination IDs."""
+    normalized = _strip_tak_sender_prefix(str(raw_uid or "").strip())
+    if not normalized:
+        return default
+    if normalized in {"^all", DEFAULT_CHATROOM_NAME}:
+        return "^all"
+    if normalized.startswith("!") and len(normalized) == 9:
+        try:
+            int(normalized[1:], 16)
+            return normalized
+        except ValueError:
+            return normalized
+    if normalized.startswith("ID-") and len(normalized) == 11:
+        try:
+            node_num = int(normalized[3:], 16)
+        except ValueError:
+            return normalized
+        return format_meshtastic_node_ids(node_num)[0]
+    return normalized
+
+
 def _xml_local_name(tag):
     """Return an XML tag name without any namespace prefix."""
     if not tag:
@@ -6736,7 +6758,7 @@ class TAKMeshtasticGateway:
 
         return kwargs
 
-    def _build_meshtastic_send_data_kwargs(self, iface, portnum):
+    def _build_meshtastic_send_data_kwargs(self, iface, portnum, destination_id="^all"):
         send_data = getattr(iface, "sendData", None)
         if send_data is None:
             raise AttributeError("Meshtastic-Interface unterstützt sendData nicht.")
@@ -6754,10 +6776,11 @@ class TAKMeshtasticGateway:
             return supports_var_kwargs or name in parameters
 
         kwargs = {}
+        resolved_destination_id = resolve_meshtastic_destination_id(destination_id)
         if supports("destinationId"):
-            kwargs["destinationId"] = "^all"
+            kwargs["destinationId"] = resolved_destination_id
         elif supports("destination_id"):
-            kwargs["destination_id"] = "^all"
+            kwargs["destination_id"] = resolved_destination_id
 
         if supports("wantAck"):
             kwargs["wantAck"] = False
@@ -6842,7 +6865,14 @@ class TAKMeshtasticGateway:
             raise failure from last_error
         return sent_interfaces
 
-    def _send_data_to_interfaces(self, payload, interfaces, portnum, allow_reconnect=True):
+    def _send_data_to_interfaces(
+        self,
+        payload,
+        interfaces,
+        portnum,
+        allow_reconnect=True,
+        destination_id="^all",
+    ):
         interfaces = [iface for iface in (interfaces or []) if iface is not None]
         if not interfaces:
             if allow_reconnect:
@@ -6854,7 +6884,11 @@ class TAKMeshtasticGateway:
         failed_labels = []
         for iface in interfaces:
             try:
-                kwargs = self._build_meshtastic_send_data_kwargs(iface, portnum)
+                kwargs = self._build_meshtastic_send_data_kwargs(
+                    iface,
+                    portnum,
+                    destination_id=destination_id,
+                )
                 try:
                     iface.sendData(payload, **kwargs)
                 except Exception as exc:
@@ -6907,6 +6941,7 @@ class TAKMeshtasticGateway:
                         retry_targets,
                         portnum,
                         allow_reconnect=False,
+                        destination_id=destination_id,
                     )
                     return self._merge_interfaces_by_label(sent_interfaces, retried_interfaces)
                 except Exception as retry_exc:
@@ -7973,9 +8008,18 @@ class TAKMeshtasticGateway:
             raise ValueError("ATAK GeoChat-Payload konnte nicht erzeugt werden.")
         return payload
 
+    def _resolve_meshtastic_chat_destination_id(self, chat_payload):
+        recipient_uid = chat_payload.get("recipient_uid")
+        chatroom = chat_payload.get("chatroom")
+        recipient_callsign = chat_payload.get("recipient_callsign")
+        return resolve_meshtastic_destination_id(
+            recipient_uid or chatroom or recipient_callsign or DEFAULT_CHATROOM_NAME
+        )
+
     def _send_tak_chat_to_meshtastic(self, chat_payload):
         payload = self._build_meshtastic_geochat_payload(chat_payload)
         interfaces = self._ensure_meshtastic_interfaces(raise_on_empty=True)
+        destination_id = self._resolve_meshtastic_chat_destination_id(chat_payload)
         if any(getattr(iface, "sendData", None) is None for iface in interfaces):
             sent_chunks = self._prepare_meshtastic_text_chunks(chat_payload.get("message"))
             total_sent = self._send_text_to_meshtastic(chat_payload.get("message"), prepared_chunks=sent_chunks)
@@ -7985,7 +8029,12 @@ class TAKMeshtasticGateway:
                 "chunks": len(sent_chunks),
             }
         try:
-            sent_interfaces = self._send_data_to_interfaces(payload, interfaces, MESHTASTIC_ATAK_PLUGIN_PORTNUM)
+            sent_interfaces = self._send_data_to_interfaces(
+                payload,
+                interfaces,
+                MESHTASTIC_ATAK_PLUGIN_PORTNUM,
+                destination_id=destination_id,
+            )
             return {
                 "transport": "ATAK_PLUGIN_CHAT",
                 "count": len(sent_interfaces),

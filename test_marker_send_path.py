@@ -36,6 +36,7 @@ from main_app import (
     detect_reachable_local_ip,
     _ensure_bytes,
     _text_widget_is_at_bottom,
+    resolve_meshtastic_destination_id,
     resolve_app_start_mode,
     TAKMeshtasticGateway,
 )
@@ -82,6 +83,14 @@ class _FakeRecvConn:
 
     def close(self):
         pass
+
+
+class _FakeSendDataInterface:
+    def __init__(self):
+        self.sent_packets = []
+
+    def sendData(self, payload, **kwargs):
+        self.sent_packets.append({"payload": payload, "kwargs": dict(kwargs)})
 
 
 class TestGuiLogAutoscroll(unittest.TestCase):
@@ -449,6 +458,61 @@ class TestTakGeoChatParsing(unittest.TestCase):
             "Attribute metadata relay check",
             ("127.0.0.1", 4242),
         )
+
+
+class TestTakGeoChatMeshRouting(unittest.TestCase):
+    def test_resolve_meshtastic_destination_id_maps_broadcast_and_mesh_uids(self):
+        self.assertEqual(resolve_meshtastic_destination_id("All Chat Rooms"), "^all")
+        self.assertEqual(resolve_meshtastic_destination_id("ID-4ef117fc"), "!4ef117fc")
+        self.assertEqual(resolve_meshtastic_destination_id("!4ef117fc"), "!4ef117fc")
+
+    def test_send_tak_chat_to_meshtastic_uses_direct_recipient_destination(self):
+        gw = _make_stub_gateway()
+        iface = _FakeSendDataInterface()
+        gw.gateway_uid = "GW-01"
+        gw.gateway_callsign = "Gateway"
+        gw._ensure_meshtastic_interfaces = mock.Mock(return_value=[iface])
+
+        result = TAKMeshtasticGateway._send_tak_chat_to_meshtastic(
+            gw,
+            {
+                "message": "Direct mesh chat",
+                "sender_uid": "BRAVO-UID",
+                "sender_callsign": "BRAVO-2",
+                "recipient_uid": "ID-4ef117fc",
+                "recipient_callsign": "MESH-1",
+                "chatroom": "MESH-1",
+            },
+        )
+
+        self.assertEqual(result["transport"], "ATAK_PLUGIN_CHAT")
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(len(iface.sent_packets), 1)
+        self.assertEqual(iface.sent_packets[0]["kwargs"]["destinationId"], "!4ef117fc")
+
+    def test_send_tak_chat_to_meshtastic_keeps_all_chat_rooms_as_broadcast(self):
+        gw = _make_stub_gateway()
+        iface = _FakeSendDataInterface()
+        gw.gateway_uid = "GW-01"
+        gw.gateway_callsign = "Gateway"
+        gw._ensure_meshtastic_interfaces = mock.Mock(return_value=[iface])
+
+        result = TAKMeshtasticGateway._send_tak_chat_to_meshtastic(
+            gw,
+            {
+                "message": "Broadcast mesh chat",
+                "sender_uid": "ALPHA-UID",
+                "sender_callsign": "ALPHA-1",
+                "recipient_uid": "All Chat Rooms",
+                "recipient_callsign": "All Chat Rooms",
+                "chatroom": "All Chat Rooms",
+            },
+        )
+
+        self.assertEqual(result["transport"], "ATAK_PLUGIN_CHAT")
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(len(iface.sent_packets), 1)
+        self.assertEqual(iface.sent_packets[0]["kwargs"]["destinationId"], "^all")
 
 
 # ---------------------------------------------------------------------------
