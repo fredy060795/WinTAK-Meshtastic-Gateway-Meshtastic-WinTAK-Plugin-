@@ -325,6 +325,78 @@ class TestServiceWebUiMonitorCapture(unittest.TestCase):
         self.assertEqual(events[0]["parsed"]["detected_type"], "cbt_hostile")
 
 
+class TestTakGeoChatParsing(unittest.TestCase):
+    def _make_chat_gateway(self):
+        gw = _make_stub_gateway()
+        gw.gateway_uid = "GW-01"
+        gw.local_node_ids = set()
+        gw.recent_tak_chat_ids = {}
+        gw.recent_meshtastic_outbound_texts = {}
+        gw.chat_cache_lock = threading.RLock()
+        gw.service_ui_event_store = None
+        gw.wintak_tcp_chat_callback = mock.Mock()
+        gw._send_tak_chat_to_meshtastic = mock.Mock(
+            return_value={"transport": "ATAK_PLUGIN_CHAT", "count": 1, "chunks": 1}
+        )
+        gw._record_service_monitor_event = mock.Mock()
+        gw._log_inbound_tak_diagnostics = mock.Mock()
+        return gw
+
+    def test_extract_tak_chat_payload_accepts_numbered_message_elements(self):
+        gw = _make_stub_gateway()
+        packet_xml = (
+            b'<event version="2.0" uid="WinTAK-chat-1" type="b-t-f" how="m-g">'
+            b'<point lat="48.2" lon="14.3" hae="0" ce="9999999.0" le="9999999.0"/>'
+            b'<detail>'
+            b'<__chat chatRoom="All Chat Rooms" senderCallsign="ALPHA-1"/>'
+            b'<chatgrp uid0="BAO.F.WinTAK.ALPHA-UID" uid1="All Chat Rooms" id="All Chat Rooms"/>'
+            b'<message1>First buffered line</message1>'
+            b'<message2>Newest typed line</message2>'
+            b'<sourceID>BAO.F.WinTAK.ALPHA-UID</sourceID>'
+            b'</detail></event>'
+        )
+
+        payload = TAKMeshtasticGateway._extract_tak_chat_payload(gw, packet_xml)
+
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["message"], "Newest typed line")
+        self.assertEqual(payload["sender_uid"], "ALPHA-UID")
+        self.assertEqual(payload["sender_callsign"], "ALPHA-1")
+
+    def test_handle_inbound_tak_packet_relays_numbered_wintak_geochat(self):
+        gw = self._make_chat_gateway()
+        packet_xml = (
+            b'<event version="2.0" uid="WinTAK-chat-2" type="b-t-f" how="m-g">'
+            b'<point lat="48.2" lon="14.3" hae="0" ce="9999999.0" le="9999999.0"/>'
+            b'<detail>'
+            b'<__chat chatRoom="All Chat Rooms" senderCallsign="BRAVO-2"/>'
+            b'<message1>Mesh relay check</message1>'
+            b'<sourceID>BAO.F.WinTAK.BRAVO-UID</sourceID>'
+            b'</detail></event>'
+        )
+
+        TAKMeshtasticGateway.handle_inbound_tak_packet(
+            gw,
+            packet_xml,
+            source_addr=("127.0.0.1", 4242),
+            source_protocol="UDP",
+            listener_port=4242,
+            packet_size=len(packet_xml),
+            was_normalized=False,
+        )
+
+        gw._send_tak_chat_to_meshtastic.assert_called_once()
+        sent_payload = gw._send_tak_chat_to_meshtastic.call_args.args[0]
+        self.assertEqual(sent_payload["message"], "Mesh relay check")
+        self.assertEqual(sent_payload["sender_uid"], "BRAVO-UID")
+        gw.wintak_tcp_chat_callback.assert_called_once_with(
+            "chat",
+            "BRAVO-2",
+            "Mesh relay check",
+            ("127.0.0.1", 4242),
+        )
+
+
 # ---------------------------------------------------------------------------
 # 1. Single-packet ATAK_FORWARDER prefix
 # ---------------------------------------------------------------------------
