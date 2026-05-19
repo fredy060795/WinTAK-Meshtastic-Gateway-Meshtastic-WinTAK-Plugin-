@@ -7,273 +7,61 @@
   <link rel="icon" type="image/png" href="/browser-logo.png">
   <style>
     :root {
-      --bg: #f4f7fb;
-      --surface: #ffffff;
-      --surface-alt: #eef3f9;
-      --surface-dark: #14273d;
-      --border: #d4deeb;
-      --text: #14273d;
-      --muted: #5d6f82;
-      --accent: #1195ff;
-      --accent-dark: #0d6fd1;
-      --green: #14a76c;
-      --yellow: #d98b16;
-      --red: #d94242;
-      --field: #f9fbfd;
-      --shadow: 0 18px 46px rgba(20, 39, 61, 0.1);
-      --radius-lg: 24px;
-      --radius-md: 16px;
+      --bg: #0d1117;
+      --panel: #161b22;
+      --panel-2: #1f2630;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #2f81f7;
+      --green: #3fb950;
+      --yellow: #d29922;
+      --red: #f85149;
+      --field: #0f141b;
     }
     * { box-sizing: border-box; }
-    html { scroll-behavior: smooth; }
     body {
       margin: 0;
       font-family: "Segoe UI", Arial, sans-serif;
       background: var(--bg);
       color: var(--text);
     }
-    a { color: var(--accent-dark); text-decoration: none; }
+    a { color: #58a6ff; text-decoration: none; }
     a:hover { text-decoration: underline; }
-    .site-shell {
-      min-height: 100vh;
-      background:
-        radial-gradient(circle at top right, rgba(17, 149, 255, 0.16), transparent 28%),
-        linear-gradient(180deg, #f9fbfd 0%, #f4f7fb 42%, #edf2f7 100%);
-    }
-    .topbar {
-      position: sticky;
-      top: 0;
-      z-index: 20;
-      backdrop-filter: blur(12px);
-      background: rgba(244, 247, 251, 0.92);
-      border-bottom: 1px solid rgba(20, 39, 61, 0.08);
-    }
-    .topbar-inner, .page { max-width: 1500px; margin: 0 auto; padding: 0 24px; }
-    .topbar-inner {
-      min-height: 76px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 20px;
-    }
-    .brand {
-      display: flex;
-      align-items: center;
-      gap: 14px;
-      min-width: 0;
-    }
-    .brand-mark {
-      width: 44px;
-      height: 44px;
-      border-radius: 14px;
-      display: grid;
-      place-items: center;
-      color: #fff;
-      font-weight: 700;
-      letter-spacing: 0.08em;
-      background: linear-gradient(135deg, var(--surface-dark), #1f4a78);
-      box-shadow: 0 12px 28px rgba(20, 39, 61, 0.18);
-    }
-    .brand-copy {
-      display: grid;
-      gap: 2px;
-    }
-    .eyebrow {
-      margin: 0;
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.18em;
-      text-transform: uppercase;
-      color: var(--accent-dark);
-    }
-    .brand-copy strong {
-      display: block;
-      font-size: 18px;
-      line-height: 1.15;
-    }
-    .brand-copy span {
-      color: var(--muted);
-      font-size: 13px;
-    }
-    .topnav {
-      display: flex;
-      gap: 18px;
-      flex-wrap: wrap;
-      justify-content: flex-end;
-    }
-    .topnav a {
-      font-size: 14px;
-      font-weight: 600;
-      color: var(--text);
-    }
-    .page { padding: 28px 24px 32px; }
-    .hero, .toolbar, .panel, .highlight-card {
-      background: var(--surface);
+    .page { max-width: 1500px; margin: 0 auto; padding: 20px; }
+    .hero, .toolbar, .panel {
+      background: var(--panel);
       border: 1px solid var(--border);
-      border-radius: var(--radius-lg);
-      box-shadow: var(--shadow);
+      border-radius: 12px;
+      box-shadow: 0 10px 30px rgba(0,0,0,.18);
     }
     .hero {
-      padding: 34px;
-      margin-bottom: 18px;
-      display: grid;
-      grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.85fr);
-      gap: 22px;
-      align-items: stretch;
-      background:
-        linear-gradient(135deg, rgba(20, 39, 61, 0.98), rgba(22, 61, 102, 0.96)),
-        linear-gradient(180deg, rgba(17, 149, 255, 0.18), transparent);
-      color: #fff;
-      overflow: hidden;
-      position: relative;
-    }
-    .hero::after {
-      content: "";
-      position: absolute;
-      inset: auto -80px -100px auto;
-      width: 260px;
-      height: 260px;
-      border-radius: 50%;
-      background: radial-gradient(circle, rgba(17, 149, 255, 0.4) 0%, rgba(17, 149, 255, 0) 72%);
-      pointer-events: none;
-    }
-    .hero-copy {
-      position: relative;
-      z-index: 1;
-      display: grid;
-      gap: 16px;
-      align-content: start;
-    }
-    .hero h1 {
-      margin: 0;
-      font-size: clamp(32px, 4vw, 48px);
-      line-height: 1.05;
-      letter-spacing: -0.03em;
-    }
-    .hero p {
-      margin: 0;
-      max-width: 760px;
-      font-size: 16px;
-      line-height: 1.6;
-      color: rgba(255,255,255,0.82);
-    }
-    .hero-actions {
+      padding: 18px 20px;
+      margin-bottom: 14px;
       display: flex;
-      gap: 12px;
+      gap: 14px;
+      align-items: flex-start;
+      justify-content: space-between;
       flex-wrap: wrap;
     }
-    .hero-link {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 12px 18px;
-      border-radius: 999px;
-      font-weight: 700;
-      border: 1px solid rgba(255,255,255,0.12);
-      color: #fff;
-      background: rgba(255,255,255,0.08);
-    }
-    .hero-link.primary {
-      background: linear-gradient(135deg, var(--accent), #53c7ff);
-      color: var(--surface-dark);
-      border-color: transparent;
-    }
-    .hero-status {
-      position: relative;
-      z-index: 1;
-      padding: 24px;
-      border-radius: 22px;
-      border: 1px solid rgba(255,255,255,0.1);
-      background: rgba(255,255,255,0.08);
-      display: grid;
-      gap: 18px;
-      align-content: start;
-      box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
-    }
-    .hero-status h2 {
-      margin: 0;
-      font-size: 14px;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: rgba(255,255,255,0.68);
-    }
-    .hero-metrics {
-      display: grid;
-      gap: 14px;
-    }
-    .metric {
-      padding-top: 14px;
-      border-top: 1px solid rgba(255,255,255,0.12);
-    }
-    .metric:first-child {
-      padding-top: 0;
-      border-top: 0;
-    }
-    .metric span {
-      display: block;
-      font-size: 12px;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: rgba(255,255,255,0.62);
-      margin-bottom: 6px;
-    }
-    .metric strong {
-      font-size: 18px;
-      line-height: 1.35;
-      color: #fff;
-    }
-    .highlights {
-      margin-bottom: 18px;
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 14px;
-    }
-    .highlight-card {
-      padding: 22px;
-      display: grid;
-      gap: 10px;
-    }
-    .highlight-card strong {
-      font-size: 16px;
-      line-height: 1.3;
-    }
-    .highlight-card p {
-      margin: 0;
-      color: var(--muted);
-      line-height: 1.55;
-      font-size: 14px;
-    }
-    .pill {
-      display: inline-flex;
-      align-items: center;
-      padding: 6px 10px;
-      border-radius: 999px;
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: var(--accent-dark);
-      background: rgba(17, 149, 255, 0.1);
-      width: fit-content;
-    }
+    .hero h1 { margin: 0 0 8px; font-size: 24px; }
+    .hero p { margin: 0; color: var(--muted); }
     .status-pill {
       display: inline-flex;
       align-items: center;
       gap: 8px;
-      padding: 10px 14px;
+      padding: 8px 12px;
       border-radius: 999px;
-      background: rgba(255,255,255,0.12);
-      border: 1px solid rgba(255,255,255,0.16);
+      background: var(--panel-2);
+      border: 1px solid var(--border);
       font-weight: 600;
-      width: fit-content;
-      color: #fff;
     }
     .status-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--yellow); }
-    .status-dot.running { background: var(--green); box-shadow: 0 0 10px rgba(20,167,108,.6); }
+    .status-dot.running { background: var(--green); box-shadow: 0 0 10px rgba(63,185,80,.6); }
     .status-dot.stopped { background: var(--red); }
     .toolbar {
-      margin-bottom: 18px;
-      padding: 16px 22px;
+      margin-bottom: 14px;
+      padding: 12px 16px;
       display: flex;
       gap: 14px;
       align-items: center;
@@ -281,23 +69,12 @@
       flex-wrap: wrap;
     }
     .toolbar-links { display: flex; gap: 14px; flex-wrap: wrap; }
-    .toolbar-links a {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 10px 14px;
-      border-radius: 999px;
-      border: 1px solid var(--border);
-      background: var(--surface-alt);
-      font-weight: 600;
-      color: var(--text);
-    }
     .notice {
-      margin-bottom: 18px;
-      padding: 14px 16px;
-      border-radius: 16px;
+      margin-bottom: 14px;
+      padding: 12px 14px;
+      border-radius: 10px;
       border: 1px solid var(--border);
-      background: rgba(17,149,255,.1);
+      background: rgba(47,129,247,.12);
       color: var(--text);
       display: none;
     }
@@ -305,43 +82,30 @@
     .grid {
       display: grid;
       grid-template-columns: minmax(420px, 1fr) minmax(420px, 1fr);
-      gap: 18px;
+      gap: 14px;
     }
-    .stack { display: grid; gap: 18px; }
-    .panel { padding: 24px; }
-    .panel h2, .panel h3 {
-      margin: 0 0 8px;
-      font-size: 22px;
-      line-height: 1.25;
-      color: var(--surface-dark);
-    }
-    .sub { color: var(--muted); font-size: 14px; margin-bottom: 18px; line-height: 1.55; }
+    .stack { display: grid; gap: 14px; }
+    .panel { padding: 16px; }
+    .panel h2, .panel h3 { margin: 0 0 12px; font-size: 16px; }
+    .sub { color: var(--muted); font-size: 13px; margin-bottom: 10px; }
     .form-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 14px 16px;
+      gap: 12px 14px;
     }
     .field, .field-full { display: grid; gap: 6px; }
     .field-full { grid-column: 1 / -1; }
-    label { font-size: 12px; color: var(--muted); font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }
-    input, select, textarea, button { font: inherit; }
+    label { font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
+    input, select, textarea, button {
+      font: inherit;
+    }
     input[type="text"], input[type="number"], select, textarea {
       width: 100%;
       background: var(--field);
       color: var(--text);
       border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 12px 14px;
-      transition: border-color .2s ease, box-shadow .2s ease, background-color .2s ease;
-    }
-    input[type="text"]:focus,
-    input[type="number"]:focus,
-    select:focus,
-    textarea:focus {
-      outline: none;
-      border-color: rgba(17, 149, 255, 0.65);
-      box-shadow: 0 0 0 4px rgba(17, 149, 255, 0.12);
-      background: #fff;
+      border-radius: 8px;
+      padding: 10px 12px;
     }
     textarea { min-height: 120px; resize: vertical; }
     select[multiple] { min-height: 120px; }
@@ -355,10 +119,10 @@
       display: flex;
       gap: 10px;
       align-items: center;
-      padding: 12px 14px;
+      padding: 10px 12px;
       border: 1px solid var(--border);
-      background: var(--surface-alt);
-      border-radius: 14px;
+      background: var(--panel-2);
+      border-radius: 8px;
       color: var(--text);
       font-size: 14px;
       text-transform: none;
@@ -368,42 +132,21 @@
     .btn-row { display: flex; gap: 10px; flex-wrap: wrap; }
     button {
       border: 1px solid var(--border);
-      border-radius: 999px;
-      padding: 11px 16px;
-      background: var(--surface-alt);
+      border-radius: 8px;
+      padding: 10px 14px;
+      background: var(--panel-2);
       color: var(--text);
       cursor: pointer;
-      font-weight: 700;
-      transition: transform .15s ease, box-shadow .2s ease, border-color .2s ease;
     }
-    button:hover:not(:disabled) {
-      transform: translateY(-1px);
-      box-shadow: 0 10px 24px rgba(20, 39, 61, 0.1);
-      border-color: rgba(17,149,255,.35);
-    }
-    button.primary {
-      background: linear-gradient(135deg, var(--accent), #53c7ff);
-      border-color: transparent;
-      color: var(--surface-dark);
-    }
-    button.danger {
-      background: linear-gradient(135deg, #d94242, #ff7f60);
-      border-color: transparent;
-      color: #fff;
-    }
+    button.primary { background: #1f6feb; border-color: #388bfd; }
+    button.danger { background: #da3633; border-color: #f85149; }
     button:disabled { opacity: .6; cursor: not-allowed; }
-    .status-line {
-      padding: 12px 14px;
-      border-radius: 16px;
-      background: var(--surface-alt);
-      border: 1px solid var(--border);
-      line-height: 1.5;
-    }
+    .status-line { padding: 10px 12px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--border); }
     .console {
-      background: #0f1e31;
-      border: 1px solid rgba(20, 39, 61, 0.12);
-      border-radius: 18px;
-      padding: 14px;
+      background: #0b0f14;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px;
       min-height: 180px;
       max-height: 320px;
       overflow: auto;
@@ -412,289 +155,189 @@
       line-height: 1.45;
       white-space: pre-wrap;
       word-break: break-word;
-      color: #ecf3fb;
     }
     .log-line { margin-bottom: 4px; }
-    .log-line.DEBUG { color: #9fb2c7; }
-    .log-line.INFO { color: #ecf3fb; }
-    .log-line.WARNING { color: #f1be61; }
-    .log-line.ERROR, .log-line.CRITICAL { color: #ff8d88; }
-    .log-line.CMD { color: #7cd1ff; }
+    .log-line.DEBUG { color: #8b949e; }
+    .log-line.INFO { color: #e6edf3; }
+    .log-line.WARNING { color: #d29922; }
+    .log-line.ERROR, .log-line.CRITICAL { color: #f85149; }
+    .log-line.CMD { color: #58a6ff; }
     .tiny { color: var(--muted); font-size: 12px; }
-    .panel-kicker {
-      display: inline-flex;
-      align-items: center;
-      padding: 6px 10px;
-      margin-bottom: 12px;
-      border-radius: 999px;
-      background: rgba(17, 149, 255, 0.1);
-      color: var(--accent-dark);
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-    }
     @media (max-width: 1100px) {
-      .hero,
-      .highlights,
       .grid { grid-template-columns: 1fr; }
       .form-grid, .check-grid { grid-template-columns: 1fr; }
-      .topbar-inner {
-        min-height: auto;
-        padding-top: 16px;
-        padding-bottom: 16px;
-        align-items: flex-start;
-        flex-direction: column;
-      }
-      .topnav { justify-content: flex-start; }
-    }
-    @media (max-width: 760px) {
-      .topbar-inner, .page { padding-left: 16px; padding-right: 16px; }
-      .hero, .panel, .highlight-card { padding: 20px; }
-      .hero h1 { font-size: 30px; }
-      .toolbar { padding: 14px 16px; }
     }
   </style>
 </head>
 <body>
-  <div class="site-shell">
-    <header class="topbar">
-      <div class="topbar-inner">
-        <div class="brand">
-          <div class="brand-mark">PS</div>
-          <div class="brand-copy">
-            <p class="eyebrow">Persistent Systems</p>
-            <strong>WinTAK Meshtastic Gateway</strong>
-            <span>Produktoberfläche im Stil der Persistent-Systems-Webseiten</span>
-          </div>
-        </div>
-        <nav class="topnav" aria-label="Sektionen">
-          <a href="#gateway-settings">Gateway</a>
-          <a href="#gateway-operations">Operations</a>
-          <a href="#gateway-log">Event Log</a>
-          <a href="#gateway-monitor">WinTAK Monitor</a>
-        </nav>
+  <div class="page">
+    <div class="hero">
+      <div>
+        <h1>WinTAK Meshtastic Gateway</h1>
+        <p>Browser-Hauptoberfläche mit denselben Kernfunktionen wie die frühere Desktop-UI.</p>
       </div>
-    </header>
+      <div class="status-pill">
+        <span class="status-dot stopped" id="statusDot"></span>
+        <span id="statusText">Lade Status …</span>
+      </div>
+    </div>
 
-    <div class="page">
-      <section class="hero">
-        <div class="hero-copy">
-          <span class="pill">Tactical Mesh Integration</span>
-          <h1>WinTAK, ATAK und Meshtastic in einer einheitlichen Gateway-Konsole.</h1>
-          <p>Diese Browseroberfläche übernimmt die Kernfunktionen des Gateways in einer klaren Produktseiten-Optik: schnelle Konfiguration, Live-Betriebsstatus und direkte Datenpfade für Text, CoT und Monitoring.</p>
-          <div class="hero-actions">
-            <a class="hero-link primary" href="#gateway-settings">Gateway konfigurieren</a>
-            <a class="hero-link" href="#gateway-operations">Operations öffnen</a>
-          </div>
-        </div>
-        <aside class="hero-status">
-          <div>
-            <h2>Operational Status</h2>
-          </div>
-          <div class="status-pill">
-            <span class="status-dot stopped" id="statusDot"></span>
-            <span id="statusText">Lade Status …</span>
-          </div>
-          <div class="hero-metrics">
-            <div class="metric">
-              <span>Deployment Surface</span>
-              <strong>Browser-first Bedienung für Gateway-Setup, Logs und Direktbefehle.</strong>
-            </div>
-            <div class="metric">
-              <span>Monitoring</span>
-              <strong>Live-Transparenz für Service-URL, Event-Log und WinTAK-Datenfluss.</strong>
-            </div>
-            <div class="metric">
-              <span>Mission Utility</span>
-              <strong>Direkter Versand von Mesh-Texten und CoT-Payloads aus einer Oberfläche.</strong>
-            </div>
-          </div>
-        </aside>
-      </section>
+    <div class="toolbar">
+      <div class="toolbar-links">
+        <a href="/maker.html" target="_blank" rel="noopener">🗺️ Marker-Referenz</a>
+        <a href="/cot_monitor_ui.html" target="_blank" rel="noopener">🔍 CoT-Monitor</a>
+      </div>
+      <div class="tiny" id="serviceInfo">Service wird geladen …</div>
+    </div>
 
-      <section class="highlights" aria-label="Produkt-Highlights">
-        <article class="highlight-card">
-          <span class="pill">Control</span>
-          <strong>Zentrale Browser-Konfiguration</strong>
-          <p>Alle zentralen Gateway-Parameter bleiben direkt erreichbar, ohne die frühere Desktop-Logik zu verlieren.</p>
-        </article>
-        <article class="highlight-card">
-          <span class="pill">Interoperability</span>
-          <strong>WinTAK ↔ Meshtastic Datenbrücke</strong>
-          <p>Remote-TAK, lokale WinTAK-Ziele und Mesh-Relays lassen sich in einem einheitlichen Workflow koordinieren.</p>
-        </article>
-        <article class="highlight-card">
-          <span class="pill">Awareness</span>
-          <strong>Live-Betrieb und Monitoransicht</strong>
-          <p>Service-Status, Event-Log und WinTAK-Monitor unterstützen ein schnelles Lagebild während des Betriebs.</p>
-        </article>
-      </section>
+    <div class="notice" id="notice"></div>
 
-      <div class="toolbar">
-        <div class="toolbar-links">
-          <a href="/maker.html" target="_blank" rel="noopener">🗺️ Marker-Referenz</a>
-          <a href="/cot_monitor_ui.html" target="_blank" rel="noopener">🔍 CoT-Monitor</a>
-        </div>
-        <div class="tiny" id="serviceInfo">Service wird geladen …</div>
+    <div class="grid">
+      <div class="stack">
+        <section class="panel">
+          <h2>Gateway Settings</h2>
+          <div class="sub">Alle wichtigen Felder aus der alten Oberfläche direkt im Browser.</div>
+          <div class="form-grid">
+            <div class="field-full">
+              <label for="meshtastic_port">Meshtastic Port(s)</label>
+              <input id="meshtastic_port" type="text" placeholder="z. B. COM7, COM8">
+            </div>
+            <div class="field-full">
+              <label for="detectedPorts">Erkannte serielle Ports</label>
+              <select id="detectedPorts" multiple></select>
+              <div class="btn-row">
+                <button type="button" onclick="useSelectedPorts()">Auswahl übernehmen</button>
+                <button type="button" onclick="refreshPorts()">Ports aktualisieren</button>
+              </div>
+            </div>
+            <div class="field">
+              <label for="tak_server_host">Remote TAK Host</label>
+              <input id="tak_server_host" type="text">
+            </div>
+            <div class="field">
+              <label for="tak_server_port">Remote Port</label>
+              <input id="tak_server_port" type="number">
+            </div>
+            <div class="field">
+              <label for="tak_server_protocol">Remote Protocol</label>
+              <select id="tak_server_protocol">
+                <option>TCP</option>
+                <option>UDP</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="log_level">Log-Level</label>
+              <select id="log_level">
+                <option>DEBUG</option>
+                <option>INFO</option>
+                <option>WARNING</option>
+                <option>ERROR</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="local_tak_ip">WinTAK UDP Target IP</label>
+              <input id="local_tak_ip" type="text">
+            </div>
+            <div class="field">
+              <label for="local_tak_port">WinTAK UDP Port</label>
+              <input id="local_tak_port" type="number">
+            </div>
+            <div class="field">
+              <label for="local_tak_tcp_listen_port">WinTAK TCP Port</label>
+              <input id="local_tak_tcp_listen_port" type="number">
+            </div>
+            <div class="field">
+              <label for="local_tak_chat_listen_port">WinTAK Chat TCP Port</label>
+              <input id="local_tak_chat_listen_port" type="number">
+            </div>
+            <div class="field">
+              <label for="sync_interval_seconds">Sync Interval (s)</label>
+              <input id="sync_interval_seconds" type="number" min="1">
+            </div>
+            <div class="field">
+              <label for="relay_text_from_ports">Relay From COM Port(s)</label>
+              <input id="relay_text_from_ports" type="text">
+            </div>
+            <div class="field">
+              <label for="relay_text_to_mode">Relay To</label>
+              <select id="relay_text_to_mode">
+                <option value="all-other-selected-ports">All other selected ports</option>
+                <option value="custom">Custom list</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="relay_text_to_ports">Relay To COM Port(s)</label>
+              <input id="relay_text_to_ports" type="text">
+            </div>
+            <div class="field">
+              <label for="park_lat">Fallback Lat</label>
+              <input id="park_lat" type="text">
+            </div>
+            <div class="field">
+              <label for="park_lon">Fallback Lon</label>
+              <input id="park_lon" type="text">
+            </div>
+            <div class="check-grid">
+              <label class="check"><input id="log_raw_meshtastic_payloads" type="checkbox"> Enable RAW Meshtastic output</label>
+              <label class="check"><input id="log_raw_meshtastic_payloads_full" type="checkbox"> Log complete RAW payload</label>
+              <label class="check"><input id="relay_text_messages" type="checkbox"> Enable relay between selected COM ports</label>
+              <label class="check"><input id="send_nodes_without_gps" type="checkbox"> Send nodes without GPS fix</label>
+              <label class="check"><input id="set_gateway_position_on_start" type="checkbox"> Set gateway position on start</label>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>Event Log</h2>
+          <div class="btn-row" style="margin-bottom:10px">
+            <button type="button" onclick="runQuickCommand('clear')">Log leeren</button>
+            <button type="button" onclick="runQuickCommand('help')">Hilfe ausgeben</button>
+          </div>
+          <div class="console" id="logConsole"></div>
+        </section>
       </div>
 
-      <div class="notice" id="notice"></div>
+      <div class="stack">
+        <section class="panel">
+          <h2>Operations</h2>
+          <div class="btn-row">
+            <button class="primary" id="startBtn" type="button" onclick="startGateway()">Start Gateway</button>
+            <button class="danger" id="stopBtn" type="button" onclick="stopGateway()">Stop Gateway</button>
+            <button id="syncBtn" type="button" onclick="manualSync()">Manual Sync</button>
+          </div>
+          <div class="status-line" style="margin-top:12px" id="gatewayStatus">⬛ Stopped</div>
+        </section>
 
-      <div class="grid">
-        <div class="stack">
-          <section class="panel" id="gateway-settings">
-            <span class="panel-kicker">Configuration</span>
-            <h2>Gateway Settings</h2>
-            <div class="sub">Alle wichtigen Felder aus der alten Oberfläche direkt im Browser – jetzt in einer klareren Produktseiten-Struktur.</div>
-            <div class="form-grid">
-              <div class="field-full">
-                <label for="meshtastic_port">Meshtastic Port(s)</label>
-                <input id="meshtastic_port" type="text" placeholder="z. B. COM7, COM8">
-              </div>
-              <div class="field-full">
-                <label for="detectedPorts">Erkannte serielle Ports</label>
-                <select id="detectedPorts" multiple></select>
-                <div class="btn-row">
-                  <button type="button" onclick="useSelectedPorts()">Auswahl übernehmen</button>
-                  <button type="button" onclick="refreshPorts()">Ports aktualisieren</button>
-                </div>
-              </div>
-              <div class="field">
-                <label for="tak_server_host">Remote TAK Host</label>
-                <input id="tak_server_host" type="text">
-              </div>
-              <div class="field">
-                <label for="tak_server_port">Remote Port</label>
-                <input id="tak_server_port" type="number">
-              </div>
-              <div class="field">
-                <label for="tak_server_protocol">Remote Protocol</label>
-                <select id="tak_server_protocol">
-                  <option>TCP</option>
-                  <option>UDP</option>
-                </select>
-              </div>
-              <div class="field">
-                <label for="log_level">Log-Level</label>
-                <select id="log_level">
-                  <option>DEBUG</option>
-                  <option>INFO</option>
-                  <option>WARNING</option>
-                  <option>ERROR</option>
-                </select>
-              </div>
-              <div class="field">
-                <label for="local_tak_ip">WinTAK UDP Target IP</label>
-                <input id="local_tak_ip" type="text">
-              </div>
-              <div class="field">
-                <label for="local_tak_port">WinTAK UDP Port</label>
-                <input id="local_tak_port" type="number">
-              </div>
-              <div class="field">
-                <label for="local_tak_tcp_listen_port">WinTAK TCP Port</label>
-                <input id="local_tak_tcp_listen_port" type="number">
-              </div>
-              <div class="field">
-                <label for="local_tak_chat_listen_port">WinTAK Chat TCP Port</label>
-                <input id="local_tak_chat_listen_port" type="number">
-              </div>
-              <div class="field">
-                <label for="sync_interval_seconds">Sync Interval (s)</label>
-                <input id="sync_interval_seconds" type="number" min="1">
-              </div>
-              <div class="field">
-                <label for="relay_text_from_ports">Relay From COM Port(s)</label>
-                <input id="relay_text_from_ports" type="text">
-              </div>
-              <div class="field">
-                <label for="relay_text_to_mode">Relay To</label>
-                <select id="relay_text_to_mode">
-                  <option value="all-other-selected-ports">All other selected ports</option>
-                  <option value="custom">Custom list</option>
-                </select>
-              </div>
-              <div class="field">
-                <label for="relay_text_to_ports">Relay To COM Port(s)</label>
-                <input id="relay_text_to_ports" type="text">
-              </div>
-              <div class="field">
-                <label for="park_lat">Fallback Lat</label>
-                <input id="park_lat" type="text">
-              </div>
-              <div class="field">
-                <label for="park_lon">Fallback Lon</label>
-                <input id="park_lon" type="text">
-              </div>
-              <div class="check-grid">
-                <label class="check"><input id="log_raw_meshtastic_payloads" type="checkbox"> Enable RAW Meshtastic output</label>
-                <label class="check"><input id="log_raw_meshtastic_payloads_full" type="checkbox"> Log complete RAW payload</label>
-                <label class="check"><input id="relay_text_messages" type="checkbox"> Enable relay between selected COM ports</label>
-                <label class="check"><input id="send_nodes_without_gps" type="checkbox"> Send nodes without GPS fix</label>
-                <label class="check"><input id="set_gateway_position_on_start" type="checkbox"> Set gateway position on start</label>
-              </div>
-            </div>
-          </section>
+        <section class="panel">
+          <h3>Quick Command Console</h3>
+          <div class="btn-row">
+            <input id="quickCommand" type="text" placeholder="z. B. nodes, sync, log debug, setpos UID lat lon">
+            <button type="button" onclick="sendCommand()">Run</button>
+          </div>
+        </section>
 
-          <section class="panel" id="gateway-log">
-            <span class="panel-kicker">Telemetry</span>
-            <h2>Event Log</h2>
-            <div class="btn-row" style="margin-bottom:10px">
-              <button type="button" onclick="runQuickCommand('clear')">Log leeren</button>
-              <button type="button" onclick="runQuickCommand('help')">Hilfe ausgeben</button>
-            </div>
-            <div class="console" id="logConsole"></div>
-          </section>
-        </div>
+        <section class="panel">
+          <h3>Direct Text → Mesh</h3>
+          <textarea id="meshMessage" placeholder="Textnachricht an das Mesh senden"></textarea>
+          <div class="btn-row" style="margin-top:10px">
+            <button type="button" onclick="sendMeshText()">Send Text</button>
+          </div>
+          <div class="status-line" style="margin-top:10px" id="meshStatus">Gateway not started.</div>
+        </section>
 
-        <div class="stack">
-          <section class="panel" id="gateway-operations">
-            <span class="panel-kicker">Operations</span>
-            <h2>Operations</h2>
-            <div class="btn-row">
-              <button class="primary" id="startBtn" type="button" onclick="startGateway()">Start Gateway</button>
-              <button class="danger" id="stopBtn" type="button" onclick="stopGateway()">Stop Gateway</button>
-              <button id="syncBtn" type="button" onclick="manualSync()">Manual Sync</button>
-            </div>
-            <div class="status-line" style="margin-top:12px" id="gatewayStatus">⬛ Stopped</div>
-          </section>
+        <section class="panel">
+          <h3>WinTAK CoT → Mesh</h3>
+          <textarea id="cotPayload" placeholder="Vollständiges &lt;event&gt; XML hier einfügen"></textarea>
+          <div class="btn-row" style="margin-top:10px">
+            <button type="button" onclick="sendCot()">Send CoT</button>
+          </div>
+          <div class="status-line" style="margin-top:10px" id="cotStatus">Gateway not started.</div>
+        </section>
 
-          <section class="panel">
-            <span class="panel-kicker">Command</span>
-            <h3>Quick Command Console</h3>
-            <div class="btn-row">
-              <input id="quickCommand" type="text" placeholder="z. B. nodes, sync, log debug, setpos UID lat lon">
-              <button type="button" onclick="sendCommand()">Run</button>
-            </div>
-          </section>
-
-          <section class="panel">
-            <span class="panel-kicker">Messaging</span>
-            <h3>Direct Text → Mesh</h3>
-            <textarea id="meshMessage" placeholder="Textnachricht an das Mesh senden"></textarea>
-            <div class="btn-row" style="margin-top:10px">
-              <button type="button" onclick="sendMeshText()">Send Text</button>
-            </div>
-            <div class="status-line" style="margin-top:10px" id="meshStatus">Gateway not started.</div>
-          </section>
-
-          <section class="panel">
-            <span class="panel-kicker">CoT Transport</span>
-            <h3>WinTAK CoT → Mesh</h3>
-            <textarea id="cotPayload" placeholder="Vollständiges &lt;event&gt; XML hier einfügen"></textarea>
-            <div class="btn-row" style="margin-top:10px">
-              <button type="button" onclick="sendCot()">Send CoT</button>
-            </div>
-            <div class="status-line" style="margin-top:10px" id="cotStatus">Gateway not started.</div>
-          </section>
-
-          <section class="panel" id="gateway-monitor">
-            <span class="panel-kicker">Situational Awareness</span>
-            <h2>WinTAK Monitor</h2>
-            <div class="console" id="wintakConsole"></div>
-          </section>
-        </div>
+        <section class="panel">
+          <h2>WinTAK Monitor</h2>
+          <div class="console" id="wintakConsole"></div>
+        </section>
       </div>
     </div>
   </div>
