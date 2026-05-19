@@ -947,6 +947,28 @@ def normalize_meshtastic_uid(raw_uid):
     return raw_uid.replace("!", "ID-", 1)
 
 
+def resolve_meshtastic_destination_id(raw_uid, default="^all"):
+    """Convert TAK-facing chat destinations to Meshtastic sendData destination IDs."""
+    normalized = _strip_tak_sender_prefix(str(raw_uid or "").strip())
+    if not normalized:
+        return default
+    if normalized in {"^all", DEFAULT_CHATROOM_NAME}:
+        return "^all"
+    if normalized.startswith("!") and len(normalized) == 9:
+        try:
+            int(normalized[1:], 16)
+            return normalized
+        except ValueError:
+            return normalized
+    if normalized.startswith("ID-") and len(normalized) == 11:
+        try:
+            node_num = int(normalized[3:], 16)
+        except ValueError:
+            return normalized
+        return format_meshtastic_node_ids(node_num)[0]
+    return normalized
+
+
 def _xml_local_name(tag):
     """Return an XML tag name without any namespace prefix."""
     if not tag:
@@ -991,6 +1013,23 @@ def _find_descendant_by_local_names(parent, *names):
         if _xml_local_name(child.tag).lower() in wanted:
             return child
     return None
+
+
+def _find_descendant_attribute_value(parent, *names):
+    """Return the first non-empty descendant attribute whose name matches any given name."""
+    if parent is None:
+        return ""
+    wanted = {str(name or "").lower() for name in names if str(name or "").strip()}
+    if not wanted:
+        return ""
+    for child in parent.iter():
+        for attr_name, attr_value in child.attrib.items():
+            if str(attr_name or "").lower() not in wanted:
+                continue
+            normalized_value = str(attr_value or "").strip()
+            if normalized_value:
+                return normalized_value
+    return ""
 
 
 def _collect_xml_text(element):
@@ -6719,7 +6758,7 @@ class TAKMeshtasticGateway:
 
         return kwargs
 
-    def _build_meshtastic_send_data_kwargs(self, iface, portnum):
+    def _build_meshtastic_send_data_kwargs(self, iface, portnum, destination_id="^all"):
         send_data = getattr(iface, "sendData", None)
         if send_data is None:
             raise AttributeError("Meshtastic-Interface unterstützt sendData nicht.")
@@ -6737,10 +6776,11 @@ class TAKMeshtasticGateway:
             return supports_var_kwargs or name in parameters
 
         kwargs = {}
+        resolved_destination_id = resolve_meshtastic_destination_id(destination_id)
         if supports("destinationId"):
-            kwargs["destinationId"] = "^all"
+            kwargs["destinationId"] = resolved_destination_id
         elif supports("destination_id"):
-            kwargs["destination_id"] = "^all"
+            kwargs["destination_id"] = resolved_destination_id
 
         if supports("wantAck"):
             kwargs["wantAck"] = False
@@ -6825,7 +6865,14 @@ class TAKMeshtasticGateway:
             raise failure from last_error
         return sent_interfaces
 
-    def _send_data_to_interfaces(self, payload, interfaces, portnum, allow_reconnect=True):
+    def _send_data_to_interfaces(
+        self,
+        payload,
+        interfaces,
+        portnum,
+        allow_reconnect=True,
+        destination_id="^all",
+    ):
         interfaces = [iface for iface in (interfaces or []) if iface is not None]
         if not interfaces:
             if allow_reconnect:
@@ -6837,7 +6884,11 @@ class TAKMeshtasticGateway:
         failed_labels = []
         for iface in interfaces:
             try:
-                kwargs = self._build_meshtastic_send_data_kwargs(iface, portnum)
+                kwargs = self._build_meshtastic_send_data_kwargs(
+                    iface,
+                    portnum,
+                    destination_id=destination_id,
+                )
                 try:
                     iface.sendData(payload, **kwargs)
                 except Exception as exc:
@@ -6890,6 +6941,7 @@ class TAKMeshtasticGateway:
                         retry_targets,
                         portnum,
                         allow_reconnect=False,
+                        destination_id=destination_id,
                     )
                     return self._merge_interfaces_by_label(sent_interfaces, retried_interfaces)
                 except Exception as retry_exc:
@@ -7754,12 +7806,25 @@ class TAKMeshtasticGateway:
         chatgrp = _find_descendant_by_local_name(detail, "chatgrp")
         source_id_node = _find_descendant_by_local_names(detail, "sourceid", "sourceId", "sourceID")
         destination_node = _find_descendant_by_local_names(detail, "to", "destination", "dest")
+        source_id_attr = _find_descendant_attribute_value(detail, "sourceid", "sourceId", "sourceID")
+        destination_attr = _find_descendant_attribute_value(detail, "to", "destination", "dest")
+        chatroom_attr = _find_descendant_attribute_value(detail, "chatroom", "chatRoom", "name")
         event_uid = root.get("uid") or ""
         event_type = str(root.get("type") or "").lower()
         has_chat_identity = event_uid.startswith(GEOCHAT_UID_PREFIX) or event_type.startswith("b-t-f")
         has_chat_elements = any(element is not None for element in (chat, chat_note, chatgrp))
         has_chat_remarks = _looks_like_tak_chat_remarks(remarks)
         has_chat_message_fields = _has_tak_chat_message_fields(detail)
+        has_chat_routing_hints = any(
+            value
+            for value in (
+                source_id_node is not None,
+                destination_node is not None,
+                source_id_attr,
+                destination_attr,
+                chatroom_attr,
+            )
+        )
         generic_message_nodes = []
         for element in detail.iter():
             if element is detail:
@@ -7786,7 +7851,13 @@ class TAKMeshtasticGateway:
             message = _extract_latest_wintak_chat_attribute_message(detail)
         if not message:
             return None
-        if not (has_chat_identity or has_chat_elements or has_chat_remarks or has_chat_message_fields):
+        if not (
+            has_chat_identity
+            or has_chat_elements
+            or has_chat_remarks
+            or has_chat_message_fields
+            or has_chat_routing_hints
+        ):
             return None
 
         link = _find_descendant_by_local_name(detail, "link")
@@ -7804,6 +7875,8 @@ class TAKMeshtasticGateway:
                 or _collect_xml_text(source_id_node)
                 or sender_uid
             )
+        if not sender_uid and source_id_attr:
+            sender_uid = source_id_attr
         if not sender_uid and event_uid.startswith(GEOCHAT_UID_PREFIX) and len(uid_parts) >= 2:
             sender_uid = uid_parts[1]
         if not sender_uid and chatgrp is not None:
@@ -7821,6 +7894,14 @@ class TAKMeshtasticGateway:
             sender_callsign = chatgrp.get("uid0") or chatgrp.get("name")
         if not sender_callsign and remarks is not None:
             sender_callsign = remarks.get("source")
+        if not sender_callsign:
+            sender_callsign = _find_descendant_attribute_value(
+                detail,
+                "senderCallsign",
+                "sender",
+                "callsign",
+                "source",
+            )
         sender_callsign = _strip_tak_sender_prefix(sender_callsign)
         if not sender_callsign:
             sender_callsign = "UNKNOWN-SENDER"
@@ -7852,8 +7933,12 @@ class TAKMeshtasticGateway:
                 or _collect_xml_text(destination_node)
                 or recipient_uid
             )
+        if not recipient_uid and destination_attr:
+            recipient_uid = destination_attr
         if not recipient_uid:
             recipient_uid = recipient_callsign or DEFAULT_CHATROOM_NAME
+        if recipient_callsign == DEFAULT_CHATROOM_NAME and chatroom_attr:
+            recipient_callsign = chatroom_attr
         if recipient_callsign == DEFAULT_CHATROOM_NAME and recipient_uid:
             recipient_callsign = recipient_uid
         chatroom = recipient_callsign or recipient_uid or DEFAULT_CHATROOM_NAME
@@ -7923,9 +8008,18 @@ class TAKMeshtasticGateway:
             raise ValueError("ATAK GeoChat-Payload konnte nicht erzeugt werden.")
         return payload
 
+    def _resolve_meshtastic_chat_destination_id(self, chat_payload):
+        recipient_uid = chat_payload.get("recipient_uid")
+        chatroom = chat_payload.get("chatroom")
+        recipient_callsign = chat_payload.get("recipient_callsign")
+        return resolve_meshtastic_destination_id(
+            recipient_uid or chatroom or recipient_callsign or DEFAULT_CHATROOM_NAME
+        )
+
     def _send_tak_chat_to_meshtastic(self, chat_payload):
         payload = self._build_meshtastic_geochat_payload(chat_payload)
         interfaces = self._ensure_meshtastic_interfaces(raise_on_empty=True)
+        destination_id = self._resolve_meshtastic_chat_destination_id(chat_payload)
         if any(getattr(iface, "sendData", None) is None for iface in interfaces):
             sent_chunks = self._prepare_meshtastic_text_chunks(chat_payload.get("message"))
             total_sent = self._send_text_to_meshtastic(chat_payload.get("message"), prepared_chunks=sent_chunks)
@@ -7935,7 +8029,12 @@ class TAKMeshtasticGateway:
                 "chunks": len(sent_chunks),
             }
         try:
-            sent_interfaces = self._send_data_to_interfaces(payload, interfaces, MESHTASTIC_ATAK_PLUGIN_PORTNUM)
+            sent_interfaces = self._send_data_to_interfaces(
+                payload,
+                interfaces,
+                MESHTASTIC_ATAK_PLUGIN_PORTNUM,
+                destination_id=destination_id,
+            )
             return {
                 "transport": "ATAK_PLUGIN_CHAT",
                 "count": len(sent_interfaces),
