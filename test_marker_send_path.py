@@ -344,8 +344,8 @@ class TestTakGeoChatParsing(unittest.TestCase):
         gw.chat_cache_lock = threading.RLock()
         gw.service_ui_event_store = None
         gw.wintak_tcp_chat_callback = mock.Mock()
-        gw._send_tak_chat_to_meshtastic = mock.Mock(
-            return_value={"transport": "ATAK_PLUGIN_CHAT", "count": 1, "chunks": 1}
+        gw._forward_tak_chat_to_meshtastic = mock.Mock(
+            return_value={"transport": "ATAK_PLUGIN_DETAIL", "count": 1, "chunks": 1}
         )
         gw._record_service_monitor_event = mock.Mock()
         gw._log_inbound_tak_diagnostics = mock.Mock()
@@ -394,8 +394,9 @@ class TestTakGeoChatParsing(unittest.TestCase):
             was_normalized=False,
         )
 
-        gw._send_tak_chat_to_meshtastic.assert_called_once()
-        sent_payload = gw._send_tak_chat_to_meshtastic.call_args.args[0]
+        gw._forward_tak_chat_to_meshtastic.assert_called_once()
+        sent_packet_xml, sent_payload = gw._forward_tak_chat_to_meshtastic.call_args.args
+        self.assertEqual(sent_packet_xml, packet_xml)
         self.assertEqual(sent_payload["message"], "Mesh relay check")
         self.assertEqual(sent_payload["sender_uid"], "BRAVO-UID")
         gw.wintak_tcp_chat_callback.assert_called_once_with(
@@ -446,8 +447,9 @@ class TestTakGeoChatParsing(unittest.TestCase):
             was_normalized=False,
         )
 
-        gw._send_tak_chat_to_meshtastic.assert_called_once()
-        sent_payload = gw._send_tak_chat_to_meshtastic.call_args.args[0]
+        gw._forward_tak_chat_to_meshtastic.assert_called_once()
+        sent_packet_xml, sent_payload = gw._forward_tak_chat_to_meshtastic.call_args.args
+        self.assertEqual(sent_packet_xml, packet_xml)
         self.assertEqual(sent_payload["message"], "Attribute metadata relay check")
         self.assertEqual(sent_payload["sender_uid"], "DELTA-UID")
         self.assertEqual(sent_payload["sender_callsign"], "DELTA-4")
@@ -458,6 +460,34 @@ class TestTakGeoChatParsing(unittest.TestCase):
             "Attribute metadata relay check",
             ("127.0.0.1", 4242),
         )
+
+    def test_forward_tak_chat_to_meshtastic_prefers_cot_path(self):
+        gw = _make_stub_gateway()
+        packet_xml = b"<event version='2.0' uid='chat-1' type='b-t-f' how='m-g'/>"
+        chat_payload = {"message": "Mesh relay check"}
+        gw._forward_cot_to_meshtastic = mock.Mock(return_value={"transport": "ATAK_PLUGIN_DETAIL", "count": 1})
+        gw._send_tak_chat_to_meshtastic = mock.Mock()
+
+        result = TAKMeshtasticGateway._forward_tak_chat_to_meshtastic(gw, packet_xml, chat_payload)
+
+        self.assertEqual(result["transport"], "ATAK_PLUGIN_DETAIL")
+        gw._forward_cot_to_meshtastic.assert_called_once_with(packet_xml)
+        gw._send_tak_chat_to_meshtastic.assert_not_called()
+
+    def test_forward_tak_chat_to_meshtastic_falls_back_to_geochat(self):
+        gw = _make_stub_gateway()
+        packet_xml = b"<event version='2.0' uid='chat-2' type='b-t-f' how='m-g'/>"
+        chat_payload = {"message": "Fallback"}
+        gw._forward_cot_to_meshtastic = mock.Mock(side_effect=RuntimeError("broken cot path"))
+        gw._send_tak_chat_to_meshtastic = mock.Mock(
+            return_value={"transport": "ATAK_PLUGIN_CHAT", "count": 1, "chunks": 1}
+        )
+
+        result = TAKMeshtasticGateway._forward_tak_chat_to_meshtastic(gw, packet_xml, chat_payload)
+
+        self.assertEqual(result["transport"], "ATAK_PLUGIN_CHAT")
+        gw._forward_cot_to_meshtastic.assert_called_once_with(packet_xml)
+        gw._send_tak_chat_to_meshtastic.assert_called_once_with(chat_payload)
 
 
 class TestTakGeoChatMeshRouting(unittest.TestCase):

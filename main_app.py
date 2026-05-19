@@ -8053,6 +8053,16 @@ class TAKMeshtasticGateway:
                 "chunks": len(sent_chunks),
             }
 
+    def _forward_tak_chat_to_meshtastic(self, packet_xml, chat_payload):
+        try:
+            return self._forward_cot_to_meshtastic(packet_xml)
+        except Exception as cot_exc:
+            self.logger.warning(
+                "TAK-Chat-CoT-Pfad fehlgeschlagen, verwende ATAK GeoChat/Text-Fallback: "
+                f"{cot_exc}"
+            )
+        return self._send_tak_chat_to_meshtastic(chat_payload)
+
     def _normalize_inbound_tak_packet(self, packet_xml):
         return _normalize_tak_xml_payload(packet_xml)
 
@@ -8315,7 +8325,7 @@ class TAKMeshtasticGateway:
                     pass
 
             try:
-                send_result = self._send_tak_chat_to_meshtastic(chat_payload)
+                send_result = self._forward_tak_chat_to_meshtastic(packet_xml, chat_payload)
             except Exception as exc:
                 self.logger.warning(f"TAK-Chat konnte nicht ins Mesh gesendet werden: {exc}")
                 self.logger.debug("Fehler beim Senden von TAK-Chat ins Mesh:\n" + traceback.format_exc())
@@ -8330,6 +8340,18 @@ class TAKMeshtasticGateway:
             if transport == "ATAK_PLUGIN_CHAT":
                 self.logger.info(
                     f"TAK-Chat als ATAK GeoChat ins Mesh über {total_sent} Interface(s) gesendet: "
+                    f"{src} -> {destination_label}: {chat_payload['message']}"
+                )
+            elif transport in {
+                "ATAK_PLUGIN",
+                "ATAK_PLUGIN_DETAIL",
+                "ATAK_FORWARDER",
+                "ATAK_FORWARDER_FTN",
+                "ATAK_FORWARDER_FRAGMENTS",
+                "LEGACY_COTM",
+            }:
+                self.logger.info(
+                    f"TAK-Chat als CoT ins Mesh über {transport} gesendet: "
                     f"{src} -> {destination_label}: {chat_payload['message']}"
                 )
             elif sent_chunk_count > 1:
