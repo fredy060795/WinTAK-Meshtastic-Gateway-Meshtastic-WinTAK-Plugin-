@@ -396,6 +396,60 @@ class TestTakGeoChatParsing(unittest.TestCase):
             ("127.0.0.1", 4242),
         )
 
+    def test_extract_tak_chat_payload_accepts_detail_level_chat_metadata_attributes(self):
+        gw = _make_stub_gateway()
+        packet_xml = (
+            b'<event version="2.0" uid="WinTAK-chat-3" type="u-d-p" how="m-g">'
+            b'<point lat="48.2" lon="14.3" hae="0" ce="9999999.0" le="9999999.0"/>'
+            b'<detail sourceID="BAO.F.WinTAK.CHARLIE-UID" to="All Chat Rooms" chatRoom="All Chat Rooms">'
+            b'<contact callsign="CHARLIE-3"/>'
+            b'<message1>Newest attribute metadata line</message1>'
+            b'</detail></event>'
+        )
+
+        payload = TAKMeshtasticGateway._extract_tak_chat_payload(gw, packet_xml)
+
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["message"], "Newest attribute metadata line")
+        self.assertEqual(payload["sender_uid"], "CHARLIE-UID")
+        self.assertEqual(payload["sender_callsign"], "CHARLIE-3")
+        self.assertEqual(payload["recipient_uid"], "All Chat Rooms")
+        self.assertEqual(payload["recipient_callsign"], "All Chat Rooms")
+
+    def test_handle_inbound_tak_packet_relays_detail_level_chat_metadata_attributes(self):
+        gw = self._make_chat_gateway()
+        packet_xml = (
+            b'<event version="2.0" uid="WinTAK-chat-4" type="u-d-p" how="m-g">'
+            b'<point lat="48.2" lon="14.3" hae="0" ce="9999999.0" le="9999999.0"/>'
+            b'<detail sourceID="BAO.F.WinTAK.DELTA-UID" to="All Chat Rooms" chatRoom="All Chat Rooms">'
+            b'<contact callsign="DELTA-4"/>'
+            b'<message1>Attribute metadata relay check</message1>'
+            b'</detail></event>'
+        )
+
+        TAKMeshtasticGateway.handle_inbound_tak_packet(
+            gw,
+            packet_xml,
+            source_addr=("127.0.0.1", 4242),
+            source_protocol="UDP",
+            listener_port=4242,
+            packet_size=len(packet_xml),
+            was_normalized=False,
+        )
+
+        gw._send_tak_chat_to_meshtastic.assert_called_once()
+        sent_payload = gw._send_tak_chat_to_meshtastic.call_args.args[0]
+        self.assertEqual(sent_payload["message"], "Attribute metadata relay check")
+        self.assertEqual(sent_payload["sender_uid"], "DELTA-UID")
+        self.assertEqual(sent_payload["sender_callsign"], "DELTA-4")
+        self.assertEqual(sent_payload["recipient_uid"], "All Chat Rooms")
+        gw.wintak_tcp_chat_callback.assert_called_once_with(
+            "chat",
+            "DELTA-4",
+            "Attribute metadata relay check",
+            ("127.0.0.1", 4242),
+        )
+
 
 # ---------------------------------------------------------------------------
 # 1. Single-packet ATAK_FORWARDER prefix

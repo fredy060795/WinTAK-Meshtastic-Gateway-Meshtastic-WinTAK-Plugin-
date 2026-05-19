@@ -993,6 +993,23 @@ def _find_descendant_by_local_names(parent, *names):
     return None
 
 
+def _find_descendant_attribute_value(parent, *names):
+    """Return the first non-empty descendant attribute whose name matches any given name."""
+    if parent is None:
+        return ""
+    wanted = {str(name or "").lower() for name in names if str(name or "").strip()}
+    if not wanted:
+        return ""
+    for child in parent.iter():
+        for attr_name, attr_value in child.attrib.items():
+            if str(attr_name or "").lower() not in wanted:
+                continue
+            normalized_value = str(attr_value or "").strip()
+            if normalized_value:
+                return normalized_value
+    return ""
+
+
 def _collect_xml_text(element):
     """Collect stripped text from an XML element and all of its descendants."""
     if element is None:
@@ -7754,12 +7771,25 @@ class TAKMeshtasticGateway:
         chatgrp = _find_descendant_by_local_name(detail, "chatgrp")
         source_id_node = _find_descendant_by_local_names(detail, "sourceid", "sourceId", "sourceID")
         destination_node = _find_descendant_by_local_names(detail, "to", "destination", "dest")
+        source_id_attr = _find_descendant_attribute_value(detail, "sourceid", "sourceId", "sourceID")
+        destination_attr = _find_descendant_attribute_value(detail, "to", "destination", "dest")
+        chatroom_attr = _find_descendant_attribute_value(detail, "chatroom", "chatRoom", "name")
         event_uid = root.get("uid") or ""
         event_type = str(root.get("type") or "").lower()
         has_chat_identity = event_uid.startswith(GEOCHAT_UID_PREFIX) or event_type.startswith("b-t-f")
         has_chat_elements = any(element is not None for element in (chat, chat_note, chatgrp))
         has_chat_remarks = _looks_like_tak_chat_remarks(remarks)
         has_chat_message_fields = _has_tak_chat_message_fields(detail)
+        has_chat_routing_hints = any(
+            value
+            for value in (
+                source_id_node is not None,
+                destination_node is not None,
+                source_id_attr,
+                destination_attr,
+                chatroom_attr,
+            )
+        )
         generic_message_nodes = []
         for element in detail.iter():
             if element is detail:
@@ -7786,7 +7816,13 @@ class TAKMeshtasticGateway:
             message = _extract_latest_wintak_chat_attribute_message(detail)
         if not message:
             return None
-        if not (has_chat_identity or has_chat_elements or has_chat_remarks or has_chat_message_fields):
+        if not (
+            has_chat_identity
+            or has_chat_elements
+            or has_chat_remarks
+            or has_chat_message_fields
+            or has_chat_routing_hints
+        ):
             return None
 
         link = _find_descendant_by_local_name(detail, "link")
@@ -7804,6 +7840,8 @@ class TAKMeshtasticGateway:
                 or _collect_xml_text(source_id_node)
                 or sender_uid
             )
+        if not sender_uid and source_id_attr:
+            sender_uid = source_id_attr
         if not sender_uid and event_uid.startswith(GEOCHAT_UID_PREFIX) and len(uid_parts) >= 2:
             sender_uid = uid_parts[1]
         if not sender_uid and chatgrp is not None:
@@ -7821,6 +7859,14 @@ class TAKMeshtasticGateway:
             sender_callsign = chatgrp.get("uid0") or chatgrp.get("name")
         if not sender_callsign and remarks is not None:
             sender_callsign = remarks.get("source")
+        if not sender_callsign:
+            sender_callsign = _find_descendant_attribute_value(
+                detail,
+                "senderCallsign",
+                "sender",
+                "callsign",
+                "source",
+            )
         sender_callsign = _strip_tak_sender_prefix(sender_callsign)
         if not sender_callsign:
             sender_callsign = "UNKNOWN-SENDER"
@@ -7852,8 +7898,12 @@ class TAKMeshtasticGateway:
                 or _collect_xml_text(destination_node)
                 or recipient_uid
             )
+        if not recipient_uid and destination_attr:
+            recipient_uid = destination_attr
         if not recipient_uid:
             recipient_uid = recipient_callsign or DEFAULT_CHATROOM_NAME
+        if recipient_callsign == DEFAULT_CHATROOM_NAME and chatroom_attr:
+            recipient_callsign = chatroom_attr
         if recipient_callsign == DEFAULT_CHATROOM_NAME and recipient_uid:
             recipient_callsign = recipient_uid
         chatroom = recipient_callsign or recipient_uid or DEFAULT_CHATROOM_NAME
