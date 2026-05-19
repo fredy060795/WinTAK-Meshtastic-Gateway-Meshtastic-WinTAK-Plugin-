@@ -978,6 +978,21 @@ def _find_descendant_by_local_name(parent, name):
     return None
 
 
+def _find_descendant_by_local_names(parent, *names):
+    """Find the first descendant whose local XML tag name matches any given name."""
+    if parent is None:
+        return None
+    wanted = {str(name or "").lower() for name in names if str(name or "").strip()}
+    if not wanted:
+        return None
+    for child in parent.iter():
+        if child is parent:
+            continue
+        if _xml_local_name(child.tag).lower() in wanted:
+            return child
+    return None
+
+
 def _collect_xml_text(element):
     """Collect stripped text from an XML element and all of its descendants."""
     if element is None:
@@ -1107,6 +1122,13 @@ def _extract_latest_wintak_chat_attribute_message(element):
     return ""
 
 
+def _is_tak_chat_message_local_name(local_name):
+    normalized = str(local_name or "").strip().lower()
+    if not normalized:
+        return False
+    return normalized in _TAK_CHAT_MESSAGE_FIELD_NAMES or bool(_WINTAK_CHAT_FIELD_PATTERN.match(normalized))
+
+
 def _looks_like_tak_chat_remarks(remarks):
     """Return True when a TAK <remarks> element looks like a GeoChat payload."""
     if remarks is None:
@@ -1128,7 +1150,7 @@ def _has_tak_chat_message_fields(element):
         return False
     for node in element.iter():
         local_name = _xml_local_name(node.tag).lower()
-        if local_name in _TAK_CHAT_MESSAGE_FIELD_NAMES:
+        if _is_tak_chat_message_local_name(local_name):
             node_text = _collect_xml_text(node).strip()
             if node_text:
                 return True
@@ -7730,6 +7752,8 @@ class TAKMeshtasticGateway:
         remarks = _find_descendant_by_local_name(detail, "remarks")
         chat_note = _find_descendant_by_local_name(detail, "_chat")
         chatgrp = _find_descendant_by_local_name(detail, "chatgrp")
+        source_id_node = _find_descendant_by_local_names(detail, "sourceid", "sourceId", "sourceID")
+        destination_node = _find_descendant_by_local_names(detail, "to", "destination", "dest")
         event_uid = root.get("uid") or ""
         event_type = str(root.get("type") or "").lower()
         has_chat_identity = event_uid.startswith(GEOCHAT_UID_PREFIX) or event_type.startswith("b-t-f")
@@ -7740,7 +7764,7 @@ class TAKMeshtasticGateway:
         for element in detail.iter():
             if element is detail:
                 continue
-            if _xml_local_name(element.tag).lower() in {"message", "text", "body", "content"}:
+            if _is_tak_chat_message_local_name(_xml_local_name(element.tag)):
                 generic_message_nodes.append(element)
 
         message = ""
@@ -7748,7 +7772,7 @@ class TAKMeshtasticGateway:
             message = _extract_latest_wintak_chat_message(remarks.text)
         note = _find_descendant_by_local_name(detail, "note")
         if not message:
-            for element in (note, chat_note, chat, remarks, chatgrp, *generic_message_nodes):
+            for element in (note, chat_note, chat, remarks, chatgrp, *reversed(generic_message_nodes)):
                 if element is None:
                     continue
                 candidate_text = _extract_latest_wintak_chat_message(_collect_xml_text(element))
@@ -7773,6 +7797,13 @@ class TAKMeshtasticGateway:
             sender_uid = link.get("uid")
         if not sender_uid and remarks is not None:
             sender_uid = remarks.get("sourceID") or remarks.get("source") or sender_uid
+        if not sender_uid and source_id_node is not None:
+            sender_uid = (
+                source_id_node.get("uid")
+                or source_id_node.get("id")
+                or _collect_xml_text(source_id_node)
+                or sender_uid
+            )
         if not sender_uid and event_uid.startswith(GEOCHAT_UID_PREFIX) and len(uid_parts) >= 2:
             sender_uid = uid_parts[1]
         if not sender_uid and chatgrp is not None:
@@ -7814,6 +7845,13 @@ class TAKMeshtasticGateway:
             remarks_to = remarks.get("to")
             if _looks_like_valid_tak_uid(remarks_to):
                 recipient_uid = remarks_to or recipient_uid
+        if not recipient_uid and destination_node is not None:
+            recipient_uid = (
+                destination_node.get("uid")
+                or destination_node.get("id")
+                or _collect_xml_text(destination_node)
+                or recipient_uid
+            )
         if not recipient_uid:
             recipient_uid = recipient_callsign or DEFAULT_CHATROOM_NAME
         if recipient_callsign == DEFAULT_CHATROOM_NAME and recipient_uid:
