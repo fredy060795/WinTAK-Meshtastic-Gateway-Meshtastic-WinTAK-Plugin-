@@ -25,8 +25,10 @@ from main_app import (
     MESHTASTIC_DATA_PAYLOAD_MAX_BYTES,
     MESHTASTIC_TRANSFER_TYPE_COT,
     FOUNTAIN_MAGIC,
+    _build_service_monitor_cot_event_record,
     _build_service_web_ui_startup_event,
     _GatewayServiceWebUIServer,
+    _ServiceWebUIEventStore,
     _ServiceWebUIRequestHandler,
     _apply_settings_payload_to_cfg,
     _build_browser_ui_form_state,
@@ -187,6 +189,28 @@ class TestServiceWebUiHelpers(unittest.TestCase):
         self.assertEqual(event["parsed"]["start"], "2026-01-02T03:04:05Z")
         self.assertEqual(event["parsed"]["stale"], "2026-01-02T03:04:05Z")
 
+    def test_build_service_monitor_cot_event_record_marks_manual_marker(self):
+        packet_xml = (
+            b'<event version="2.0" uid="S-1-5-21-1" type="a-f-G-U-C" how="h-e" '
+            b'time="2026-01-02T03:04:05Z" start="2026-01-02T03:04:05Z" stale="2026-01-02T03:14:05Z">'
+            b'<point lat="48.3069" lon="14.2858" hae="0" ce="10" le="10"/>'
+            b'<detail><contact callsign="Marker Alpha"/><archive/></detail></event>'
+        )
+        record = _build_service_monitor_cot_event_record(
+            packet_xml,
+            direction="<<<",
+            source="TAK UDP 192.168.8.124:4242",
+            is_echo_back=True,
+        )
+
+        self.assertEqual(record["direction"], "<<<")
+        self.assertEqual(record["source"], "TAK UDP 192.168.8.124:4242")
+        self.assertEqual(record["parsed"]["uid"], "S-1-5-21-1")
+        self.assertEqual(record["parsed"]["callsign"], "Marker Alpha")
+        self.assertEqual(record["parsed"]["detected_type"], "tak_maker")
+        self.assertTrue(record["parsed"]["has_archive"])
+        self.assertTrue(record["parsed"]["is_echo_back"])
+
     def test_service_web_ui_server_ignores_aborted_client_disconnects(self):
         server = _GatewayServiceWebUIServer(("127.0.0.1", 0), _ServiceWebUIRequestHandler)
         server.logger = _FakeLogger()
@@ -276,6 +300,29 @@ class TestTakTcpDelivery(unittest.TestCase):
 
         self.assertEqual(sent, 1)
         self.assertEqual(delivered_to, ["192.168.8.124:8088"])
+
+
+class TestServiceWebUiMonitorCapture(unittest.TestCase):
+    def test_send_cot_to_meshtastic_records_manual_monitor_event(self):
+        gw = _make_stub_gateway()
+        gw.service_ui_event_store = _ServiceWebUIEventStore()
+        gw.gateway_uid = "GW-01"
+        gw.local_node_ids = set()
+        gw._forward_cot_to_meshtastic = lambda packet_xml: {"transport": "ATAK_FORWARDER", "count": 1}
+        packet_xml = (
+            b'<event version="2.0" uid="manual-marker" type="a-h-G-U-C" how="h-e">'
+            b'<point lat="48.2" lon="14.3" hae="0" ce="10" le="10"/>'
+            b'<detail><contact callsign="Manual Hostile"/><archive/></detail></event>'
+        )
+
+        result = TAKMeshtasticGateway.send_cot_to_meshtastic(gw, packet_xml)
+
+        self.assertEqual(result["transport"], "ATAK_FORWARDER")
+        events = gw.service_ui_event_store.get_all()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["source"], "Manual CoT -> Mesh")
+        self.assertEqual(events[0]["parsed"]["uid"], "manual-marker")
+        self.assertEqual(events[0]["parsed"]["detected_type"], "cbt_hostile")
 
 
 # ---------------------------------------------------------------------------

@@ -142,6 +142,27 @@ MESHTASTIC_TRANSFER_TYPE_COT = 0x00
 MESHTASTIC_TRANSFER_TYPE_FILE = 0x01
 MESHTASTIC_TRANSFER_TYPE_COT_ASCII = 0x30  # '0'
 MESHTASTIC_TRANSFER_TYPE_FILE_ASCII = 0x31  # '1'
+SERVICE_MONITOR_COT_TYPE_MAP = (
+    ("b-m-p-s-m", "hostile"),
+    ("u-d-c-e", "hostile"),
+    ("u-d-c-c", "hostile"),
+    ("u-d-r", "friendly"),
+    ("u-d-f", "hostile"),
+    ("u-d-p", "hostile"),
+    ("a-f-g-e-s-u-m", "meshtastic_node"),
+    ("a-f-g-e", "meshtastic_node"),
+    ("a-f", "friendly"),
+    ("a-h", "hostile"),
+    ("a-n", "neutral"),
+    ("a-u", "unknown"),
+    ("a-p", "pending"),
+)
+SERVICE_MONITOR_ATAK_TO_CBT_TYPE = {
+    "hostile": "cbt_hostile",
+    "friendly": "cbt_friendly",
+    "neutral": "cbt_neutral",
+    "unknown": "cbt_unknown",
+}
 
 
 def _text_widget_is_at_bottom(widget, threshold=0.999):
@@ -2159,6 +2180,134 @@ def _clamp_battery_percentage(value):
     return max(0, min(100, int(round(battery_value))))
 
 
+def _service_monitor_cot_type_to_detected_type(cot_type):
+    normalized = str(cot_type or "").strip().lower()
+    for prefix, detected_type in SERVICE_MONITOR_COT_TYPE_MAP:
+        if normalized.startswith(prefix):
+            return detected_type
+    return "unknown"
+
+
+def _build_service_monitor_cot_event_record(
+    packet_xml,
+    *,
+    direction,
+    source,
+    gateway_uid="",
+    local_node_ids=None,
+    is_echo_back=False,
+):
+    raw_xml = _normalize_tak_xml_payload(packet_xml)
+    if not raw_xml:
+        return None
+    try:
+        root = fromstring(raw_xml)
+    except (ParseError, TypeError, ValueError):
+        return None
+    if _xml_local_name(root.tag) != "event":
+        return None
+
+    point = _find_child_by_local_name(root, "point")
+    if point is None:
+        return None
+
+    detail = _find_child_by_local_name(root, "detail")
+    contact = _find_descendant_by_local_name(detail, "contact") if detail is not None else None
+    uid_detail = _find_descendant_by_local_name(detail, "uid") if detail is not None else None
+    group = _find_descendant_by_local_name(detail, "__group") if detail is not None else None
+    remarks_el = _find_descendant_by_local_name(detail, "remarks") if detail is not None else None
+    color_el = _find_descendant_by_local_name(detail, "color") if detail is not None else None
+    mesh_el = _find_descendant_by_local_name(detail, "meshtastic") if detail is not None else None
+    track = _find_descendant_by_local_name(detail, "track") if detail is not None else None
+
+    cot_type = str(root.get("type") or "").strip()
+    how = str(root.get("how") or "").strip() or "m-g"
+    uid = str(root.get("uid") or "").strip()
+    callsign = str(contact.get("callsign") or "").strip() if contact is not None else ""
+    endpoint = str(contact.get("endpoint") or "").strip() if contact is not None else ""
+    droid_uid = str(uid_detail.get("Droid") or "").strip() if uid_detail is not None else ""
+    team = str(group.get("name") or "").strip() if group is not None else ""
+    role = str(group.get("role") or "").strip() if group is not None else ""
+    remarks = (remarks_el.text or "").strip() if remarks_el is not None and remarks_el.text else ""
+    color_argb = str(color_el.get("argb") or "").strip() if color_el is not None else ""
+    mesh_long_name = str(mesh_el.get("longName") or "").strip() if mesh_el is not None else ""
+    mesh_short_name = str(mesh_el.get("shortName") or "").strip() if mesh_el is not None else ""
+    has_meshtastic = mesh_el is not None or (
+        detail is not None and _find_descendant_by_local_name(detail, "__meshtastic") is not None
+    )
+    has_archive = detail is not None and _find_descendant_by_local_name(detail, "archive") is not None
+
+    base_lpu5_type = _service_monitor_cot_type_to_detected_type(cot_type)
+    detected_type = base_lpu5_type
+    detection_reason = f"CoT-Typ '{cot_type or '-'}' per Präfix klassifiziert."
+    local_node_ids = set(local_node_ids or ())
+
+    if has_meshtastic or base_lpu5_type == "meshtastic_node":
+        if uid and gateway_uid and uid == str(gateway_uid).strip():
+            detected_type = "gateway"
+            detection_reason = "Meshtastic-Detail am lokalen Gateway-CoT erkannt."
+        elif uid and uid in local_node_ids:
+            detected_type = "node"
+            detection_reason = "Meshtastic-Detail am lokalen Knoten-CoT erkannt."
+        else:
+            detected_type = "meshtastic_node"
+            detection_reason = "Meshtastic-Detail im CoT vorhanden."
+    elif _is_live_pli_cot_event(cot_type, how, detail):
+        if uid and gateway_uid and uid == str(gateway_uid).strip():
+            detected_type = "gateway"
+            detection_reason = "Live-PLI des lokalen Gateways erkannt."
+        elif uid and uid in local_node_ids:
+            detected_type = "node"
+            detection_reason = "Live-PLI eines lokalen Meshtastic-Knotens erkannt."
+        else:
+            detected_type = "gps_position"
+            detection_reason = "Live-PLI (a-f-G-U-C ohne archive/h-*) erkannt."
+    elif base_lpu5_type == "friendly" and how.lower().startswith("h-"):
+        detected_type = "tak_maker"
+        detection_reason = f"Friendly-CoT mit how='{how}' als manuell gesetzter ATAK/WinTAK-Marker erkannt."
+    elif _is_persistable_cot_type(cot_type):
+        cbt_type = SERVICE_MONITOR_ATAK_TO_CBT_TYPE.get(base_lpu5_type)
+        if cbt_type:
+            detected_type = cbt_type
+            detection_reason = f"Persistenter ATAK-Marker ({base_lpu5_type}) als {cbt_type} eingeordnet."
+
+    return {
+        "parsed": {
+            "uid": uid,
+            "cot_type": cot_type,
+            "how": how,
+            "time": str(root.get("time") or "").strip(),
+            "start": str(root.get("start") or "").strip(),
+            "stale": str(root.get("stale") or "").strip(),
+            "lat": _coerce_cot_point_float(point.get("lat")),
+            "lon": _coerce_cot_point_float(point.get("lon")),
+            "hae": _coerce_cot_point_float(point.get("hae")),
+            "ce": _coerce_cot_point_float(point.get("ce")),
+            "le": _coerce_cot_point_float(point.get("le")),
+            "callsign": callsign,
+            "uid_droid": droid_uid,
+            "endpoint": endpoint,
+            "team": team,
+            "role": role,
+            "remarks": remarks,
+            "color_argb": color_argb or None,
+            "has_meshtastic": has_meshtastic,
+            "mesh_longName": mesh_long_name or None,
+            "mesh_shortName": mesh_short_name or None,
+            "has_archive": has_archive,
+            "speed": str(track.get("speed") or "").strip() if track is not None else "",
+            "course": str(track.get("course") or "").strip() if track is not None else "",
+            "base_lpu5_type": base_lpu5_type,
+            "detected_type": detected_type,
+            "detection_reason": detection_reason,
+            "is_echo_back": bool(is_echo_back),
+        },
+        "direction": direction,
+        "source": str(source or "").strip() or "?",
+        "raw_xml": _ensure_bytes(raw_xml).decode("utf-8", errors="replace"),
+    }
+
+
 def _is_meshtastic_payload_too_big_error(exc):
     return "payload too big" in str(exc or "").strip().lower()
 
@@ -2579,9 +2728,10 @@ class _GUILogHandler(logging.Handler):
 class _ServiceWebUIController:
     """Browser-first controller that mirrors the legacy desktop UI actions."""
 
-    def __init__(self, cfg, service_status=None):
+    def __init__(self, cfg, service_status=None, event_store=None):
         self.cfg = dict(cfg or {})
         self.service_status = service_status or {}
+        self._event_store = event_store
         self._lock = threading.RLock()
         self._gateway = None
         self._gateway_thread = None
@@ -2694,6 +2844,7 @@ class _ServiceWebUIController:
         try:
             gw = TAKMeshtasticGateway(ports, dict(self.cfg))
             gw.wintak_tcp_chat_callback = self._on_wintak_tcp_chat
+            gw.service_ui_event_store = self._event_store
             with self._lock:
                 self._gateway = gw
                 self._status_text = f"🟢 Running  –  {', '.join(ports)}"
@@ -4367,6 +4518,7 @@ class TAKMeshtasticGateway:
         self.partial_meshtastic_cot_messages = {}
         self.partial_meshtastic_forwarder_messages = {}
         self.partial_fountain_transfers = {}   # FTN fountain-code receive state
+        self.service_ui_event_store = None
         self.relay_text_messages = as_bool(self.cfg.get("relay_text_messages", True))
         self.relay_text_from_ports = {
             port.upper() for port in _config_ports_to_list(self.cfg.get("relay_text_from_ports"))
@@ -4594,6 +4746,25 @@ class TAKMeshtasticGateway:
                     continue
                 return dict(entry)
             return None
+
+    def _record_service_monitor_event(self, packet_xml, direction, source, *, is_echo_back=False):
+        event_store = getattr(self, "service_ui_event_store", None)
+        if event_store is None:
+            return
+        try:
+            record = _build_service_monitor_cot_event_record(
+                packet_xml,
+                direction=direction,
+                source=source,
+                gateway_uid=getattr(self, "gateway_uid", ""),
+                local_node_ids=getattr(self, "local_node_ids", set()),
+                is_echo_back=is_echo_back,
+            )
+        except Exception:
+            self.logger.debug("CoT-Monitor-Event konnte nicht erstellt werden:\n" + traceback.format_exc())
+            return
+        if record is not None:
+            event_store.add(record)
 
     def _cleanup_expired_meshtastic_cot_fragments(self):
         now = time.time()
@@ -6964,7 +7135,14 @@ class TAKMeshtasticGateway:
         )
         self._remember_recent_cot_identity(metadata, source_label=source_label)
         cot_dedupe_key = self._build_cot_dedupe_key(normalized_packet)
-        if cot_dedupe_key and self._was_seen_recently(self.recent_cot_ids, cot_dedupe_key):
+        is_echo_back = bool(cot_dedupe_key and self._was_seen_recently(self.recent_cot_ids, cot_dedupe_key))
+        self._record_service_monitor_event(
+            normalized_packet,
+            ">>>",
+            f"Mesh {source_label} {from_id}".strip(),
+            is_echo_back=is_echo_back,
+        )
+        if is_echo_back:
             return True
 
         self._send_packet_to_tak(normalized_packet, metadata["uid"] or f"{source_label} {from_id}")
@@ -7317,6 +7495,7 @@ class TAKMeshtasticGateway:
         Returns the same result dictionary as ``_forward_cot_to_meshtastic()``, including
         the selected transport and emitted packet count.
         """
+        self._record_service_monitor_event(packet_xml, "<<<", "Manual CoT -> Mesh")
         return self._forward_cot_to_meshtastic(packet_xml)
 
     def _handle_meshtastic_legacy_cot_text(self, message, from_id):
@@ -7972,11 +8151,20 @@ class TAKMeshtasticGateway:
 
         if chat_payload:
             sender_uid = chat_payload["sender_uid"] or self.gateway_uid
+            chat_is_echo = sender_uid in self.local_node_ids
+            dedupe_key = chat_payload["event_uid"] or f"tak:{sender_uid}:{chat_payload['message']}"
+            if not chat_is_echo:
+                chat_is_echo = self._was_seen_recently(self.recent_tak_chat_ids, dedupe_key)
+            self._record_service_monitor_event(
+                packet_xml,
+                "<<<",
+                f"TAK {str(source_protocol or DEFAULT_SOURCE_PROTOCOL).upper()} {_format_network_endpoint(source_addr)}".strip(),
+                is_echo_back=chat_is_echo,
+            )
             if sender_uid in self.local_node_ids:
                 self.logger.debug("TAK-Chat vom lokalen Meshtastic-Knoten ignoriert, um Echos zu vermeiden.")
                 return
 
-            dedupe_key = chat_payload["event_uid"] or f"tak:{sender_uid}:{chat_payload['message']}"
             if self._was_seen_recently(self.recent_tak_chat_ids, dedupe_key):
                 self.logger.debug("TAK-Chat wegen Duplikat-Schutz ignoriert.")
                 return
@@ -8019,9 +8207,23 @@ class TAKMeshtasticGateway:
             return
 
         cot_dedupe_key = None
+        monitor_source = (
+            f"TAK {str(source_protocol or DEFAULT_SOURCE_PROTOCOL).upper()} "
+            f"{_format_network_endpoint(source_addr)}"
+        ).strip()
         if metadata is not None:
             cot_dedupe_key = self._build_cot_dedupe_key(packet_xml)
-            if cot_dedupe_key and self._was_seen_recently(self.recent_cot_ids, cot_dedupe_key):
+            duplicate_cot = bool(cot_dedupe_key and self._was_seen_recently(self.recent_cot_ids, cot_dedupe_key))
+            is_echo_back = duplicate_cot
+            if not is_echo_back and metadata.get("has_meshtastic_marker"):
+                is_echo_back = True
+            self._record_service_monitor_event(
+                packet_xml,
+                "<<<",
+                monitor_source,
+                is_echo_back=is_echo_back,
+            )
+            if duplicate_cot:
                 self.logger.debug("TAK-CoT wegen Duplikat-Schutz ignoriert.")
                 return
             if metadata.get("has_meshtastic_marker"):
@@ -8813,6 +9015,11 @@ class TAKMeshtasticGateway:
 
             # ElementTree.tostring mit UTF-8 ergibt bytes
             packet_xml = tostring(event, encoding='utf-8')
+            self._record_service_monitor_event(
+                packet_xml,
+                ">>>",
+                f"Node sync ({position_source})",
+            )
             self._send_packet_to_tak(packet_xml, callsign)
         except Exception:
             self.logger.error("Fehler in send_broadcast:\n" + traceback.format_exc())
@@ -9028,7 +9235,11 @@ def _run_browser_mode(cfg, _args):
         asset_dir=pathlib.Path(__file__).resolve().parent,
         cfg=cfg,
     )
-    controller = _ServiceWebUIController(cfg, service_status=service["status"])
+    controller = _ServiceWebUIController(
+        cfg,
+        service_status=service["status"],
+        event_store=service["event_store"],
+    )
     service["server"].RequestHandlerClass.controller = controller
     url = service["url"]
     print("=" * 72)
