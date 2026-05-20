@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CoT Data-Flow Monitor – Meshtastic Gateway ↔ TAK</title>
+<title>CoT Sniffer – Meshtastic Gateway ↔ TAK</title>
 <link rel="icon" type="image/png" href="/browser-logo.png">
 <style>
 /* ── Reset & Variables ── */
@@ -37,6 +37,37 @@ header h1 span.arr2 { color: var(--red); }
 .toolbar select, .toolbar input[type="text"] { background: var(--bg3); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; font-size: 12px; }
 .toolbar select:focus, .toolbar input:focus { border-color: var(--accent); outline: none; }
 .toolbar .sep { width: 1px; height: 24px; background: var(--border); }
+.tabbar { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 10px 20px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.tab-btn {
+  background: var(--bg3);
+  color: var(--text2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 8px 14px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.tab-btn.active {
+  color: var(--text);
+  border-color: var(--accent);
+  background: rgba(32,116,212,.18);
+  box-shadow: 0 0 0 1px rgba(32,116,212,.18) inset;
+}
+.tab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(255,255,255,.08);
+  color: var(--text);
+  font-size: 11px;
+}
 .btn { background: var(--bg3); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 5px 14px; cursor: pointer; font-size: 12px; display: inline-flex; align-items: center; gap: 5px; transition: .15s; }
 .btn:hover { background: var(--border); }
 .btn.primary { background: #1a4d9e; border-color: #2074d4; color: #fff; }
@@ -47,11 +78,24 @@ header h1 span.arr2 { color: var(--red); }
 .service-banner a { color: var(--blue); text-decoration: none; font-weight: 600; }
 .service-banner a:hover { text-decoration: underline; }
 .service-banner code { background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; color: var(--text); }
+.summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; padding: 14px 20px 0; }
+.summary-card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  display: grid;
+  gap: 6px;
+}
+.summary-card .label { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--text2); }
+.summary-card .value { font-size: 20px; font-weight: 700; }
+.summary-card .hint { font-size: 12px; color: var(--text2); }
+.table-note { padding: 12px 20px 0; color: var(--text2); font-size: 12px; }
 
 /* ── Event Table ── */
-.table-wrap { overflow-x: auto; }
+.table-wrap { overflow-x: auto; padding: 14px 20px 24px; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
-thead th { background: var(--bg2); color: var(--text2); font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: .5px; padding: 8px 10px; border-bottom: 2px solid var(--border); position: sticky; top: 88px; z-index: 50; text-align: left; white-space: nowrap; }
+thead th { background: var(--bg2); color: var(--text2); font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: .5px; padding: 8px 10px; border-bottom: 2px solid var(--border); position: sticky; top: 140px; z-index: 50; text-align: left; white-space: nowrap; }
 tbody tr { border-bottom: 1px solid var(--border); transition: background .15s; }
 tbody tr:hover { background: var(--row-hover); }
 tbody tr.dir-in  { background: var(--row-in); }
@@ -63,6 +107,28 @@ td.dir.out { color: var(--green); }
 td.uid { font-family: 'SFMono-Regular', Consolas, monospace; font-size: 12px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 td.uid:hover { white-space: normal; word-break: break-all; }
 td.coords { font-family: monospace; font-size: 12px; white-space: nowrap; }
+.source-pill {
+  display: inline-block;
+  max-width: 220px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(74,153,245,.12);
+  border: 1px solid rgba(74,153,245,.25);
+  color: var(--blue);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.payload-snippet {
+  max-width: 320px;
+  font-family: 'SFMono-Regular', Consolas, monospace;
+  font-size: 11px;
+  color: var(--text2);
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.4;
+}
 
 /* type badges */
 .type-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; white-space: nowrap; }
@@ -124,7 +190,7 @@ td input.notes:focus { border-color: var(--accent); outline: none; }
 
 <!-- ═══════════════ HEADER ═══════════════ -->
 <header>
-  <h1>🔍 CoT Monitor <span class="arr">→</span><span class="arr2">←</span> Meshtastic Gateway ↔ TAK</h1>
+  <h1>🔍 CoT Sniffer <span class="arr">→</span><span class="arr2">←</span> Meshtastic Gateway ↔ TAK</h1>
   <div class="status-badge" id="connBadge">
     <span class="dot off" id="connDot"></span>
     <span id="connText">Verbinde…</span>
@@ -140,13 +206,6 @@ td input.notes:focus { border-color: var(--accent); outline: none; }
 
 <!-- ═══════════════ TOOLBAR ═══════════════ -->
 <div class="toolbar">
-  <label>Richtung:</label>
-  <select id="filterDir">
-    <option value="">Alle</option>
-    <option value="in">← Eingehend (TAK→Gateway)</option>
-    <option value="out">→ Ausgehend (Gateway→TAK)</option>
-  </select>
-  <div class="sep"></div>
   <label>Gateway / Marker Typ:</label>
   <select id="filterType">
     <option value="">Alle Typen</option>
@@ -180,8 +239,45 @@ td input.notes:focus { border-color: var(--accent); outline: none; }
   <a class="btn" href="/maker.html" target="_blank" rel="noopener" title="Marker / Icon Referenz im Browser öffnen">🗺️ Marker Referenz</a>
 </div>
 
+<div class="tabbar">
+  <button class="tab-btn active" type="button" data-tab="all" onclick="setActiveTab('all')">
+    Gesamter Flow
+    <span class="tab-count" id="tabCountAll">0</span>
+  </button>
+  <button class="tab-btn" type="button" data-tab="in" onclick="setActiveTab('in')">
+    ← Eingehend ins Gateway
+    <span class="tab-count" id="tabCountIn">0</span>
+  </button>
+  <button class="tab-btn" type="button" data-tab="out" onclick="setActiveTab('out')">
+    → Ausgehend aus dem Gateway
+    <span class="tab-count" id="tabCountOut">0</span>
+  </button>
+</div>
+
 <div class="service-banner" id="serviceBanner">
   <span>Backend startet…</span>
+</div>
+
+<div class="summary-grid">
+  <section class="summary-card">
+    <span class="label">Aktiver Reiter</span>
+    <span class="value" id="activeTabLabel">Gesamter Flow</span>
+    <span class="hint">Wechselt zwischen allen, eingehenden und ausgehenden Gateway-CoT-Daten.</span>
+  </section>
+  <section class="summary-card">
+    <span class="label">Sichtbare Events</span>
+    <span class="value" id="visibleCount">0</span>
+    <span class="hint">Nur Events, die im aktuellen Reiter und mit den aktiven Filtern angezeigt werden.</span>
+  </section>
+  <section class="summary-card">
+    <span class="label">Neueste Quelle</span>
+    <span class="value" id="latestSource">—</span>
+    <span class="hint" id="latestDirectionHint">Noch keine Daten empfangen.</span>
+  </section>
+</div>
+
+<div class="table-note">
+  Jede Zeile zeigt Quelle und eine Raw-CoT-Vorschau. Über 🔎 siehst du den kompletten Payload und alle Gateway-Details.
 </div>
 
 <!-- ═══════════════ TABLE ═══════════════ -->
@@ -192,9 +288,11 @@ td input.notes:focus { border-color: var(--accent); outline: none; }
   <th style="width:30px">#</th>
   <th style="width:50px">Zeit</th>
   <th style="width:35px">Dir</th>
+  <th>Quelle</th>
   <th>UID</th>
   <th>Callsign</th>
   <th>CoT Type</th>
+  <th>Payload-Vorschau</th>
   <th>How</th>
   <th>Position</th>
   <th>Gateway erkennt als</th>
@@ -249,6 +347,7 @@ let corrCount = 0;
 let meshCount = 0;
 let inCount = 0, outCount = 0;
 let serviceStatus = null;
+let activeTab = 'all';
 
 function ensureFilterTypeOption(type) {
   if (!type) return;
@@ -293,23 +392,27 @@ function connect() {
 }
 
 function addEvent(data) {
-  const idx = evtCounter++;
+  const dataIdx = Number.isInteger(data.idx) ? data.idx : Number.parseInt(data.idx, 10);
+  const idx = Number.isInteger(dataIdx) ? dataIdx : evtCounter;
+  evtCounter = Math.max(evtCounter, idx + 1);
   const evt = {
     idx,
     parsed: data.parsed || {},
     direction: data.direction || '<<<',
     source: data.source || '?',
     raw_xml: data.raw_xml || '',
-    correction: '',
-    notes: '',
+    correction: data.correction || '',
+    notes: data.notes || '',
   };
   events.push(evt);
   ensureFilterTypeOption(evt.parsed.detected_type);
 
   // update counters
   if (evt.direction === '<<<') inCount++; else outCount++;
+  if (evt.correction) corrCount++;
   if (evt.parsed.has_meshtastic || ['meshtastic_node','node','gateway','gps_position'].includes(evt.parsed.detected_type)) meshCount++;
   updateCounters();
+  updateLatestEventSummary(evt);
 
   // render row if passes filter
   if (matchesFilter(evt)) {
@@ -319,6 +422,7 @@ function addEvent(data) {
       window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
     }
   }
+  document.getElementById('visibleCount').textContent = String(document.getElementById('evtBody').children.length);
 }
 
 function updateCounters() {
@@ -327,6 +431,9 @@ function updateCounters() {
   document.getElementById('cntOut').textContent = outCount;
   document.getElementById('cntCorr').textContent = corrCount;
   document.getElementById('cntMesh').textContent = meshCount;
+  document.getElementById('tabCountAll').textContent = events.length;
+  document.getElementById('tabCountIn').textContent = inCount;
+  document.getElementById('tabCountOut').textContent = outCount;
 }
 
 async function loadServiceStatus() {
@@ -339,6 +446,7 @@ async function loadServiceStatus() {
       <strong>Gateway Backend aktiv</strong>
       <span>HTML-Hauptoberfläche:</span>
       <code>${esc(serviceStatus.url || window.location.href)}</code>
+      <a href="/cot_monitor_ui.html" target="_blank" rel="noopener">CoT Sniffer</a>
       <a href="${serviceStatus.maker_path || '/maker.html'}" target="_blank" rel="noopener">Marker / Icon Referenz</a>
     `;
   } catch (err) {
@@ -349,9 +457,8 @@ async function loadServiceStatus() {
 // ── Filtering ──
 function matchesFilter(evt) {
   const p = evt.parsed;
-  const dir = document.getElementById('filterDir').value;
-  if (dir === 'in' && evt.direction !== '<<<') return false;
-  if (dir === 'out' && evt.direction !== '>>>') return false;
+  if (activeTab === 'in' && evt.direction !== '<<<') return false;
+  if (activeTab === 'out' && evt.direction !== '>>>') return false;
   const t = document.getElementById('filterType').value;
   if (t && p.detected_type !== t) return false;
   const uid = document.getElementById('filterUid').value.trim();
@@ -371,13 +478,45 @@ function rerender() {
     if (matchesFilter(evt)) { appendRow(evt); visible++; }
   }
   document.getElementById('emptyState').style.display = visible ? 'none' : '';
+  document.getElementById('visibleCount').textContent = String(visible);
 }
 
 // Attach filter change handlers
-['filterDir','filterType','filterMesh','filterCorr'].forEach(id => {
+['filterType','filterMesh','filterCorr'].forEach(id => {
   document.getElementById(id).addEventListener('change', rerender);
 });
 document.getElementById('filterUid').addEventListener('input', rerender);
+
+function setActiveTab(tab) {
+  activeTab = tab;
+  const labels = {
+    all: 'Gesamter Flow',
+    in: 'Eingehende Daten',
+    out: 'Ausgehende Daten',
+  };
+  document.getElementById('activeTabLabel').textContent = labels[tab] || labels.all;
+  document.querySelectorAll('.tab-btn').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.tab === tab);
+  });
+  rerender();
+}
+
+function updateLatestEventSummary(evt) {
+  document.getElementById('latestSource').textContent = evt.source || '—';
+  document.getElementById('latestDirectionHint').textContent =
+    evt.direction === '<<<'
+      ? 'Zuletzt eingehend im Gateway angekommen.'
+      : 'Zuletzt vom Gateway an TAK weitergegeben.';
+}
+
+function buildPayloadPreview(xml) {
+  const compact = String(xml || '')
+    .replace(/\s+/g, ' ')
+    .replace(/>\s+</g, '><')
+    .trim();
+  if (!compact) return '—';
+  return compact.length > 220 ? `${compact.slice(0, 220)}…` : compact;
+}
 
 // ── Render table row ──
 function appendRow(evt) {
@@ -417,9 +556,11 @@ function appendRow(evt) {
     <td>${evt.idx + 1}</td>
     <td style="white-space:nowrap;font-size:11px;color:var(--text2)">${ts}</td>
     <td class="dir ${dirClass}" title="${isIn ? 'TAK → Gateway' : 'Gateway → TAK'}">${dirSymbol}</td>
+    <td title="${esc(evt.source)}"><span class="source-pill">${esc(evt.source || '—')}</span></td>
     <td class="uid" title="${esc(p.uid)}">${esc(p.uid)}</td>
     <td>${esc(p.callsign || '—')}${flags}</td>
     <td style="font-family:monospace;font-size:11px" title="${esc(p.cot_type)}">${esc(p.cot_type)}</td>
+    <td class="payload-snippet" title="${esc(evt.raw_xml)}">${esc(buildPayloadPreview(evt.raw_xml))}</td>
     <td style="font-size:12px" title="${esc(p.detection_reason || '')}">${esc(p.how)}</td>
     <td class="coords">${lat}, ${lon}</td>
     <td><span class="type-badge ${p.detected_type} ${evt.correction && evt.correction !== p.detected_type ? 'mismatch' : ''}">${p.detected_type}</span></td>
@@ -555,6 +696,9 @@ function clearEvents() {
   updateCounters();
   document.getElementById('evtBody').innerHTML = '';
   document.getElementById('emptyState').style.display = '';
+  document.getElementById('visibleCount').textContent = '0';
+  document.getElementById('latestSource').textContent = '—';
+  document.getElementById('latestDirectionHint').textContent = 'Noch keine Daten empfangen.';
   fetch('/api/cot/monitor/clear', { method: 'POST' }).catch(() => {});
 }
 

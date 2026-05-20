@@ -146,7 +146,7 @@ Das Programm startet standardmäßig eine **HTML-Browseroberfläche** auf Port *
 | **▶ Start / ■ Stop** | Gateway starten und stoppen ohne Neustart – keine Eingabe mehr im Backend-Fenster nötig. |
 | **WinTAK-Nachrichten (TCP Monitor)** | Zeigt in Echtzeit jede über den konfigurierten TCP-Listener empfangene WinTAK-Nachricht samt Verbindungsstatus. |
 | **Log-Ausgabe** | Alle Meldungen erscheinen live farbig im Browser (DEBUG=grau, INFO=weiß, WARNING=gelb, ERROR=rot). |
-| **Zusatzseiten** | Marker-Referenz und separater CoT-Monitor bleiben über Links in der Browseroberfläche erreichbar. |
+| **Zusatzseiten** | Marker-Referenz und separater CoT-Sniffer bleiben über Links in der Browseroberfläche erreichbar; der Sniffer trennt eingehende und ausgehende Gateway-CoT-Daten über eigene Reiter und zeigt pro Zeile auch Quelle sowie Raw-Payload-Vorschau. |
 
 Die klassische Tk-Desktopoberfläche bleibt mit `--gui` weiterhin verfügbar.
 
