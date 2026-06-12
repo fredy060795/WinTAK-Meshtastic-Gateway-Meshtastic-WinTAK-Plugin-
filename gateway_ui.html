@@ -69,6 +69,24 @@
       flex-wrap: wrap;
     }
     .toolbar-links { display: flex; gap: 14px; flex-wrap: wrap; }
+    .service-info {
+      display: grid;
+      gap: 6px;
+      justify-items: end;
+      text-align: right;
+      min-width: 0;
+    }
+    .service-links-list {
+      display: grid;
+      gap: 4px;
+      justify-items: end;
+      min-width: 0;
+    }
+    .service-link {
+      display: inline-block;
+      max-width: 100%;
+      overflow-wrap: anywhere;
+    }
     .notice {
       margin-bottom: 14px;
       padding: 12px 14px;
@@ -164,6 +182,7 @@
     .log-line.CMD { color: #58a6ff; }
     .tiny { color: var(--muted); font-size: 12px; }
     @media (max-width: 1100px) {
+      .service-info, .service-links-list { justify-items: start; text-align: left; }
       .grid { grid-template-columns: 1fr; }
       .form-grid, .check-grid { grid-template-columns: 1fr; }
     }
@@ -187,7 +206,7 @@
         <a href="/maker.html" target="_blank" rel="noopener">🗺️ Marker-Referenz</a>
         <a href="/cot_monitor_ui.html" target="_blank" rel="noopener">🔍 CoT-Monitor</a>
       </div>
-      <div class="tiny" id="serviceInfo">Service wird geladen …</div>
+      <div class="tiny service-info" id="serviceInfo">Service wird geladen …</div>
     </div>
 
     <div class="notice" id="notice"></div>
@@ -421,6 +440,43 @@
       document.getElementById(id).innerHTML = lines.join('') || '<span class="tiny">Noch keine Einträge.</span>';
     }
 
+    function extractServiceUrls(service) {
+      if (Array.isArray(service?.urls)) {
+        return service.urls.map((value) => String(value || '').trim()).filter(Boolean);
+      }
+      const raw = String(service?.url || '').trim();
+      if (!raw) return [];
+      return raw
+        .split(/[\s,;]+/)
+        .map((value) => value.trim())
+        .filter(Boolean);
+    }
+
+    function renderServiceInfo(service) {
+      const container = document.getElementById('serviceInfo');
+      const urls = extractServiceUrls(service);
+      container.replaceChildren();
+      if (!urls.length) {
+        container.textContent = 'HTML UI: /';
+        return;
+      }
+
+      const label = document.createElement('div');
+      label.textContent = urls.length > 1 ? 'HTML UI Adressen:' : 'HTML UI:';
+      container.appendChild(label);
+
+      const list = document.createElement('div');
+      list.className = 'service-links-list';
+      urls.forEach((url) => {
+        const link = document.createElement('a');
+        link.href = url;
+        link.textContent = url;
+        link.className = 'service-link';
+        list.appendChild(link);
+      });
+      container.appendChild(list);
+    }
+
     function applyState(state) {
       if (!formInitialized) {
         applyForm(state.config || {});
@@ -439,8 +495,7 @@
       dot.classList.toggle('running', Boolean(state.running));
       dot.classList.toggle('stopped', !state.running);
       const service = state.service || {};
-      document.getElementById('serviceInfo').innerHTML =
-        `HTML UI: <a href="${escapeHtml(service.url || '/')}">${escapeHtml(service.url || '/')}</a>`;
+      renderServiceInfo(service);
       if ((state.dependencies || []).length) {
         setNotice(`Fehlende Python-Pakete: ${state.dependencies.join(', ')}. Das Gateway kann damit ggf. nicht starten.`, true);
       } else {
