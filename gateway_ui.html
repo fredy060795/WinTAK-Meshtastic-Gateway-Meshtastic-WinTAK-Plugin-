@@ -225,9 +225,13 @@
               <label for="detectedPorts">Erkannte serielle Ports</label>
               <select id="detectedPorts" multiple></select>
               <div class="btn-row">
-                <button type="button" onclick="useSelectedPorts()">Auswahl übernehmen</button>
+                <button type="button" onclick="useSelectedPorts()">Zu Mesh-Ports hinzufügen</button>
+                <button type="button" onclick="useSelectedPortsForRelayFrom()">Als Relay-Quelle</button>
+                <button type="button" onclick="useSelectedPortsForRelayTo()">Als Relay-Ziel</button>
+                <button type="button" onclick="setRelayToOtherSelectedPorts()">Relay an andere Mesh-Ports</button>
                 <button type="button" onclick="refreshPorts()">Ports aktualisieren</button>
               </div>
+              <div class="tiny">Mehrere Ports lassen sich per Strg/Shift auswählen oder nacheinander mit den Buttons hinzufügen.</div>
             </div>
             <div class="field">
               <label for="tak_server_host">Remote TAK Host</label>
@@ -411,6 +415,59 @@
       return payload;
     }
 
+    function parsePorts(value) {
+      const seen = new Set();
+      return String(value || '')
+        .split(/[\s,;]+/)
+        .map((item) => item.trim())
+        .filter(Boolean)
+        .filter((item) => {
+          const upper = item.toUpperCase();
+          if (seen.has(upper)) return false;
+          seen.add(upper);
+          return true;
+        });
+    }
+
+    function getSelectedDetectedPorts() {
+      const select = document.getElementById('detectedPorts');
+      return Array.from(select.selectedOptions).map((option) => option.value).filter(Boolean);
+    }
+
+    function mergePorts(existingPorts, nextPorts) {
+      const merged = [];
+      const seen = new Set();
+      [...existingPorts, ...nextPorts].forEach((port) => {
+        const normalized = String(port || '').trim();
+        if (!normalized) return;
+        const upper = normalized.toUpperCase();
+        if (seen.has(upper)) return;
+        seen.add(upper);
+        merged.push(normalized);
+      });
+      return merged;
+    }
+
+    function setPortField(fieldId, ports, { replace = false } = {}) {
+      if (!ports.length) return;
+      const field = document.getElementById(fieldId);
+      const existing = replace ? [] : parsePorts(field.value);
+      field.value = mergePorts(existing, ports).join(', ');
+    }
+
+    function updateRelayToPortsState() {
+      const mode = document.getElementById('relay_text_to_mode').value;
+      const relayToField = document.getElementById('relay_text_to_ports');
+      const customMode = mode === 'custom';
+      relayToField.disabled = !customMode;
+      if (!customMode) {
+        relayToField.value = '';
+        relayToField.placeholder = 'Andere ausgewählte Mesh-Ports werden verwendet';
+      } else {
+        relayToField.placeholder = 'z. B. COM8';
+      }
+    }
+
     function applyForm(config) {
       Object.entries(config || {}).forEach(([key, value]) => {
         const field = document.getElementById(key);
@@ -482,6 +539,7 @@
         applyForm(state.config || {});
         formInitialized = true;
       }
+      updateRelayToPortsState();
       renderDetectedPorts(state.detected_ports, document.getElementById('meshtastic_port').value || (state.config || {}).meshtastic_port);
       renderConsole('logConsole', state.logs);
       renderConsole('wintakConsole', state.wintak_monitor);
@@ -596,9 +654,24 @@
     }
 
     function useSelectedPorts() {
-      const select = document.getElementById('detectedPorts');
-      const selected = Array.from(select.selectedOptions).map((option) => option.value);
-      document.getElementById('meshtastic_port').value = selected.join(', ');
+      setPortField('meshtastic_port', getSelectedDetectedPorts());
+    }
+
+    function useSelectedPortsForRelayFrom() {
+      setPortField('relay_text_from_ports', getSelectedDetectedPorts());
+    }
+
+    function useSelectedPortsForRelayTo() {
+      const selected = getSelectedDetectedPorts();
+      if (!selected.length) return;
+      document.getElementById('relay_text_to_mode').value = 'custom';
+      updateRelayToPortsState();
+      setPortField('relay_text_to_ports', selected);
+    }
+
+    function setRelayToOtherSelectedPorts() {
+      document.getElementById('relay_text_to_mode').value = 'all-other-selected-ports';
+      updateRelayToPortsState();
     }
 
     document.getElementById('quickCommand').addEventListener('keydown', (event) => {
@@ -607,6 +680,7 @@
         sendCommand();
       }
     });
+    document.getElementById('relay_text_to_mode').addEventListener('change', updateRelayToPortsState);
 
     fetchState();
     setInterval(fetchState, 2000);
