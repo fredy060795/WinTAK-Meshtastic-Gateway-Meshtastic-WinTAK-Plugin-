@@ -40,6 +40,7 @@ from main_app import (
     resolve_app_start_mode,
     TAKMeshtasticGateway,
 )
+from cot_protocol import CoTProtocolHandler
 
 # ---------------------------------------------------------------------------
 # Helper — minimal stub so we can call instance methods without a real gateway
@@ -785,6 +786,34 @@ class TestForwardCotMarkerBypassesDetail7(unittest.TestCase):
         self.assertTrue(is_single or is_ftn,
                         f"ATAK_FORWARDER payload must start with 0x00 or FTN magic, "
                         f"got: {first[:4].hex()}")
+
+    def test_tak_maker_without_explicit_how_still_uses_marker_mesh_path(self):
+        from main_app import MESHTASTIC_ATAK_FORWARDER_PORTNUM, MESHTASTIC_ATAK_PLUGIN_PORTNUM
+
+        marker = {
+            "id": "tak-maker-1",
+            "type": "tak_maker",
+            "name": "HQ PC",
+            "lat": 48.2,
+            "lng": 14.3,
+        }
+        cot_event = CoTProtocolHandler.marker_to_cot(marker)
+
+        self.assertIsNotNone(cot_event)
+        self.assertEqual(cot_event.how, "h-e")
+
+        gw = self._make_mock_gateway()
+        result = self._call_forward(gw, cot_event.to_xml().encode("utf-8"))
+
+        self.assertIn("ATAK_FORWARDER", result.get("transport", ""))
+        self.assertGreater(
+            len([p for p in gw._sent_ports if p == MESHTASTIC_ATAK_FORWARDER_PORTNUM]),
+            0,
+        )
+        self.assertEqual(
+            len([p for p in gw._sent_ports if p == MESHTASTIC_ATAK_PLUGIN_PORTNUM]),
+            0,
+        )
 
 
 if __name__ == "__main__":

@@ -388,9 +388,12 @@ class COTProtocolHandler {
             }
 
             // Preserve the original `how` attribute so that re-broadcast of
-            // TAK-originated markers retains correct provenance.  Fall back to
-            // "m-g" (machine-generated) which matches the previous behaviour.
-            const how = marker.how || marker.cot_how || 'm-g';
+            // TAK-originated markers retains correct provenance.  The LPU5
+            // tak_maker symbol represents a manually entered ATAK/WinTAK
+            // position marker, so default it to "h-e"; using "m-g" makes the
+            // gateway treat it like live PLI instead of marker CoT on mesh
+            // export.
+            const how = marker.how || marker.cot_how || (lpu5Type === 'tak_maker' ? 'h-e' : 'm-g');
 
             return new COTEvent({
                 uid,
