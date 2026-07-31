@@ -601,10 +601,13 @@ class CoTProtocolHandler:
 
             # Preserve the original `how` attribute when re-broadcasting a
             # TAK-originated marker so that ATAK clients receive the correct
-            # provenance.  Fall back to "m-g" (machine-generated) so that
-            # meshtastic-node events and server-generated pings are still
-            # marked correctly.
-            how = marker.get("how") or marker.get("cot_how") or "m-g"
+            # provenance.  For LPU5's tak_maker symbol we default to "h-e"
+            # because it represents a manually entered ATAK/WinTAK position
+            # marker; using "m-g" makes the gateway misclassify it as live PLI
+            # and skip the marker/mesh export path.
+            how = marker.get("how") or marker.get("cot_how")
+            if not how:
+                how = "h-e" if lpu5_type == "tak_maker" else "m-g"
 
             # Derive ATAK color value and team name from the marker's hex color.
             # Team name takes precedence if explicitly set on the marker; the

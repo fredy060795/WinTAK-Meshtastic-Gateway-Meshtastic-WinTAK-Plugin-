@@ -6724,7 +6724,7 @@ class TAKMeshtasticGateway:
             raise RuntimeError("Keine verbundenen Meshtastic-Interfaces verfügbar.")
         return interfaces
 
-    def _build_meshtastic_send_kwargs(self, iface):
+    def _build_meshtastic_send_kwargs(self, iface, destination_id="^all"):
         try:
             parameters = inspect.signature(iface.sendText).parameters
             supports_var_kwargs = any(
@@ -6739,10 +6739,11 @@ class TAKMeshtasticGateway:
             return supports_var_kwargs or name in parameters
 
         kwargs = {}
+        resolved_destination_id = resolve_meshtastic_destination_id(destination_id)
         if supports("destinationId"):
-            kwargs["destinationId"] = "^all"
+            kwargs["destinationId"] = resolved_destination_id
         elif supports("destination_id"):
-            kwargs["destination_id"] = "^all"
+            kwargs["destination_id"] = resolved_destination_id
 
         if supports("wantAck"):
             kwargs["wantAck"] = False
@@ -6803,7 +6804,7 @@ class TAKMeshtasticGateway:
 
         return kwargs
 
-    def _send_text_to_interfaces(self, message, interfaces, allow_reconnect=True):
+    def _send_text_to_interfaces(self, message, interfaces, allow_reconnect=True, destination_id="^all"):
         interfaces = [iface for iface in (interfaces or []) if iface is not None]
         if not interfaces:
             if allow_reconnect:
@@ -6816,7 +6817,7 @@ class TAKMeshtasticGateway:
         for iface in interfaces:
             try:
                 # Broadcast Chat/CoT always on the primary Meshtastic channel 0.
-                kwargs = self._build_meshtastic_send_kwargs(iface)
+                kwargs = self._build_meshtastic_send_kwargs(iface, destination_id=destination_id)
                 iface.sendText(message, **kwargs)
                 sent_interfaces.append(iface)
             except Exception as exc:
@@ -6849,6 +6850,7 @@ class TAKMeshtasticGateway:
                         message,
                         retry_targets,
                         allow_reconnect=False,
+                        destination_id=destination_id,
                     )
                     return self._merge_interfaces_by_label(sent_interfaces, retried_interfaces)
                 except Exception as retry_exc:
@@ -7953,14 +7955,18 @@ class TAKMeshtasticGateway:
             "message": message,
         }
 
-    def _send_text_to_meshtastic(self, message, prepared_chunks=None):
+    def _send_text_to_meshtastic(self, message, prepared_chunks=None, destination_id="^all"):
         interfaces = self._ensure_meshtastic_interfaces(raise_on_empty=True)
         chunks = prepared_chunks if prepared_chunks is not None else self._prepare_meshtastic_text_chunks(message)
         if not chunks:
             raise ValueError("Leere TAK-Chatnachricht kann nicht ins Mesh gesendet werden.")
         total_sent = 0
         for chunk in chunks:
-            sent_interfaces = self._send_text_to_interfaces(chunk, interfaces)
+            sent_interfaces = self._send_text_to_interfaces(
+                chunk,
+                interfaces,
+                destination_id=destination_id,
+            )
             total_sent += len(sent_interfaces)
             interfaces = self._get_interfaces_snapshot()
         if total_sent <= 0:
@@ -8022,7 +8028,11 @@ class TAKMeshtasticGateway:
         destination_id = self._resolve_meshtastic_chat_destination_id(chat_payload)
         if any(getattr(iface, "sendData", None) is None for iface in interfaces):
             sent_chunks = self._prepare_meshtastic_text_chunks(chat_payload.get("message"))
-            total_sent = self._send_text_to_meshtastic(chat_payload.get("message"), prepared_chunks=sent_chunks)
+            total_sent = self._send_text_to_meshtastic(
+                chat_payload.get("message"),
+                prepared_chunks=sent_chunks,
+                destination_id=destination_id,
+            )
             return {
                 "transport": "TEXT_MESSAGE_APP",
                 "count": total_sent,
@@ -8046,19 +8056,43 @@ class TAKMeshtasticGateway:
                 f"{exc}"
             )
             sent_chunks = self._prepare_meshtastic_text_chunks(chat_payload.get("message"))
-            total_sent = self._send_text_to_meshtastic(chat_payload.get("message"), prepared_chunks=sent_chunks)
+            total_sent = self._send_text_to_meshtastic(
+                chat_payload.get("message"),
+                prepared_chunks=sent_chunks,
+                destination_id=destination_id,
+            )
             return {
                 "transport": "TEXT_MESSAGE_APP",
                 "count": total_sent,
                 "chunks": len(sent_chunks),
             }
 
+    def _send_plain_tak_chat_to_meshtastic(self, chat_payload):
+        sent_chunks = self._prepare_meshtastic_text_chunks(chat_payload.get("message"))
+        total_sent = self._send_text_to_meshtastic(
+            chat_payload.get("message"),
+            prepared_chunks=sent_chunks,
+            destination_id=self._resolve_meshtastic_chat_destination_id(chat_payload),
+        )
+        return {
+            "transport": "TEXT_MESSAGE_APP",
+            "count": total_sent,
+            "chunks": len(sent_chunks),
+        }
+
     def _forward_tak_chat_to_meshtastic(self, packet_xml, chat_payload):
+        try:
+            return self._send_plain_tak_chat_to_meshtastic(chat_payload)
+        except Exception as text_exc:
+            self.logger.warning(
+                "TAK-Chat-TEXT_MESSAGE_APP-Pfad fehlgeschlagen, versuche ATAK GeoChat: "
+                f"{text_exc}"
+            )
         try:
             return self._send_tak_chat_to_meshtastic(chat_payload)
         except Exception as chat_exc:
             self.logger.warning(
-                "TAK-Chat-GeoChat/Text-Pfad fehlgeschlagen, verwende CoT-Fallback: "
+                "TAK-Chat-GeoChat-Pfad fehlgeschlagen, verwende CoT-Fallback: "
                 f"{chat_exc}"
             )
         return self._forward_cot_to_meshtastic(packet_xml)

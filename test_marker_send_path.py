@@ -40,6 +40,7 @@ from main_app import (
     resolve_app_start_mode,
     TAKMeshtasticGateway,
 )
+from cot_protocol import CoTProtocolHandler
 
 # ---------------------------------------------------------------------------
 # Helper — minimal stub so we can call instance methods without a real gateway
@@ -91,6 +92,14 @@ class _FakeSendDataInterface:
 
     def sendData(self, payload, **kwargs):
         self.sent_packets.append({"payload": payload, "kwargs": dict(kwargs)})
+
+
+class _FakeSendTextInterface:
+    def __init__(self):
+        self.sent_messages = []
+
+    def sendText(self, message, **kwargs):
+        self.sent_messages.append({"message": message, "kwargs": dict(kwargs)})
 
 
 class TestGuiLogAutoscroll(unittest.TestCase):
@@ -461,10 +470,28 @@ class TestTakGeoChatParsing(unittest.TestCase):
             ("127.0.0.1", 4242),
         )
 
-    def test_forward_tak_chat_to_meshtastic_prefers_geochat_path(self):
+    def test_forward_tak_chat_to_meshtastic_prefers_text_message_path(self):
         gw = _make_stub_gateway()
         packet_xml = b"<event version='2.0' uid='chat-1' type='b-t-f' how='m-g'/>"
         chat_payload = {"message": "Mesh relay check"}
+        gw._send_plain_tak_chat_to_meshtastic = mock.Mock(
+            return_value={"transport": "TEXT_MESSAGE_APP", "count": 1, "chunks": 1}
+        )
+        gw._send_tak_chat_to_meshtastic = mock.Mock()
+        gw._forward_cot_to_meshtastic = mock.Mock()
+
+        result = TAKMeshtasticGateway._forward_tak_chat_to_meshtastic(gw, packet_xml, chat_payload)
+
+        self.assertEqual(result["transport"], "TEXT_MESSAGE_APP")
+        gw._send_plain_tak_chat_to_meshtastic.assert_called_once_with(chat_payload)
+        gw._send_tak_chat_to_meshtastic.assert_not_called()
+        gw._forward_cot_to_meshtastic.assert_not_called()
+
+    def test_forward_tak_chat_to_meshtastic_falls_back_to_geochat_after_text_failure(self):
+        gw = _make_stub_gateway()
+        packet_xml = b"<event version='2.0' uid='chat-2' type='b-t-f' how='m-g'/>"
+        chat_payload = {"message": "Fallback"}
+        gw._send_plain_tak_chat_to_meshtastic = mock.Mock(side_effect=RuntimeError("broken text path"))
         gw._send_tak_chat_to_meshtastic = mock.Mock(
             return_value={"transport": "ATAK_PLUGIN_CHAT", "count": 1, "chunks": 1}
         )
@@ -473,19 +500,22 @@ class TestTakGeoChatParsing(unittest.TestCase):
         result = TAKMeshtasticGateway._forward_tak_chat_to_meshtastic(gw, packet_xml, chat_payload)
 
         self.assertEqual(result["transport"], "ATAK_PLUGIN_CHAT")
+        gw._send_plain_tak_chat_to_meshtastic.assert_called_once_with(chat_payload)
         gw._send_tak_chat_to_meshtastic.assert_called_once_with(chat_payload)
         gw._forward_cot_to_meshtastic.assert_not_called()
 
-    def test_forward_tak_chat_to_meshtastic_falls_back_to_cot(self):
+    def test_forward_tak_chat_to_meshtastic_falls_back_to_cot_when_text_and_geochat_fail(self):
         gw = _make_stub_gateway()
-        packet_xml = b"<event version='2.0' uid='chat-2' type='b-t-f' how='m-g'/>"
+        packet_xml = b"<event version='2.0' uid='chat-3' type='b-t-f' how='m-g'/>"
         chat_payload = {"message": "Fallback"}
+        gw._send_plain_tak_chat_to_meshtastic = mock.Mock(side_effect=RuntimeError("broken text path"))
         gw._send_tak_chat_to_meshtastic = mock.Mock(side_effect=RuntimeError("broken chat path"))
         gw._forward_cot_to_meshtastic = mock.Mock(return_value={"transport": "ATAK_FORWARDER", "count": 1})
 
         result = TAKMeshtasticGateway._forward_tak_chat_to_meshtastic(gw, packet_xml, chat_payload)
 
         self.assertEqual(result["transport"], "ATAK_FORWARDER")
+        gw._send_plain_tak_chat_to_meshtastic.assert_called_once_with(chat_payload)
         gw._send_tak_chat_to_meshtastic.assert_called_once_with(chat_payload)
         gw._forward_cot_to_meshtastic.assert_called_once_with(packet_xml)
 
@@ -543,6 +573,28 @@ class TestTakGeoChatMeshRouting(unittest.TestCase):
         self.assertEqual(result["count"], 1)
         self.assertEqual(len(iface.sent_packets), 1)
         self.assertEqual(iface.sent_packets[0]["kwargs"]["destinationId"], "^all")
+
+    def test_send_plain_tak_chat_to_meshtastic_uses_direct_recipient_destination(self):
+        gw = _make_stub_gateway()
+        iface = _FakeSendTextInterface()
+        gw._ensure_meshtastic_interfaces = mock.Mock(return_value=[iface])
+        gw._get_interfaces_snapshot = mock.Mock(return_value=[iface])
+        gw._prepare_meshtastic_text_chunks = mock.Mock(return_value=["Direct mesh chat"])
+
+        result = TAKMeshtasticGateway._send_plain_tak_chat_to_meshtastic(
+            gw,
+            {
+                "message": "Direct mesh chat",
+                "recipient_uid": "ID-4ef117fc",
+                "recipient_callsign": "MESH-1",
+                "chatroom": "MESH-1",
+            },
+        )
+
+        self.assertEqual(result["transport"], "TEXT_MESSAGE_APP")
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(len(iface.sent_messages), 1)
+        self.assertEqual(iface.sent_messages[0]["kwargs"]["destinationId"], "!4ef117fc")
 
 
 # ---------------------------------------------------------------------------
@@ -734,6 +786,34 @@ class TestForwardCotMarkerBypassesDetail7(unittest.TestCase):
         self.assertTrue(is_single or is_ftn,
                         f"ATAK_FORWARDER payload must start with 0x00 or FTN magic, "
                         f"got: {first[:4].hex()}")
+
+    def test_tak_maker_without_explicit_how_still_uses_marker_mesh_path(self):
+        from main_app import MESHTASTIC_ATAK_FORWARDER_PORTNUM, MESHTASTIC_ATAK_PLUGIN_PORTNUM
+
+        marker = {
+            "id": "tak-maker-1",
+            "type": "tak_maker",
+            "name": "HQ PC",
+            "lat": 48.2,
+            "lng": 14.3,
+        }
+        cot_event = CoTProtocolHandler.marker_to_cot(marker)
+
+        self.assertIsNotNone(cot_event)
+        self.assertEqual(cot_event.how, "h-e")
+
+        gw = self._make_mock_gateway()
+        result = self._call_forward(gw, cot_event.to_xml().encode("utf-8"))
+
+        self.assertIn("ATAK_FORWARDER", result.get("transport", ""))
+        self.assertGreater(
+            len([p for p in gw._sent_ports if p == MESHTASTIC_ATAK_FORWARDER_PORTNUM]),
+            0,
+        )
+        self.assertEqual(
+            len([p for p in gw._sent_ports if p == MESHTASTIC_ATAK_PLUGIN_PORTNUM]),
+            0,
+        )
 
 
 if __name__ == "__main__":
