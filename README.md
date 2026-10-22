@@ -12,6 +12,7 @@ The gateway reads position data and text messages from Meshtastic nodes over a s
 | **Dual-Streaming** | Sends CoT data simultaneously to local WinTAK (UDP 4242) and a remote TAK Server (TCP/UDP). |
 | **Chat Bridging** | Forwards Meshtastic text messages to TAK GeoChat and can relay GeoChat messages from WinTAK back into the mesh. |
 | **CoT over Mesh** | Friendly position reports stay on official Meshtastic `ATAK_PLUGIN` PLI packets, while marker/generic CoT events keep their original iTAK-style CoT semantics on the official `ATAK_FORWARDER` transport path for maximum ATAK/iTAK compatibility. |
+| **Serial, Bluetooth LE & TCP** | Radios can be attached via USB/COM port, directly via Bluetooth LE (`BLE:<address or name>`, no virtual COM port needed) or over Wi-Fi/Ethernet (`TCP:<host>[:port]`) — mixed in one gateway. |
 | **COM Relay Mode** | Incoming Meshtastic text from one selected COM port can be forwarded automatically to the other selected COM ports. |
 | **Automatic Reconnect** | Maintains the remote TAK Server connection with automatic retry on disconnect. |
 | **All-Nodes Visibility** | All nodes are forwarded to TAK by default. Nodes with valid GPS (including phone GPS shared over mesh) appear at their real position; nodes without current GPS use their last known position when available, otherwise configurable fallback coordinates. |
@@ -64,7 +65,7 @@ Edit **`config.yaml`** in the same directory as `main_app.py`:
 ```yaml
 gateway_callsign: MSHT-GW          # Callsign shown in logs
 gateway_uid: GW-01                  # Unique gateway ID
-meshtastic_port: COM7               # Serial port of the Meshtastic radio
+meshtastic_port: COM7               # Serial port, BLE:<address|name> or TCP:<host>[:port] (list for several radios)
 
 local_tak_ip: 127.0.0.1             # Local WinTAK IP
 local_tak_port: 4242                # Local WinTAK UDP input for positions/chat
@@ -108,6 +109,25 @@ send_nodes_without_gps: true
 ```
 
 > **Tip:** If `meshtastic_port` is not set or the configured port is not found, the gateway will prompt you to choose a port interactively.
+
+### Bluetooth LE and TCP radios
+
+Besides physical/virtual COM ports, every entry in `meshtastic_port` may point to a radio that is reached directly over Bluetooth LE or the network:
+
+```yaml
+meshtastic_port:
+  - COM7                       # USB / serial
+  - BLE:AA:BB:CC:DD:EE:FF      # Bluetooth LE by address (a bare MAC address works too)
+  - BLE:Meshtastic_1a2b        # Bluetooth LE by advertised device name
+  - TCP:192.168.1.50           # Wi-Fi/Ethernet node (default port 4403, or TCP:host:port)
+```
+
+- `BLE` without a target connects to the first Meshtastic BLE device found.
+- BLE address/name matching is case- and separator-insensitive (`aa-bb-…` == `AA:BB:…`).
+- In the browser UI use **BLE scannen** (Tk GUI: **Scan BLE**) to list nearby Meshtastic radios; the scan takes about 10 seconds. Selected devices are added as `BLE:<address>` entries.
+- BLE needs the `bleak` package (installed automatically with `meshtastic`). Make sure the radio is not connected to another app (e.g. the Meshtastic phone/desktop app) at the same time — a BLE radio accepts only one client. Windows pairing is not required.
+- Lost BLE/TCP/USB links are detected and re-established automatically on the next send or sync cycle.
+- BLE and TCP entries can be used in the relay settings (`relay_text_from_ports` / `relay_text_to_ports`) exactly like COM ports.
 
 ### WinTAK Chat / CoT Relay
 
@@ -199,11 +219,12 @@ If Meshtastic nodes appear in your local WinTAK but **not** on ATAK/iTAK devices
 | Problem | Solution |
 |---|---|
 | **Gateway cannot find the COM port** | Make sure the Meshtastic radio is connected via USB. Check Device Manager for the correct COM port number and update `meshtastic_port` in `config.yaml`. |
+| **BLE radio not found** | Run the BLE scan in the UI, make sure Bluetooth is on and the radio is not connected to another app/phone. Use the address shown by the scan as `BLE:<address>`. |
 | **No connection to the remote TAK Server** | Verify `tak_server_host` and `tak_server_port` in `config.yaml`. Make sure the server is reachable and the port is open (firewall). |
 | **WinTAK/ATAK chat reaches other TAK clients but not the gateway** | Enable/check `tak_multicast_groups` in `config.yaml`. Some TAK setups distribute GeoChat/SA over multicast (`224.10.10.1:17012`, `239.2.3.1:6969`) instead of sending directly to the gateway's UDP port. |
 | **Nodes visible in WinTAK but missing in ATAK/iTAK** | See [Channel Routing](#important-channel-routing-for-atak--itak) above. |
 | **Certificate / connection errors after a Windows update** | Delete the TAK Server connection in WinTAK and re-add it. Certificates may need to be re-imported. |
-| **Missing Python dependencies** | Run `pip install meshtastic pypubsub pyserial pyyaml pytak colorlog`. |
+| **Missing Python dependencies** | Run `pip install meshtastic pypubsub pyserial pyyaml pytak colorlog` (`bleak` for Bluetooth LE comes with `meshtastic`). |
 | **No-fix nodes are missing** | Set `park_lat` and `park_lon` in `config.yaml` to your base or site coordinates. A startup warning is shown when this is misconfigured. |
 
 ---

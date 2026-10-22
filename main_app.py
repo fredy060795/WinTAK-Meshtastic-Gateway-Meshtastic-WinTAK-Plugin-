@@ -82,6 +82,17 @@ except Exception:
     pub = None
     portnums_pb2 = None
 
+# Optionale Meshtastic-Transporte neben USB/Serial: Bluetooth LE (benötigt bleak) und TCP/WLAN.
+try:
+    import meshtastic.ble_interface as meshtastic_ble_interface
+except Exception:
+    meshtastic_ble_interface = None
+
+try:
+    import meshtastic.tcp_interface as meshtastic_tcp_interface
+except Exception:
+    meshtastic_tcp_interface = None
+
 CFG_FILENAME = "config.yaml"
 MAX_DETECTED_PORTS_DISPLAY = 6
 MIN_PORT_NUMBER = 1
@@ -463,6 +474,8 @@ class _ServiceWebUIRequestHandler(http.server.BaseHTTPRequestHandler):
                 response = controller.run_command(body.get("command", ""))
             elif request_path == "/api/browser/refresh-ports":
                 response = controller.refresh_detected_ports()
+            elif request_path == "/api/browser/scan-ble":
+                response = controller.scan_ble_devices()
             else:
                 self.send_error(404)
                 return
@@ -2439,10 +2452,115 @@ def detect_serial_port_details():
         return []
 
 
+MESHTASTIC_BLE_PREFIXES = ("ble://", "ble:", "bt://", "bt:")
+MESHTASTIC_TCP_PREFIXES = ("tcp://", "tcp:")
+MESHTASTIC_TCP_DEFAULT_PORT = 4403
+BLE_SCAN_TIMEOUT_HINT_SECONDS = 10
+_BLE_MAC_ADDRESS_RE = re.compile(r"^[0-9A-Fa-f]{2}([:-])(?:[0-9A-Fa-f]{2}\1){4}[0-9A-Fa-f]{2}$")
+
+
+def parse_meshtastic_connection_spec(port):
+    """Classify a configured Meshtastic port entry.
+
+    Supported forms:
+        ``COM7`` / ``/dev/ttyUSB0``        -> USB/Serial
+        ``BLE:<Adresse oder Gerätename>``  -> Bluetooth LE (auch ``ble://...``)
+        ``BLE`` (ohne Ziel)                -> erstes gefundenes Meshtastic-BLE-Gerät
+        ``AA:BB:CC:DD:EE:FF``              -> Bluetooth LE (reine MAC-Adresse)
+        ``TCP:<Host>[:<Port>]``            -> Meshtastic über WLAN/Ethernet (Standardport 4403)
+
+    Returns:
+        dict with ``kind`` ("serial", "ble" or "tcp"), ``target`` and for TCP ``tcp_port``.
+    """
+    text = str(port or "").strip()
+    lower = text.lower()
+    for prefix in MESHTASTIC_BLE_PREFIXES:
+        if lower.startswith(prefix):
+            target = text[len(prefix):].strip()
+            return {"kind": "ble", "target": target or None, "spec": text}
+    if lower in ("ble", "bt", "bluetooth"):
+        return {"kind": "ble", "target": None, "spec": text}
+    for prefix in MESHTASTIC_TCP_PREFIXES:
+        if lower.startswith(prefix):
+            target = text[len(prefix):].strip().rstrip("/")
+            host, tcp_port = target, MESHTASTIC_TCP_DEFAULT_PORT
+            if target.startswith("["):
+                # IPv6: [::1]:4403
+                closing = target.find("]")
+                if closing > 0:
+                    host = target[1:closing]
+                    remainder = target[closing + 1:]
+                    if remainder.startswith(":") and remainder[1:].isdigit():
+                        tcp_port = int(remainder[1:])
+            elif target.count(":") == 1:
+                host_part, port_part = target.rsplit(":", 1)
+                if port_part.isdigit():
+                    host, tcp_port = host_part, int(port_part)
+            if not host:
+                raise ValueError(f"TCP-Meshtastic-Eintrag '{text}' enthält keinen Host.")
+            if not (MIN_PORT_NUMBER <= tcp_port <= MAX_PORT_NUMBER):
+                raise ValueError(f"TCP-Meshtastic-Eintrag '{text}' hat einen ungültigen Port.")
+            return {"kind": "tcp", "target": host, "tcp_port": tcp_port, "spec": text}
+    if _BLE_MAC_ADDRESS_RE.match(text):
+        return {"kind": "ble", "target": text, "spec": text}
+    return {"kind": "serial", "target": text, "spec": text}
+
+
+def is_serial_port_spec(port):
+    try:
+        return parse_meshtastic_connection_spec(port)["kind"] == "serial"
+    except ValueError:
+        return False
+
+
+def _normalize_ble_identifier(value):
+    return str(value or "").replace("-", "").replace("_", "").replace(":", "").strip().lower()
+
+
+def detect_ble_device_details():
+    """Scan for Meshtastic BLE peripherals (takes ~10 seconds).
+
+    Returns entries shaped like :func:`detect_serial_port_details` so the UIs can list
+    BLE radios next to COM ports. The ``device`` value is a ready-to-use ``BLE:<address>`` spec.
+    """
+    if meshtastic_ble_interface is None:
+        raise RuntimeError(
+            "Bluetooth LE nicht verfügbar: Meshtastic-BLE-Unterstützung (Paket 'bleak') ist nicht installiert."
+        )
+    details = []
+    for device in meshtastic_ble_interface.BLEInterface.scan():
+        address = str(getattr(device, "address", "") or "").strip()
+        if not address:
+            continue
+        name = str(getattr(device, "name", "") or "").strip()
+        spec = f"BLE:{address}"
+        details.append(
+            {
+                "device": spec,
+                "label": f"{spec} - {name} (Bluetooth LE)" if name else f"{spec} (Bluetooth LE)",
+                "transport": "ble",
+            }
+        )
+    return details
+
+
+def _split_port_chunk(chunk):
+    """Split one comma/semicolon separated chunk; BLE/TCP specs may contain spaces (BLE device names)."""
+    text = chunk.strip()
+    if not text:
+        return []
+    lower = text.lower()
+    if lower.startswith(MESHTASTIC_BLE_PREFIXES + MESHTASTIC_TCP_PREFIXES):
+        return [text]
+    return [p for p in text.split() if p]
+
+
 def _parse_ports_text(ports_text):
     if not ports_text:
         return []
-    raw_ports = [p for p in (part.strip() for part in re.split(r"[,\s;]+", ports_text)) if p]
+    raw_ports = []
+    for chunk in re.split(r"[,;\r\n]+", str(ports_text)):
+        raw_ports.extend(_split_port_chunk(chunk))
     seen = set()
     unique_ports = []
     for p in raw_ports:
@@ -2845,10 +2963,25 @@ class _ServiceWebUIController:
             }
 
     def refresh_detected_ports(self):
+        serial_ports = detect_serial_port_details()
         with self._lock:
-            self._detected_ports = detect_serial_port_details()
+            # Zuvor gescannte BLE-Geräte behalten, bis erneut nach BLE gescannt wird.
+            ble_ports = [item for item in self._detected_ports if item.get("transport") == "ble"]
+            self._detected_ports = serial_ports + ble_ports
             detected_ports = [dict(item) for item in self._detected_ports]
         return {"ok": True, "detected_ports": detected_ports}
+
+    def scan_ble_devices(self):
+        try:
+            ble_ports = detect_ble_device_details()
+        except Exception as exc:
+            raise ValueError(f"BLE-Scan fehlgeschlagen: {exc}")
+        serial_ports = detect_serial_port_details()
+        with self._lock:
+            self._detected_ports = serial_ports + ble_ports
+            detected_ports = [dict(item) for item in self._detected_ports]
+        self._append_log(f"BLE-Scan abgeschlossen: {len(ble_ports)} Meshtastic-Gerät(e) gefunden.", "INFO")
+        return {"ok": True, "detected_ports": detected_ports, "ble_found": len(ble_ports)}
 
     def _missing_dependencies(self):
         missing = []
@@ -2864,6 +2997,12 @@ class _ServiceWebUIController:
         ports = _parse_ports_text(payload.get("meshtastic_port", ""))
         if not ports:
             raise ValueError("No port specified.")
+        for port in ports:
+            spec = parse_meshtastic_connection_spec(port)
+            if spec["kind"] == "ble" and meshtastic_ble_interface is None:
+                raise ValueError(
+                    f"{port}: Bluetooth LE nicht verfügbar (pip install meshtastic bleak)."
+                )
         with self._lock:
             if (self._gateway is not None and not self._gateway.shutdown_flag.is_set()) or (
                 self._gateway_thread is not None and self._gateway_thread.is_alive()
@@ -3515,6 +3654,8 @@ class GatewayApp:
         ttk.Button(cfg_frame, text="Refresh ports", command=self._refresh_detected_ports).grid(
             row=2, column=4, sticky="ew", padx=(8, 0), pady=(0, 6)
         )
+        self._scan_ble_button = ttk.Button(cfg_frame, text="Scan BLE", command=self._scan_ble_devices)
+        self._scan_ble_button.grid(row=2, column=5, sticky="ew", padx=(8, 0), pady=(0, 6))
 
         ttk.Separator(cfg_frame, orient="horizontal").grid(row=3, column=0, columnspan=6, sticky="ew", pady=(4, 10))
 
@@ -4006,8 +4147,31 @@ class GatewayApp:
                 merged.append(port)
             self._ports_var.set(", ".join(merged))
 
+    def _scan_ble_devices(self):
+        self._scan_ble_button.configure(state="disabled")
+        self._append_log(f"BLE-Scan läuft (ca. {BLE_SCAN_TIMEOUT_HINT_SECONDS} s) ...", "INFO")
+
+        def worker():
+            try:
+                ble_details = detect_ble_device_details()
+                error = None
+            except Exception as exc:
+                ble_details, error = [], exc
+            self._root.after(0, lambda: self._finish_ble_scan(ble_details, error))
+
+        threading.Thread(target=worker, daemon=True, name="gateway-ble-scan").start()
+
+    def _finish_ble_scan(self, ble_details, error):
+        self._scan_ble_button.configure(state="normal")
+        if error is not None:
+            self._append_log(f"BLE-Scan fehlgeschlagen: {error}", "WARNING")
+            return
+        self._ble_port_details = list(ble_details)
+        self._refresh_detected_ports()
+        self._append_log(f"BLE-Scan abgeschlossen: {len(ble_details)} Meshtastic-Gerät(e) gefunden.", "INFO")
+
     def _refresh_detected_ports(self):
-        self._detected_port_details = detect_serial_port_details()
+        self._detected_port_details = detect_serial_port_details() + list(getattr(self, "_ble_port_details", []))
         self._detected_ports = [entry["device"] for entry in self._detected_port_details]
         self._detected_ports_var.set(self._build_detected_ports_summary(self._detected_port_details))
         self._detected_ports_list.delete(0, "end")
@@ -4648,7 +4812,7 @@ class TAKMeshtasticGateway:
             connected_interfaces = self._connect_meshtastic_interfaces()
             if not connected_interfaces:
                 self.logger.warning(
-                    "Beim Start konnte noch keine Meshtastic-COM-Verbindung aufgebaut werden. "
+                    "Beim Start konnte noch keine Meshtastic-Verbindung (COM/BLE/TCP) aufgebaut werden. "
                     "Weitere Verbindungsversuche erfolgen automatisch."
                 )
             # Start maintenance thread
@@ -6581,7 +6745,7 @@ class TAKMeshtasticGateway:
     def _get_interface_label(self, interface):
         if interface is None:
             return "unbekannt"
-        for attr in ("devPath", "_port", "port", "portName"):
+        for attr in ("_gateway_port_label", "devPath", "_port", "port", "portName"):
             value = getattr(interface, attr, None)
             if value:
                 return str(value)
@@ -6669,6 +6833,85 @@ class TAKMeshtasticGateway:
         except Exception:
             pass
 
+    def _is_meshtastic_interface_alive(self, iface):
+        """False once the Meshtastic library reported the link as gone (e.g. BLE out of range, USB unplugged)."""
+        if iface is None:
+            return False
+        if not getattr(iface, "_gateway_connected", False):
+            # Interfaces not created by this gateway (tests, injected stubs) are trusted as-is.
+            return True
+        is_connected = getattr(iface, "isConnected", None)
+        is_set = getattr(is_connected, "is_set", None)
+        if callable(is_set) and not is_set():
+            return False
+        transport = getattr(iface, "_gateway_transport", "")
+        if transport == "ble" and getattr(iface, "client", True) is None:
+            return False
+        if transport == "serial" and getattr(iface, "stream", True) is None:
+            return False
+        return True
+
+    def _prune_dead_meshtastic_interfaces(self):
+        with self.interface_lock:
+            dead = [iface for iface in self.interfaces if not self._is_meshtastic_interface_alive(iface)]
+            if dead:
+                self.interfaces = [iface for iface in self.interfaces if iface not in dead]
+        for iface in dead:
+            self.logger.warning(
+                f"Meshtastic-Verbindung {self._get_interface_label(iface)} wurde getrennt; Neuverbindung folgt."
+            )
+            self._close_meshtastic_interface(iface)
+        return bool(dead)
+
+    def _open_ble_meshtastic_interface(self, target):
+        if meshtastic_ble_interface is None:
+            raise RuntimeError(
+                "Bluetooth LE nicht verfügbar: bitte 'pip install meshtastic bleak' ausführen."
+            )
+        ble_interface_cls = meshtastic_ble_interface.BLEInterface
+        try:
+            return ble_interface_cls(target)
+        except ble_interface_cls.BLEError as exc:
+            if not target:
+                raise
+            # Die Meshtastic-Bibliothek vergleicht Adresse/Name exakt (Groß-/Kleinschreibung,
+            # Trennzeichen). Bei "nicht gefunden" daher tolerant nachschlagen und exakt erneut verbinden.
+            wanted = _normalize_ble_identifier(target)
+            candidates = []
+            for device in ble_interface_cls.scan():
+                address = str(getattr(device, "address", "") or "")
+                name = str(getattr(device, "name", "") or "")
+                if wanted in (_normalize_ble_identifier(address), _normalize_ble_identifier(name)):
+                    candidates.append(address)
+            if len(candidates) != 1 or candidates[0] == target:
+                raise exc
+            self.logger.info(f"BLE-Gerät '{target}' als {candidates[0]} gefunden, verbinde erneut ...")
+            return ble_interface_cls(candidates[0])
+
+    def _open_meshtastic_interface(self, port):
+        spec = parse_meshtastic_connection_spec(port)
+        kind = spec["kind"]
+        if kind == "ble":
+            self.logger.info(
+                f"Suche Meshtastic-BLE-Gerät {spec['target'] or '(erstes gefundenes)'} "
+                f"(Scan dauert ca. {BLE_SCAN_TIMEOUT_HINT_SECONDS} s) ..."
+            )
+            iface = self._open_ble_meshtastic_interface(spec["target"])
+        elif kind == "tcp":
+            if meshtastic_tcp_interface is None:
+                raise RuntimeError("Meshtastic-TCP-Interface ist in der installierten Meshtastic-Version nicht verfügbar.")
+            iface = meshtastic_tcp_interface.TCPInterface(spec["target"], portNumber=spec["tcp_port"])
+        else:
+            iface = meshtastic.serial_interface.SerialInterface(spec["target"])
+        # Label = konfigurierter Eintrag, damit Relay-Filter/Fehlende-Port-Erkennung für alle Transporte greifen.
+        try:
+            iface._gateway_port_label = spec["spec"]
+            iface._gateway_transport = kind
+            iface._gateway_connected = True
+        except Exception:
+            pass
+        return iface
+
     def _connect_meshtastic_interfaces(self, force_reconnect=False):
         if meshtastic is None:
             return self._get_interfaces_snapshot()
@@ -6690,7 +6933,7 @@ class TAKMeshtasticGateway:
                 continue
             try:
                 self.logger.info(f"Versuche Verbindung zum Meshtastic-Hardware-Interface an {port} ...")
-                iface = meshtastic.serial_interface.SerialInterface(port)
+                iface = self._open_meshtastic_interface(port)
                 with self.interface_lock:
                     self.interfaces.append(iface)
                 connected_ports.add(port.upper())
@@ -6707,17 +6950,18 @@ class TAKMeshtasticGateway:
         return self._get_interfaces_snapshot()
 
     def _ensure_meshtastic_interfaces(self, reconnect=False, raise_on_empty=False, reason=None):
+        self._prune_dead_meshtastic_interfaces()
         interfaces = self._get_interfaces_snapshot()
         missing_ports = self._get_missing_configured_ports(interfaces)
         if reconnect or not interfaces or missing_ports:
             if reconnect:
                 self.logger.warning(
-                    "Meshtastic-COM-Verbindung für ausgehende Nachrichten wird neu aufgebaut."
+                    "Meshtastic-Verbindung für ausgehende Nachrichten wird neu aufgebaut."
                     + (f" Grund: {reason}" if reason else "")
                 )
             elif missing_ports:
                 self.logger.info(
-                    "Verbinde fehlende Meshtastic-COM-Ports neu: " + ", ".join(missing_ports)
+                    "Verbinde fehlende Meshtastic-Ports/BLE-Geräte neu: " + ", ".join(missing_ports)
                 )
             interfaces = self._connect_meshtastic_interfaces(force_reconnect=reconnect)
         if raise_on_empty and not interfaces:
@@ -9077,7 +9321,7 @@ class TAKMeshtasticGateway:
                 if not local_node_updated:
                     iface_updated = self._invoke_position_setter(iface, lat, lon, 0)
                 if local_node_updated or iface_updated:
-                    updated_ports.append(getattr(iface, "devPath", "unknown"))
+                    updated_ports.append(self._get_interface_label(iface))
             except Exception:
                 self.logger.debug("Fehler beim Anwenden der Gateway-Fixed-Position:\n" + traceback.format_exc())
 
@@ -9311,11 +9555,19 @@ def _select_port_interactively(ports, already_selected):
     for i, p in enumerate(available):
         print(f"  [{i}] {p.device} - {getattr(p, 'description', '')}")
 
+    print("  (oder direkt eingeben: BLE:<Adresse/Name>, TCP:<Host>[:Port])")
+
     while True:
         val = input("\nPort auswählen (Index, Enter = 0): ").strip()
         if val == "":
             idx = 0
             break
+        if not val.isdigit():
+            try:
+                if not is_serial_port_spec(val) or any(p.device.upper() == val.upper() for p in available):
+                    return val
+            except Exception:
+                pass
         try:
             idx = int(val)
             if 0 <= idx < len(available):
@@ -9344,21 +9596,19 @@ def choose_serial_ports(cfg, all_ports_mode=False):
 
     # --all-ports Modus: alle erkannten seriellen Ports automatisch verwenden
     if all_ports_mode:
+        wireless = [p for p in _config_ports_to_list(cfg.get("meshtastic_port")) if not is_serial_port_spec(p)]
         if all_ports:
             detected = [p.device for p in all_ports]
             print(f"Alle verfügbaren seriellen Ports werden automatisch verwendet: {', '.join(detected)}")
-            return detected
-        else:
-            print("Keine seriellen Ports gefunden. Verwende Standard COM7.")
-            return ["COM7"]
+            return detected + wireless
+        if wireless:
+            print(f"Keine seriellen Ports gefunden. Verwende konfigurierte BLE/TCP-Verbindungen: {', '.join(wireless)}")
+            return wireless
+        print("Keine seriellen Ports gefunden. Verwende Standard COM7.")
+        return ["COM7"]
 
     # Konfigurierte Ports aus config.yaml lesen (String oder Liste)
-    cfg_port = cfg.get("meshtastic_port")
-    cfg_ports = []
-    if isinstance(cfg_port, list):
-        cfg_ports = [str(p) for p in cfg_port]
-    elif cfg_port:
-        cfg_ports = [str(cfg_port)]
+    cfg_ports = _config_ports_to_list(cfg.get("meshtastic_port"))
 
     # Anzahl der gewünschten Eingabe-Streams abfragen
     default_count = min(len(cfg_ports), 6) if cfg_ports else 1
@@ -9387,6 +9637,11 @@ def choose_serial_ports(cfg, all_ports_mode=False):
                 port = _select_port_interactively(all_ports, selected_ports)
                 selected_ports.append(port)
                 continue
+            if not is_serial_port_spec(cfg_p):
+                # BLE-/TCP-Einträge tauchen nicht in der COM-Port-Liste auf und werden direkt übernommen.
+                print(f"Konfigurierte Verbindung {cfg_p} (BLE/TCP) wird verwendet.")
+                selected_ports.append(cfg_p)
+                continue
             if not all_ports:
                 print(f"Konfigurierter Port {cfg_p} wird verwendet (keine Portprüfung möglich).")
                 selected_ports.append(cfg_p)
@@ -9402,9 +9657,12 @@ def choose_serial_ports(cfg, all_ports_mode=False):
                 selected_ports.append(port)
         else:
             if not all_ports:
-                print("Keine seriellen Ports gefunden. Drücke Enter um mit Standard COM7 fortzufahren.")
-                input()
-                selected_ports.append("COM7")
+                print(
+                    "Keine seriellen Ports gefunden. BLE:<Adresse/Name> oder TCP:<Host> eingeben "
+                    "oder Enter für Standard COM7:"
+                )
+                manual = input().strip()
+                selected_ports.append(manual or "COM7")
             else:
                 port = _select_port_interactively(all_ports, selected_ports)
                 selected_ports.append(port)

@@ -6,6 +6,14 @@ meshtastic_port: COM7
 # meshtastic_port:
 #   - COM7
 #   - COM3
+# Statt eines COM-Ports kann ein Gerät auch direkt per Bluetooth LE oder TCP/WLAN angebunden werden
+# (auch gemischt mit COM-Ports). BLE benötigt das Python-Paket 'bleak' (wird mit meshtastic installiert):
+# meshtastic_port:
+#   - COM7
+#   - BLE:AA:BB:CC:DD:EE:FF      # BLE-Adresse (oder Gerätename, z. B. BLE:Meshtastic_1a2b)
+#   - TCP:192.168.1.50           # Meshtastic-Node im WLAN (Standardport 4403, sonst TCP:host:port)
+# "BLE" ohne Ziel verbindet sich mit dem ersten gefundenen Meshtastic-BLE-Gerät.
+# BLE-Geräte vorher in Windows NICHT mit einer anderen App (z. B. Meshtastic-App) verbunden lassen.
 # Optionaler Relay-Betrieb: empfangenen Mesh-Text automatisch an alle anderen ausgewählten COM-Ports senden
 relay_text_messages: true
 # Optional nur von diesen COM-Ports relayen (einzelner Wert oder Liste)
