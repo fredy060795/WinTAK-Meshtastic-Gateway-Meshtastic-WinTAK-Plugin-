@@ -6,7 +6,12 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[],
-    hiddenimports=[],
+    hiddenimports=[
+        'meshtastic.ble_interface',
+        'meshtastic.tcp_interface',
+        'bleak',
+        'bleak.backends.winrt',
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

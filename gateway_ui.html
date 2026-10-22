@@ -219,10 +219,10 @@
           <div class="form-grid">
             <div class="field-full">
               <label for="meshtastic_port">Meshtastic Port(s)</label>
-              <input id="meshtastic_port" type="text" placeholder="z. B. COM7, COM8">
+              <input id="meshtastic_port" type="text" placeholder="z. B. COM7, BLE:AA:BB:CC:DD:EE:FF, TCP:192.168.1.50">
             </div>
             <div class="field-full">
-              <label for="detectedPorts">Erkannte serielle Ports</label>
+              <label for="detectedPorts">Erkannte serielle Ports / BLE-Geräte</label>
               <select id="detectedPorts" multiple></select>
               <div class="btn-row">
                 <button type="button" onclick="useSelectedPorts()">Zu Mesh-Ports hinzufügen</button>
@@ -230,8 +230,10 @@
                 <button type="button" onclick="useSelectedPortsForRelayTo()">Als Relay-Ziel</button>
                 <button type="button" onclick="setRelayToOtherSelectedPorts()">Relay an andere Mesh-Ports</button>
                 <button type="button" onclick="refreshPorts()">Ports aktualisieren</button>
+                <button type="button" id="scanBleButton" onclick="scanBle()">BLE scannen</button>
               </div>
-              <div class="tiny">Mehrere Ports lassen sich per Strg/Shift auswählen oder nacheinander mit den Buttons hinzufügen.</div>
+              <div class="tiny">Mehrere Ports lassen sich per Strg/Shift auswählen oder nacheinander mit den Buttons hinzufügen.
+                Bluetooth-Geräte direkt als <code>BLE:&lt;Adresse oder Name&gt;</code>, WLAN-Nodes als <code>TCP:&lt;Host&gt;[:Port]</code> eintragen.</div>
             </div>
             <div class="field">
               <label for="tak_server_host">Remote TAK Host</label>
@@ -415,10 +417,21 @@
       return payload;
     }
 
+    function splitPortsText(value) {
+      // BLE/TCP entries may contain spaces (BLE device names), so only split those on , ; and newlines.
+      return String(value || '')
+        .split(/[,;\r\n]+/)
+        .flatMap((chunk) => {
+          const text = chunk.trim();
+          if (!text) return [];
+          if (/^(ble|bt|tcp):/i.test(text)) return [text];
+          return text.split(/\s+/);
+        });
+    }
+
     function parsePorts(value) {
       const seen = new Set();
-      return String(value || '')
-        .split(/[\s,;]+/)
+      return splitPortsText(value)
         .map((item) => item.trim())
         .filter(Boolean)
         .filter((item) => {
@@ -479,7 +492,7 @@
 
     function renderDetectedPorts(ports, selectedText) {
       const select = document.getElementById('detectedPorts');
-      const selected = new Set(String(selectedText || '').split(/[\s,;]+/).filter(Boolean).map((item) => item.toUpperCase()));
+      const selected = new Set(splitPortsText(selectedText).filter(Boolean).map((item) => item.toUpperCase()));
       select.innerHTML = '';
       (ports || []).forEach((entry) => {
         const option = document.createElement('option');
@@ -650,6 +663,21 @@
         await fetchState();
       } catch (error) {
         setNotice(error.message, true);
+      }
+    }
+
+    async function scanBle() {
+      const button = document.getElementById('scanBleButton');
+      try {
+        setNotice('BLE-Scan läuft (ca. 10 Sekunden) …');
+        button.disabled = true;
+        const result = await api('/api/browser/scan-ble', {});
+        await fetchState();
+        setNotice(`BLE-Scan abgeschlossen: ${result.ble_found || 0} Meshtastic-Gerät(e) gefunden.`);
+      } catch (error) {
+        setNotice(error.message, true);
+      } finally {
+        button.disabled = false;
       }
     }
 
