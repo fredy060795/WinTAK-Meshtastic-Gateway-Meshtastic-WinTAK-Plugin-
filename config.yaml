@@ -27,17 +27,22 @@ relay_text_messages: true
 # oder ATAK-Form tak.example.com:8089:ssl. Leer lassen = kein Remote-Server.
 # Am einfachsten: in der Browser-UI "TAK-Server-Datenpaket importieren" (.zip aus TAK Server/ATAK)
 # – das setzt Host, Port, SSL, Zertifikate und Passwörter automatisch.
-tak_server_host: 123.12.12.12
+tak_server_host: tak.persistentsystems.eu
 # Port leer lassen = Standard: TCP 8087 (bzw. 8088 Streaming-TCP bei TAK Server), SSL 8089
-tak_server_port: 8088
+tak_server_port: 8089
 # TCP = Streaming-CoT, SSL = TLS mit Client-Zertifikat (Standard bei TAK Server/OpenTAKServer), UDP
-tak_server_protocol: TCP
+tak_server_protocol: SSL
 # Nur für SSL: Client-Zertifikat (.p12 aus dem Datenpaket oder .pem) und Truststore/CA.
 # Relative Pfade beziehen sich auf den Ordner dieser config.yaml.
-# tak_server_client_cert: tak_certs/meinserver/gateway.p12
+# Truststore (CA) des OpenTAKServers tak.persistentsystems.eu – prüft das Serverzertifikat:
+tak_server_ca_cert: tak_certs/tak.persistentsystems.eu/truststore-root.p12
+tak_server_ca_cert_password: atakatak
+# Client-Zertifikat: in der Browser-UI mit Benutzername/Passwort "Zertifikat anfordern"
+# (wird dann automatisch hier eingetragen) oder eigene .p12 mit privatem Schlüssel angeben:
+# tak_server_client_cert: tak_certs/tak.persistentsystems.eu/benutzer.p12
 # tak_server_client_cert_password: atakatak
-# tak_server_ca_cert: tak_certs/meinserver/truststore-root.p12
-# tak_server_ca_cert_password: atakatak
+# Port für die Zertifikatsanforderung (TAK Server/OpenTAKServer Standard 8446)
+# tak_server_enrollment_port: 8446
 # Serverzertifikat prüfen: auto (= nur wenn ein Truststore angegeben ist), true, false
 # tak_server_tls_verify: auto
 # Hostname im Serverzertifikat zusätzlich prüfen (viele TAK Server haben IP-/Selbstsigniert-Zertifikate)

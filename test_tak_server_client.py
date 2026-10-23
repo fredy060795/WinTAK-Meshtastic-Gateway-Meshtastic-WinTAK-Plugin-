@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 import zipfile
 
 sys.path.insert(0, ".")
@@ -25,6 +26,8 @@ from main_app import TAKMeshtasticGateway, _apply_settings_payload_to_cfg, _buil
 from tak_server_client import (
     TAKServerClient,
     build_tak_ssl_context,
+    enroll_tak_client_certificate,
+    inspect_pkcs12_file,
     extract_cot_events,
     load_tak_data_package,
     parse_tak_server_endpoint,
@@ -323,6 +326,132 @@ class TestDataPackage(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+class _FakeEnrollmentServer:
+    """HTTPS endpoint behaving like OpenTAKServer's /Marti/api/tls/signClient/v2 (port 8446)."""
+
+    def __init__(self, pki, username="alice", password="secret"):
+        import base64 as b64
+        import http.server
+        import json
+
+        outer = self
+        self.requests = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def _authorized(self):
+                expected = "Basic " + b64.b64encode(f"{username}:{password}".encode()).decode()
+                return self.headers.get("Authorization") == expected
+
+            def do_GET(self):
+                if not self._authorized():
+                    self.send_response(401); self.end_headers(); return
+                body = (b'<ns2:certificateConfig xmlns="http://bbn.com/marti/xml/config" xmlns:ns2="com.bbn.marti.config">'
+                        b'<nameEntries><nameEntry name="O" value="TAK"/><nameEntry name="OU" value="Gateways"/>'
+                        b'</nameEntries></ns2:certificateConfig>')
+                self.send_response(200); self.end_headers(); self.wfile.write(body)
+
+            def do_POST(self):
+                if not self._authorized():
+                    self.send_response(401); self.end_headers(); return
+                data = self.rfile.read(int(self.headers["Content-Length"])).decode()
+                outer.requests.append((self.path, self.headers.get("Content-Type"), data))
+                # Same handling as OpenTAKServer: wrap the headerless base64 body into PEM.
+                csr_pem = "-----BEGIN CERTIFICATE REQUEST-----\n" + data
+                csr_pem += "" if csr_pem.endswith("\n") else "\n"
+                csr_pem += "-----END CERTIFICATE REQUEST-----"
+                csr = x509.load_pem_x509_csr(csr_pem.encode())
+                now = datetime.datetime.now(datetime.timezone.utc)
+                cert = (x509.CertificateBuilder().subject_name(csr.subject).issuer_name(pki.ca_cert.subject)
+                        .public_key(csr.public_key()).serial_number(x509.random_serial_number())
+                        .not_valid_before(now - datetime.timedelta(days=1))
+                        .not_valid_after(now + datetime.timedelta(days=30)).sign(pki.ca_key, hashes.SHA256()))
+                strip = lambda c: c.public_bytes(serialization.Encoding.PEM).decode().replace(
+                    "-----BEGIN CERTIFICATE-----\n", "").replace("\n-----END CERTIFICATE-----\n", "")
+                body = json.dumps({"signedCert": strip(cert), "ca0": strip(pki.ca_cert), "ca1": strip(pki.ca_cert)})
+                self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers()
+                self.wfile.write(body.encode())
+
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(pki.server_pem, pki.server_key_pem)
+        self.httpd.socket = ctx.wrap_socket(self.httpd.socket, server_side=True)
+        self.port = self.httpd.server_address[1]
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+class TestCertificateEnrollment(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.pki = _PKI(self.tmp)
+        self.server = _FakeEnrollmentServer(self.pki)
+
+    def tearDown(self):
+        self.server.close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_truststore_is_detected(self):
+        info = inspect_pkcs12_file(self.pki.truststore_p12)
+        self.assertEqual(info["kind"], "truststore")
+        self.assertEqual(info["password"], "atakatak")
+        self.assertEqual(inspect_pkcs12_file(self.pki.client_p12)["kind"], "client")
+
+    def test_enrollment_returns_usable_client_certificate(self):
+        out = os.path.join(self.tmp, "out")
+        result = enroll_tak_client_certificate(
+            "localhost", "alice", "secret", out, port=self.server.port, client_uid="GW-01",
+            ca_cert=self.pki.truststore_p12, ca_cert_password="atakatak",
+        )
+        path, content_type, body = self.server.requests[0]
+        self.assertIn("/Marti/api/tls/signClient/v2?clientUid=GW-01", path)
+        self.assertEqual(content_type, "text/plain")
+        self.assertNotIn("BEGIN", body)
+        self.assertIn("CN=alice", result["subject"])
+        self.assertIn("O=TAK", result["subject"])
+        self.assertEqual(inspect_pkcs12_file(result["client_cert"])["kind"], "client")
+
+        # The enrolled certificate is accepted by a TAK server that requires client certs.
+        server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        server_ctx.load_cert_chain(self.pki.server_pem, self.pki.server_key_pem)
+        server_ctx.load_verify_locations(cafile=self.pki.ca_pem)
+        server_ctx.verify_mode = ssl.CERT_REQUIRED
+        tak = _FakeTakServer(server_ctx)
+        client = TAKServerClient(
+            "localhost", tak.port, "SSL", logger=_Logger(), reconnect_seconds=1,
+            ssl_context_factory=lambda: build_tak_ssl_context(
+                client_cert=result["client_cert"], client_cert_password=result["client_cert_password"],
+                ca_cert=self.pki.truststore_p12, ca_cert_password="atakatak"),
+        )
+        try:
+            client.start()
+            client.send(SAMPLE_EVENT)
+            self.assertTrue(tak.wait_for('uid="MESH-1"'))
+        finally:
+            client.stop(timeout=2)
+            tak.close()
+
+    def test_wrong_password_is_reported(self):
+        with self.assertRaisesRegex(ValueError, "401"):
+            enroll_tak_client_certificate(
+                "localhost", "alice", "wrong", os.path.join(self.tmp, "o"), port=self.server.port,
+                ca_cert=self.pki.truststore_p12,
+            )
+
+    def test_untrusted_server_is_rejected(self):
+        other = _PKI(tempfile.mkdtemp(dir=self.tmp))
+        with self.assertRaisesRegex(ValueError, "Truststore"):
+            enroll_tak_client_certificate(
+                "localhost", "alice", "secret", os.path.join(self.tmp, "o"), port=self.server.port,
+                ca_cert=other.truststore_p12,
+            )
+
+
 class _RecordingClient:
     endpoint = "ssl://tak:8089"
     connected = True
@@ -415,6 +544,26 @@ class TestSettings(unittest.TestCase):
         self.assertEqual(cfg["tak_server_client_cert_password"], "secret")
         self.assertEqual(_build_browser_ui_form_state(cfg)["tak_server_client_cert_password"], "")
         self.assertEqual(main_app.resolve_remote_tak_endpoint(cfg), ("tak.example.com", 8089, "SSL"))
+
+    def test_uploaded_project_truststore_is_used_as_ca(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            with open("tak_certs/tak.persistentsystems.eu/truststore-root.p12", "rb") as fh:
+                content = fh.read()
+            cfg = {"tak_server_host": "tak.persistentsystems.eu"}
+            with unittest.mock.patch.object(main_app, "_config_base_dir", return_value=tmp):
+                info = main_app.store_tak_certificate_into_cfg(cfg, "truststore_root (2).p12", content)
+                self.assertEqual(info["kind"], "truststore")
+                self.assertEqual(cfg["tak_server_ca_cert"], os.path.join("tak_certs", "tak.persistentsystems.eu", "truststore-root.p12"))
+                self.assertEqual(cfg["tak_server_protocol"], "SSL")
+                context = build_tak_ssl_context(
+                    ca_cert=main_app._resolve_config_path(cfg["tak_server_ca_cert"]),
+                    ca_cert_password=cfg["tak_server_ca_cert_password"],
+                )
+            self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+            self.assertIn("OpenTAKServer-CA", str(context.get_ca_certs()))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
     def test_invalid_host_is_reported(self):
         with self.assertRaises(ValueError):
