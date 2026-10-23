@@ -1,7 +1,7 @@
 # WinTAK Meshtastic Gateway
 
 A stable bridge between **Meshtastic** mesh radios and the **TAK ecosystem** (WinTAK, ATAK, iTAK).  
-The gateway reads position data and text messages from Meshtastic nodes over a serial connection and forwards them as Cursor on Target (CoT) XML — both to a local WinTAK instance (UDP) and optionally to a remote TAK Server (TCP or UDP). When `pytak` is installed, the remote TAK uplink uses PyTAK for the TCP/UDP transport. It can also accept outgoing WinTAK CoT packets and send them into the Meshtastic mesh.
+The gateway reads position data and text messages from Meshtastic nodes over a serial connection and forwards them as Cursor on Target (CoT) XML — both to a local WinTAK instance (UDP) and optionally to a remote TAK Server (streaming TCP, SSL/TLS with client certificates, or UDP) — bidirectionally, so the server distributes mesh data to all its ATAK/WinTAK/iTAK clients and server chats/markers reach the mesh. It can also accept outgoing WinTAK CoT packets and send them into the Meshtastic mesh.
 
 ---
 
@@ -28,7 +28,7 @@ Meshtastic Radio  ──serial──▶  Gateway (main_app.py)
                                   │
                                   ├──UDP──▶  Local WinTAK (127.0.0.1:4242)
                                   │
-                                  └──TCP/UDP──▶  Remote TAK Server
+                                  └──TCP/SSL/UDP◀─▶  Remote TAK Server ──▶ ATAK / WinTAK / iTAK clients
 ```
 
 ---
@@ -46,14 +46,14 @@ meshtastic
 pypubsub
 pyserial
 pyyaml
-pytak      # recommended – remote TAK uplink uses PyTAK when available
+cryptography  # SSL/TLS TAK servers with .p12 certificates / data packages
 colorlog   # optional – enables colored console output
 ```
 
 Install all at once:
 
 ```bash
-pip install meshtastic pypubsub pyserial pyyaml pytak colorlog
+pip install meshtastic pypubsub pyserial pyyaml cryptography colorlog
 ```
 
 ---
@@ -82,9 +82,13 @@ tak_multicast_groups:               # Optional extra TAK multicast groups to lis
 # local_tak_chat_listen_ip: 0.0.0.0 # Optional bind IP for outgoing WinTAK CoT (default: all local interfaces)
 # local_tak_tcp_listen_ip: 0.0.0.0 # Optional bind IP for local TCP chat/CoT input
 
-tak_server_host: 123.123.123.123    # Remote TAK Server IP
-tak_server_port: 8088               # Remote TAK Server port (8088 is the default bridge input port)
-tak_server_protocol: TCP            # TCP or UDP (remote uplink uses PyTAK when installed)
+tak_server_host: tak.example.com    # Hostname, IP or URL (ssl://host:8089, host:8089:ssl)
+tak_server_port: 8089               # empty = default for the protocol (TCP 8087, SSL 8089)
+tak_server_protocol: SSL            # SSL (TLS + client certificate), TCP (streaming) or UDP
+tak_server_client_cert: tak_certs/myserver/gateway.p12   # SSL only (.p12 or .pem)
+tak_server_client_cert_password: atakatak
+tak_server_ca_cert: tak_certs/myserver/truststore-root.p12
+tak_server_ca_cert_password: atakatak
 relay_text_messages: true           # Relay incoming mesh text to the other selected COM ports
 # relay_text_from_ports: COM7       # Optional: only relay texts received on these COM ports
 # relay_text_to_ports:              # Optional: only relay texts to these COM ports
@@ -109,6 +113,19 @@ send_nodes_without_gps: true
 ```
 
 > **Tip:** If `meshtastic_port` is not set or the configured port is not found, the gateway will prompt you to choose a port interactively.
+
+### Remote TAK Server
+
+The gateway connects to a TAK Server (official TAK Server, OpenTAKServer, FreeTAKServer, …) the same way ATAK/WinTAK do:
+
+- **Address:** hostname, IPv4/IPv6 or URL (`ssl://tak.example.com:8089`, ATAK form `tak.example.com:8089:ssl`). An empty port uses the protocol default.
+- **SSL/TLS (port 8089):** client certificate as `.p12` (from a TAK data package) or PEM, truststore/CA as `.p12` or PEM. The server certificate is verified when a truststore is configured (`tak_server_tls_verify: auto`).
+- **Data package import:** in the browser UI choose *TAK-Server-Datenpaket importieren* (Tk GUI: *Import TAK data package…*) and select the `.zip` you would give to ATAK/WinTAK. Host, port, SSL, certificates and passwords are taken over; the certificates are stored in `tak_certs/` next to `config.yaml`. Packages that only contain enrollment settings (username/password, no `.p12`) are not supported yet.
+- **Bidirectional stream:** the connection is read continuously, keepalive pings are sent and the gateway announces itself with its own SA (`gateway_callsign`, position from `park_lat`/`park_lon` or the local radio). Several servers (e.g. FreeTAKServer) only distribute data from clients that identified themselves this way.
+- **Mesh → server:** all node positions, markers and chats from the mesh are streamed to the server, which distributes them to every connected client. CoT produced while the server is unreachable is buffered and sent after the automatic reconnect.
+- **Server → mesh:** `tak_server_to_mesh` controls what goes into the (slow) LoRa mesh: `chat_markers` (default), `chat`, `all` (positions throttled to one per UID every 5 minutes) or `off`.
+- **WinTAK at the gateway:** `local_tak_to_server` forwards CoT/chats from the local WinTAK to the server, `tak_server_to_local_tak` shows server traffic in the local WinTAK — the gateway then works as a TAK proxy.
+- The browser UI shows the live server status (connected, sent/received/buffered counters, last error).
 
 ### Bluetooth LE and TCP radios
 
@@ -220,11 +237,12 @@ If Meshtastic nodes appear in your local WinTAK but **not** on ATAK/iTAK devices
 |---|---|
 | **Gateway cannot find the COM port** | Make sure the Meshtastic radio is connected via USB. Check Device Manager for the correct COM port number and update `meshtastic_port` in `config.yaml`. |
 | **BLE radio not found** | Run the BLE scan in the UI, make sure Bluetooth is on and the radio is not connected to another app/phone. Use the address shown by the scan as `BLE:<address>`. |
-| **No connection to the remote TAK Server** | Verify `tak_server_host` and `tak_server_port` in `config.yaml`. Make sure the server is reachable and the port is open (firewall). |
+| **No connection to the remote TAK Server** | Check the TAK server status line in the browser UI (it shows the last error). Verify host/port/protocol, that the port is open (firewall), and for SSL the client certificate, its password and the truststore — importing the server's data package sets all of them. |
+| **Server shows the gateway, but other clients don't see mesh nodes** | Make sure the gateway's client certificate/user is in the same TAK Server group as the other clients. |
 | **WinTAK/ATAK chat reaches other TAK clients but not the gateway** | Enable/check `tak_multicast_groups` in `config.yaml`. Some TAK setups distribute GeoChat/SA over multicast (`224.10.10.1:17012`, `239.2.3.1:6969`) instead of sending directly to the gateway's UDP port. |
 | **Nodes visible in WinTAK but missing in ATAK/iTAK** | See [Channel Routing](#important-channel-routing-for-atak--itak) above. |
 | **Certificate / connection errors after a Windows update** | Delete the TAK Server connection in WinTAK and re-add it. Certificates may need to be re-imported. |
-| **Missing Python dependencies** | Run `pip install meshtastic pypubsub pyserial pyyaml pytak colorlog` (`bleak` for Bluetooth LE comes with `meshtastic`). |
+| **Missing Python dependencies** | Run `pip install meshtastic pypubsub pyserial pyyaml cryptography colorlog` (`bleak` for Bluetooth LE comes with `meshtastic`). |
 | **No-fix nodes are missing** | Set `park_lat` and `park_lon` in `config.yaml` to your base or site coordinates. A startup warning is shown when this is misconfigured. |
 
 ---

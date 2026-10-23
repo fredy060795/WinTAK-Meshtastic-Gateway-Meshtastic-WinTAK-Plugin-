@@ -22,12 +22,39 @@ relay_text_messages: true
 # relay_text_to_ports:
 #   - COM3
 #   - COM9
-# Hier die IP deines Ubuntu-Servers eintragen "123.12.12.12"
+# ── Remote TAK Server ─────────────────────────────────────────────────────────
+# Adresse: Hostname, IP oder URL – z. B. tak.example.com, 10.0.0.5, ssl://tak.example.com:8089
+# oder ATAK-Form tak.example.com:8089:ssl. Leer lassen = kein Remote-Server.
+# Am einfachsten: in der Browser-UI "TAK-Server-Datenpaket importieren" (.zip aus TAK Server/ATAK)
+# – das setzt Host, Port, SSL, Zertifikate und Passwörter automatisch.
 tak_server_host: 123.12.12.12
-# WICHTIG: Port 8088 nutzen (das ist der Eingang unserer Bridge)
+# Port leer lassen = Standard: TCP 8087 (bzw. 8088 Streaming-TCP bei TAK Server), SSL 8089
 tak_server_port: 8088
-
-tak_server_protocol: TCP                               # TCP/UDP; falls pytak installiert ist, nutzt der Remote-Uplink PyTAK
+# TCP = Streaming-CoT, SSL = TLS mit Client-Zertifikat (Standard bei TAK Server/OpenTAKServer), UDP
+tak_server_protocol: TCP
+# Nur für SSL: Client-Zertifikat (.p12 aus dem Datenpaket oder .pem) und Truststore/CA.
+# Relative Pfade beziehen sich auf den Ordner dieser config.yaml.
+# tak_server_client_cert: tak_certs/meinserver/gateway.p12
+# tak_server_client_cert_password: atakatak
+# tak_server_ca_cert: tak_certs/meinserver/truststore-root.p12
+# tak_server_ca_cert_password: atakatak
+# Serverzertifikat prüfen: auto (= nur wenn ein Truststore angegeben ist), true, false
+# tak_server_tls_verify: auto
+# Hostname im Serverzertifikat zusätzlich prüfen (viele TAK Server haben IP-/Selbstsigniert-Zertifikate)
+# tak_server_tls_check_hostname: false
+#
+# Was vom TAK-Server ins Mesh geht (LoRa-Bandbreite ist knapp!):
+#   chat_markers (Standard) | chat | all (inkl. Positionen, je UID max. alle 5 min) | off
+# tak_server_to_mesh: chat_markers
+# Vom Server empfangene CoT auch an das lokale WinTAK weitergeben
+# tak_server_to_local_tak: true
+# CoT/Chats vom lokalen WinTAK (am Gateway) auch an den TAK-Server senden (Gateway als TAK-Proxy)
+# local_tak_to_server: true
+# Gateway meldet sich am Server mit eigener SA an (Callsign gateway_callsign, Position park_lat/park_lon)
+# tak_server_send_gateway_sa: true
+# tak_server_sa_interval_seconds: 60
+# tak_server_team: Cyan
+# tak_server_role: Team Member
 
 # Lokales WinTAK-Ziel für Positions- und Chat-CoT
 local_tak_ip: 127.0.0.1
