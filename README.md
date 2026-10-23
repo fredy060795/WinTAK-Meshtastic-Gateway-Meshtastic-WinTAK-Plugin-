@@ -167,13 +167,12 @@ meshtastic_port:
 
 ### Option 1 — Batch Starter (recommended on Windows)
 
-Double-click **`Meshtastic_Gateway_Start.bat`** (works from any install folder).
-The script
+Double-click **`Meshtastic_Gateway_Start.bat`**. Keep it in the gateway folder (the folder that contains `main_app.py` — download/extract the whole repository, not only the `.bat`). The script
 
-1. requests Administrator privileges (continues without them if declined),
-2. finds Python 3.9+ (`py -3` or `python`) and creates a private environment `.venv` next to the script on first start,
+1. finds the gateway: `main_app.py` next to the script (or in the extracted repository subfolder or `C:\Program Files\WinTAK\Meshtastic Gateway`), otherwise a built `Meshtastic_Gateway.exe` (next to the script or in `dist\`) — and tells you where it searched if nothing is found,
+2. finds Python 3.9+ (`py -3` or `python`) and creates a private environment `.venv` on first start (in `%LOCALAPPDATA%\MeshtasticGateway\venv` if the gateway folder is read-only, e.g. under Program Files),
 3. installs everything from **`requirements.txt`** automatically — again whenever `requirements.txt` changes or a package is missing,
-4. starts the gateway; the browser UI opens by itself on port 5013.
+4. starts the gateway; the browser UI opens by itself on port 5013. Administrator rights are not required.
 
 Arguments are passed through, e.g. `Meshtastic_Gateway_Start.bat --gui`.
 
@@ -261,7 +260,7 @@ If Meshtastic nodes appear in your local WinTAK but **not** on ATAK/iTAK devices
 ```
 ├── main_app.py                    # Gateway application
 ├── config.yaml                    # Configuration file
-├── Meshtastic_Gateway_Start.bat   # Windows launcher (auto-admin, auto-installs requirements)
+├── Meshtastic_Gateway_Start.bat   # Windows launcher (finds the gateway, auto-installs requirements)
 ├── requirements.txt              # Python dependencies
 ├── tak_server_client.py          # Remote TAK Server connection (TCP/SSL/UDP, certificates, enrollment)
 ├── tak_certs/                    # TAK certificates (client certificates are git-ignored)
