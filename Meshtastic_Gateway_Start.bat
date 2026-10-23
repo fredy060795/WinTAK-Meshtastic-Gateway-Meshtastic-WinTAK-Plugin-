@@ -140,10 +140,22 @@ set "EXIT_CODE=!errorlevel!"
 
 :finished
 echo.
-if not "%EXIT_CODE%"=="0" (
-    echo Gateway wurde mit Fehlercode %EXIT_CODE% beendet.
-    goto :fail
+if "%EXIT_CODE%"=="0" goto :finished_ok
+echo Gateway wurde mit Fehlercode %EXIT_CODE% beendet.
+if "%EXIT_CODE%"=="-1073741819" (
+    echo Das ist ein Absturz in einem nativen Python-Modul ^(Zugriffsverletzung 0xC0000005^).
 )
+if defined APP_DIR if exist "%APP_DIR%\gateway_crash.log" (
+    echo.
+    echo Letzte Eintraege aus gateway_crash.log:
+    echo ----------------------------------------
+    powershell -NoProfile -Command "Get-Content -LiteralPath (Join-Path $env:APP_DIR 'gateway_crash.log') -Tail 40"
+    echo ----------------------------------------
+    echo Bitte diesen Text bzw. die Datei "%APP_DIR%\gateway_crash.log" weitergeben.
+)
+goto :fail
+
+:finished_ok
 echo Gateway beendet.
 pause
 exit /b 0

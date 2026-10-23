@@ -11,6 +11,7 @@ TAK Meshtastic Gateway - vollständige, robuste Version
 
 import os
 import sys
+import faulthandler
 import argparse
 import base64
 import binascii
@@ -87,15 +88,47 @@ except Exception:
     portnums_pb2 = None
 
 # Optionale Meshtastic-Transporte neben USB/Serial: Bluetooth LE (benötigt bleak) und TCP/WLAN.
-try:
-    import meshtastic.ble_interface as meshtastic_ble_interface
-except Exception:
-    meshtastic_ble_interface = None
+# BLE wird erst geladen, wenn es gebraucht wird: bleak lädt unter Windows native WinRT-Module,
+# die bei manchen Python-/Treiber-Kombinationen den Prozess abstürzen lassen (0xC0000005) –
+# das darf ein Gateway ohne BLE-Gerät nicht treffen.
+_BLE_NOT_LOADED = object()
+meshtastic_ble_interface = _BLE_NOT_LOADED
+
+
+def _load_meshtastic_ble_interface():
+    global meshtastic_ble_interface
+    if meshtastic_ble_interface is _BLE_NOT_LOADED:
+        try:
+            import meshtastic.ble_interface as ble_module
+        except Exception:
+            ble_module = None
+        meshtastic_ble_interface = ble_module
+    return meshtastic_ble_interface
 
 try:
     import meshtastic.tcp_interface as meshtastic_tcp_interface
 except Exception:
     meshtastic_tcp_interface = None
+
+CRASH_LOG_FILENAME = "gateway_crash.log"
+
+
+def _enable_crash_log():
+    """Write a Python traceback to gateway_crash.log if the process dies in native code (e.g. 0xC0000005)."""
+    try:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), CRASH_LOG_FILENAME)
+        crash_file = open(path, "a", encoding="utf-8")
+        crash_file.write(f"\n--- Start {time.strftime('%Y-%m-%d %H:%M:%S')} (Python {sys.version.split()[0]}) ---\n")
+        crash_file.flush()
+        faulthandler.enable(file=crash_file, all_threads=True)
+        return crash_file
+    except Exception:
+        try:
+            faulthandler.enable()
+        except Exception:
+            pass
+        return None
+
 
 CFG_FILENAME = "config.yaml"
 MAX_DETECTED_PORTS_DISPLAY = 6
@@ -2672,12 +2705,13 @@ def detect_ble_device_details():
     Returns entries shaped like :func:`detect_serial_port_details` so the UIs can list
     BLE radios next to COM ports. The ``device`` value is a ready-to-use ``BLE:<address>`` spec.
     """
-    if meshtastic_ble_interface is None:
+    ble_module = _load_meshtastic_ble_interface()
+    if ble_module is None:
         raise RuntimeError(
             "Bluetooth LE nicht verfügbar: Meshtastic-BLE-Unterstützung (Paket 'bleak') ist nicht installiert."
         )
     details = []
-    for device in meshtastic_ble_interface.BLEInterface.scan():
+    for device in ble_module.BLEInterface.scan():
         address = str(getattr(device, "address", "") or "").strip()
         if not address:
             continue
@@ -3279,7 +3313,7 @@ class _ServiceWebUIController:
             raise ValueError("No port specified.")
         for port in ports:
             spec = parse_meshtastic_connection_spec(port)
-            if spec["kind"] == "ble" and meshtastic_ble_interface is None:
+            if spec["kind"] == "ble" and _load_meshtastic_ble_interface() is None:
                 raise ValueError(
                     f"{port}: Bluetooth LE nicht verfügbar (pip install meshtastic bleak)."
                 )
@@ -7287,11 +7321,12 @@ class TAKMeshtasticGateway:
         return bool(dead)
 
     def _open_ble_meshtastic_interface(self, target):
-        if meshtastic_ble_interface is None:
+        ble_module = _load_meshtastic_ble_interface()
+        if ble_module is None:
             raise RuntimeError(
                 "Bluetooth LE nicht verfügbar: bitte 'pip install meshtastic bleak' ausführen."
             )
-        ble_interface_cls = meshtastic_ble_interface.BLEInterface
+        ble_interface_cls = ble_module.BLEInterface
         try:
             return ble_interface_cls(target)
         except ble_interface_cls.BLEError as exc:
@@ -10119,6 +10154,7 @@ def _run_terminal_mode(cfg, args):
 
 
 if __name__ == "__main__":
+    _CRASH_LOG_FILE = _enable_crash_log()
     try:
         parser = argparse.ArgumentParser(description="TAK Meshtastic Gateway")
         parser.add_argument(
