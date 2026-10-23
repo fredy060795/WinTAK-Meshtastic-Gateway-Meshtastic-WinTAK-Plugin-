@@ -139,6 +139,12 @@ def format_tak_server_endpoint(host, port, protocol):
 # ---------------------------------------------------------------------------
 
 def _load_pkcs12(path, password):
+    key, cert, additional, _used = _load_pkcs12_with_password(path, password)
+    return key, cert, additional
+
+
+def _load_pkcs12_with_password(path, password):
+    """Open a .p12, trying the given password, then the TAK default "atakatak", then none."""
     try:
         from cryptography.hazmat.primitives.serialization import pkcs12
     except Exception as exc:  # pragma: no cover - depends on installation
@@ -155,7 +161,10 @@ def _load_pkcs12(path, password):
     last_error = None
     for candidate in candidates:
         try:
-            return pkcs12.load_key_and_certificates(data, candidate.encode("utf-8") if candidate else None)
+            key, cert, additional = pkcs12.load_key_and_certificates(
+                data, candidate.encode("utf-8") if candidate else None
+            )
+            return key, cert, additional, candidate
         except ValueError as exc:
             last_error = exc
     raise ValueError(
@@ -322,6 +331,201 @@ def load_tak_data_package(zip_path, extract_dir):
         "ca_cert": ca_cert,
         "ca_cert_password": entries.get("caPassword0") or entries.get("caPassword") or DEFAULT_TAK_CERT_PASSWORD,
         "requires_enrollment": enroll and client_cert is None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Single certificate files / certificate enrollment
+# ---------------------------------------------------------------------------
+
+DEFAULT_TAK_ENROLLMENT_PORT = 8446
+
+
+def inspect_pkcs12_file(path, password=None):
+    """Classify a .p12: ``{"kind": "client"|"truststore", "subjects": [...], "password": used}``.
+
+    A file with a private key is a client certificate, one with certificates only is a
+    truststore (CA) as handed out by TAK Server / OpenTAKServer.
+    """
+    key, cert, additional, used_password = _load_pkcs12_with_password(path, password)
+    certs = [c for c in [cert] + list(additional or []) if c is not None]
+    if not certs:
+        raise ValueError(f"{os.path.basename(path)} enthält keine Zertifikate.")
+    return {
+        "kind": "client" if key is not None else "truststore",
+        "subjects": [c.subject.rfc4514_string() for c in certs],
+        "password": used_password or "",
+    }
+
+
+def _pem_body_to_cert(text):
+    from cryptography import x509
+
+    text = str(text or "").strip()
+    if not text:
+        return None
+    if "BEGIN CERTIFICATE" not in text:
+        text = "-----BEGIN CERTIFICATE-----\n" + text + "\n-----END CERTIFICATE-----\n"
+    return x509.load_pem_x509_certificate(text.encode("ascii"))
+
+
+def _parse_enrollment_response(body):
+    """Signed cert + CA certs from a TAK Server/OpenTAKServer signClient/v2 response (JSON or XML)."""
+    import json
+
+    text = body.decode("utf-8", errors="replace").strip()
+    signed, cas = None, []
+    if text.startswith("{"):
+        data = json.loads(text)
+        signed = data.get("signedCert")
+        cas = [value for key, value in sorted(data.items()) if key.startswith("ca") and value]
+    else:
+        root = fromstring(text)
+        for element in root.iter():
+            name = element.tag.split("}")[-1]
+            if name == "signedCert":
+                signed = element.text
+            elif name.startswith("ca") and element.text:
+                cas.append(element.text)
+    if not signed:
+        raise ValueError("Antwort des Servers enthält kein signiertes Zertifikat.")
+    ca_certs = []
+    seen = set()
+    for value in cas:
+        cert = _pem_body_to_cert(value)
+        if cert is None:
+            continue
+        fingerprint = cert.fingerprint(_sha256())
+        if fingerprint not in seen:
+            seen.add(fingerprint)
+            ca_certs.append(cert)
+    return _pem_body_to_cert(signed), ca_certs
+
+
+def _sha256():
+    from cryptography.hazmat.primitives import hashes
+
+    return hashes.SHA256()
+
+
+def enroll_tak_client_certificate(
+    host,
+    username,
+    password,
+    out_dir,
+    *,
+    port=DEFAULT_TAK_ENROLLMENT_PORT,
+    client_uid="GW-01",
+    ca_cert=None,
+    ca_cert_password=None,
+    verify=None,
+    cert_password=DEFAULT_TAK_CERT_PASSWORD,
+    timeout=30,
+    opener=None,
+):
+    """Request a client certificate with username/password, like ATAK's "enroll for certificate".
+
+    Uses the TAK Server / OpenTAKServer API on the enrollment port (default 8446):
+    ``GET /Marti/api/tls/config`` for the certificate name entries, then
+    ``POST /Marti/api/tls/signClient/v2`` with a CSR. The truststore (``ca_cert``) is used to
+    verify the server. Returns ``{"client_cert": path, "ca_cert": path or None, ...}``; the client
+    certificate is stored as ``<username>.p12`` protected with ``cert_password``.
+    """
+    import base64
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.hazmat.primitives.serialization import pkcs12
+    from cryptography.x509.oid import NameOID
+
+    username = str(username or "").strip()
+    if not username or not password:
+        raise ValueError("Für die Zertifikatsanforderung werden Benutzername und Passwort benötigt.")
+    context = build_tak_ssl_context(ca_cert=ca_cert, ca_cert_password=ca_cert_password, verify=verify)
+    shown_host = f"[{host}]" if ":" in str(host) else host
+    base_url = f"https://{shown_host}:{int(port)}"
+    auth = "Basic " + base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+    if opener is None:
+        opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=context))
+
+    def request(path, data=None, headers=None):
+        req = urllib.request.Request(base_url + path, data=data, method="POST" if data is not None else "GET")
+        req.add_header("Authorization", auth)
+        for key, value in (headers or {}).items():
+            req.add_header(key, value)
+        try:
+            with opener.open(req, timeout=timeout) as response:
+                return response.read()
+        except urllib.error.HTTPError as exc:
+            if exc.code == 401:
+                raise ValueError("Server lehnt Benutzername/Passwort ab (HTTP 401).")
+            raise ValueError(f"Server antwortet mit HTTP {exc.code} auf {path}.")
+        except urllib.error.URLError as exc:
+            reason = exc.reason
+            if isinstance(reason, ssl.SSLCertVerificationError):
+                raise ValueError(
+                    f"Serverzertifikat von {base_url} passt nicht zum Truststore: {reason.verify_message}"
+                )
+            raise ValueError(f"{base_url} nicht erreichbar: {reason}")
+
+    name_entries = []
+    try:
+        config_root = fromstring(request("/Marti/api/tls/config"))
+        for element in config_root.iter():
+            if element.tag.split("}")[-1] == "nameEntry" and element.get("name") and element.get("value"):
+                name_entries.append((element.get("name").upper(), element.get("value")))
+    except (ValueError, ParseError):
+        # Optional endpoint; enrollment also works without the extra name entries.
+        name_entries = []
+
+    oid_by_name = {
+        "O": NameOID.ORGANIZATION_NAME,
+        "OU": NameOID.ORGANIZATIONAL_UNIT_NAME,
+        "C": NameOID.COUNTRY_NAME,
+        "ST": NameOID.STATE_OR_PROVINCE_NAME,
+        "L": NameOID.LOCALITY_NAME,
+    }
+    attributes = [x509.NameAttribute(NameOID.COMMON_NAME, username)]
+    for name, value in name_entries:
+        if name in oid_by_name:
+            attributes.append(x509.NameAttribute(oid_by_name[name], value))
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    csr = x509.CertificateSigningRequestBuilder().subject_name(x509.Name(attributes)).sign(key, _sha256())
+    csr_b64 = base64.b64encode(csr.public_bytes(serialization.Encoding.DER)).decode("ascii")
+    # Base64 body without PEM headers, 64 chars per line, trailing newline (as ATAK sends it).
+    csr_body = "\n".join(csr_b64[i:i + 64] for i in range(0, len(csr_b64), 64)) + "\n"
+    query = urllib.parse.urlencode({"clientUid": client_uid, "version": "WinTAK-Meshtastic-Gateway"})
+    response = request(
+        f"/Marti/api/tls/signClient/v2?{query}",
+        data=csr_body.encode("ascii"),
+        headers={"Content-Type": "text/plain", "Accept": "application/json"},
+    )
+    signed_cert, ca_certs = _parse_enrollment_response(response)
+
+    os.makedirs(out_dir, exist_ok=True)
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", username) or "gateway"
+    client_path = os.path.join(out_dir, f"{safe_name}.p12")
+    encryption = serialization.BestAvailableEncryption(cert_password.encode("utf-8"))
+    with open(client_path, "wb") as fh:
+        fh.write(pkcs12.serialize_key_and_certificates(
+            safe_name.encode("utf-8"), key, signed_cert, ca_certs or None, encryption
+        ))
+    truststore_path = None
+    if not ca_cert and ca_certs:
+        truststore_path = os.path.join(out_dir, "truststore-enrolled.p12")
+        with open(truststore_path, "wb") as fh:
+            fh.write(pkcs12.serialize_key_and_certificates(b"ca", None, ca_certs[0], ca_certs[1:] or None, encryption))
+    return {
+        "client_cert": client_path,
+        "client_cert_password": cert_password,
+        "ca_cert": truststore_path,
+        "subject": signed_cert.subject.rfc4514_string(),
+        "valid_until": signed_cert.not_valid_after_utc.isoformat()
+        if hasattr(signed_cert, "not_valid_after_utc") else str(signed_cert.not_valid_after),
     }
 
 

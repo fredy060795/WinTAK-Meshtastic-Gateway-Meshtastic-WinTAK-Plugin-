@@ -247,6 +247,25 @@
               </div>
               <div class="tiny">Übernimmt Server-Adresse, Port, SSL, Client-Zertifikat und Truststore inkl. Passwörter.</div>
             </div>
+            <div class="field-full">
+              <label for="certificateFile">Einzelnes Zertifikat verwenden (.p12 – Truststore oder Client-Zertifikat)</label>
+              <div class="btn-row">
+                <input id="certificateFile" type="file" accept=".p12,.pfx">
+                <input id="certificateUploadPassword" type="password" autocomplete="off" placeholder="Passwort (leer = atakatak)" style="max-width:220px">
+                <button type="button" onclick="uploadCertificate()">Zertifikat übernehmen</button>
+              </div>
+              <div class="tiny">Wird automatisch erkannt: ohne privaten Schlüssel = Truststore (CA), mit Schlüssel = Client-Zertifikat.</div>
+            </div>
+            <div class="field-full">
+              <label>Client-Zertifikat beim TAK-Server anfordern (Benutzername/Passwort, wie in ATAK)</label>
+              <div class="btn-row">
+                <input id="enrollUsername" type="text" autocomplete="username" placeholder="Benutzername" style="max-width:200px">
+                <input id="enrollPassword" type="password" autocomplete="current-password" placeholder="Passwort" style="max-width:200px">
+                <input id="enrollPort" type="number" placeholder="Port 8446" style="max-width:120px">
+                <button type="button" id="enrollButton" onclick="enrollCertificate()">Zertifikat anfordern</button>
+              </div>
+              <div class="tiny">Nutzt den Truststore zur Prüfung des Servers. Das Passwort wird nicht gespeichert.</div>
+            </div>
             <div class="field">
               <label for="tak_server_host">Remote TAK Host</label>
               <input id="tak_server_host" type="text" placeholder="tak.example.com, 10.0.0.5 oder ssl://host:8089">
@@ -658,6 +677,51 @@
         reader.onerror = () => reject(new Error('Datei konnte nicht gelesen werden.'));
         reader.readAsDataURL(file);
       });
+    }
+
+    async function uploadCertificate() {
+      const input = document.getElementById('certificateFile');
+      const file = input.files && input.files[0];
+      if (!file) {
+        setNotice('Bitte zuerst eine .p12-Datei auswählen.', true);
+        return;
+      }
+      try {
+        const content = await readFileAsBase64(file);
+        const result = await api('/api/browser/upload-certificate', {
+          filename: file.name,
+          content,
+          password: document.getElementById('certificateUploadPassword').value,
+          tak_server_host: document.getElementById('tak_server_host').value,
+        });
+        applyForm(result.config || {});
+        setNotice(result.message || 'Zertifikat übernommen.');
+      } catch (error) {
+        setNotice(error.message, true);
+      }
+    }
+
+    async function enrollCertificate() {
+      const button = document.getElementById('enrollButton');
+      try {
+        button.disabled = true;
+        setNotice('Zertifikat wird beim TAK-Server angefordert …');
+        const result = await api('/api/browser/enroll-certificate', {
+          username: document.getElementById('enrollUsername').value,
+          password: document.getElementById('enrollPassword').value,
+          enrollment_port: document.getElementById('enrollPort').value,
+          tak_server_host: document.getElementById('tak_server_host').value,
+          tak_server_port: document.getElementById('tak_server_port').value,
+          tak_server_protocol: document.getElementById('tak_server_protocol').value,
+        });
+        document.getElementById('enrollPassword').value = '';
+        applyForm(result.config || {});
+        setNotice(result.message || 'Zertifikat erhalten.');
+      } catch (error) {
+        setNotice(error.message, true);
+      } finally {
+        button.disabled = false;
+      }
     }
 
     async function importDataPackage() {

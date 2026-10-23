@@ -60,8 +60,11 @@ except Exception:
 from tak_server_client import (
     DEFAULT_TAK_SERVER_PORTS,
     TAK_SERVER_PROTOCOLS,
+    DEFAULT_TAK_ENROLLMENT_PORT,
     TAKServerClient,
     build_tak_ssl_context,
+    enroll_tak_client_certificate,
+    inspect_pkcs12_file,
     format_tak_server_endpoint,
     load_tak_data_package,
     normalize_tak_server_protocol,
@@ -372,6 +375,79 @@ def import_tak_data_package_into_cfg(cfg, zip_path):
     return package
 
 
+def _tak_cert_dir_for_cfg(cfg):
+    try:
+        endpoint = resolve_remote_tak_endpoint(cfg)
+    except ValueError:
+        endpoint = None
+    folder = endpoint[0] if endpoint else "server"
+    folder = re.sub(r"[^A-Za-z0-9_.-]+", "_", folder) or "server"
+    return os.path.join(_config_base_dir(), TAK_SERVER_CERT_DIRNAME, folder)
+
+
+def _config_relpath(path):
+    try:
+        return os.path.relpath(path, _config_base_dir())
+    except ValueError:
+        return path
+
+
+def store_tak_certificate_into_cfg(cfg, filename, content, password=None):
+    """Save an uploaded .p12 and use it as client certificate or truststore (detected automatically)."""
+    filename = os.path.basename(str(filename or "")).strip() or "certificate.p12"
+    if not filename.lower().endswith((".p12", ".pfx")):
+        raise ValueError("Bitte ein Zertifikat im .p12-Format auswählen.")
+    target_dir = _tak_cert_dir_for_cfg(cfg)
+    os.makedirs(target_dir, exist_ok=True)
+    temp_path = os.path.join(target_dir, f".upload-{uuid.uuid4().hex}.p12")
+    with open(temp_path, "wb") as fh:
+        fh.write(content)
+    try:
+        info = inspect_pkcs12_file(temp_path, password or None)
+    except Exception:
+        os.remove(temp_path)
+        raise
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", filename)
+    target = os.path.join(target_dir, "truststore-root.p12" if info["kind"] == "truststore" else safe_name)
+    os.replace(temp_path, target)
+    prefix = "tak_server_ca_cert" if info["kind"] == "truststore" else "tak_server_client_cert"
+    cfg[prefix] = _config_relpath(target)
+    cfg[f"{prefix}_password"] = info["password"]
+    cfg["tak_server_protocol"] = "SSL"
+    info["path"] = cfg[prefix]
+    return info
+
+
+def enroll_tak_certificate_into_cfg(cfg, username, password, enrollment_port=None, client_uid=None):
+    """Request a client certificate from the configured TAK server with username/password."""
+    endpoint = resolve_remote_tak_endpoint(cfg)
+    if endpoint is None:
+        raise ValueError("Zuerst den Remote-TAK-Host eintragen.")
+    host = endpoint[0]
+    port = int(enrollment_port or cfg.get("tak_server_enrollment_port") or DEFAULT_TAK_ENROLLMENT_PORT)
+    result = enroll_tak_client_certificate(
+        host,
+        username,
+        password,
+        _tak_cert_dir_for_cfg(cfg),
+        port=port,
+        client_uid=client_uid or str(cfg.get("gateway_uid", "GW-01") or "GW-01"),
+        ca_cert=_resolve_config_path(cfg.get("tak_server_ca_cert")),
+        ca_cert_password=str(cfg.get("tak_server_ca_cert_password", "") or "") or None,
+        verify=_tak_server_tls_verify_setting(cfg.get("tak_server_tls_verify")),
+    )
+    cfg["tak_server_client_cert"] = _config_relpath(result["client_cert"])
+    cfg["tak_server_client_cert_password"] = result["client_cert_password"]
+    if result.get("ca_cert"):
+        cfg["tak_server_ca_cert"] = _config_relpath(result["ca_cert"])
+        cfg["tak_server_ca_cert_password"] = result["client_cert_password"]
+    cfg["tak_server_enrollment_port"] = port
+    if endpoint[2] != "SSL":
+        cfg["tak_server_protocol"] = "SSL"
+        cfg["tak_server_port"] = DEFAULT_TAK_SERVER_PORTS["SSL"]
+    return result
+
+
 def _utc_now():
     return datetime.datetime.now(datetime.timezone.utc)
 
@@ -541,6 +617,10 @@ class _ServiceWebUIRequestHandler(http.server.BaseHTTPRequestHandler):
                 response = controller.run_command(body.get("command", ""))
             elif request_path == "/api/browser/refresh-ports":
                 response = controller.refresh_detected_ports()
+            elif request_path == "/api/browser/upload-certificate":
+                response = controller.upload_certificate(body)
+            elif request_path == "/api/browser/enroll-certificate":
+                response = controller.enroll_certificate(body)
             elif request_path == "/api/browser/import-data-package":
                 response = controller.import_data_package(body)
             elif request_path == "/api/browser/scan-ble":
@@ -3105,10 +3185,69 @@ class _ServiceWebUIController:
         message = f"Datenpaket übernommen: {endpoint}"
         if package.get("requires_enrollment"):
             message += (
-                " – Achtung: das Paket enthält kein Client-Zertifikat (Zertifikats-Enrollment per Benutzer/Passwort). "
-                "Bitte ein Datenpaket mit .p12-Client-Zertifikat verwenden."
+                " – Das Paket enthält kein Client-Zertifikat: bitte unten mit Benutzername/Passwort "
+                "\"Zertifikat anfordern\" ausführen."
             )
         message += " Gateway neu starten, damit die Verbindung verwendet wird."
+        self._append_log(message, "INFO")
+        return {"ok": True, "message": message, "config": _build_browser_ui_form_state(updated_cfg)}
+
+    def upload_certificate(self, payload):
+        try:
+            content = base64.b64decode(str(payload.get("content") or ""), validate=True)
+        except (binascii.Error, ValueError):
+            raise ValueError("Zertifikat konnte nicht gelesen werden (ungültige Daten).")
+        if not content:
+            raise ValueError("Zertifikatsdatei ist leer.")
+        with self._lock:
+            updated_cfg = dict(self.cfg)
+        if payload.get("tak_server_host"):
+            updated_cfg["tak_server_host"] = str(payload.get("tak_server_host")).strip()
+        try:
+            info = store_tak_certificate_into_cfg(
+                updated_cfg, payload.get("filename"), content, str(payload.get("password") or "") or None
+            )
+        except (ValueError, RuntimeError) as exc:
+            raise ValueError(str(exc))
+        save_config(updated_cfg)
+        with self._lock:
+            self.cfg = updated_cfg
+        kind = "Truststore (CA)" if info["kind"] == "truststore" else "Client-Zertifikat"
+        message = f"{kind} gespeichert: {info['path']} ({'; '.join(info['subjects'])})."
+        if info["kind"] == "truststore" and not updated_cfg.get("tak_server_client_cert"):
+            message += (
+                " Für die Verbindung fehlt noch ein Client-Zertifikat: mit Benutzername/Passwort "
+                "\"Zertifikat anfordern\" oder die .p12 mit privatem Schlüssel hochladen."
+            )
+        self._append_log(message, "INFO")
+        return {"ok": True, "message": message, "config": _build_browser_ui_form_state(updated_cfg)}
+
+    def enroll_certificate(self, payload):
+        with self._lock:
+            updated_cfg = dict(self.cfg)
+        for key in ("tak_server_host", "tak_server_port", "tak_server_protocol"):
+            if str(payload.get(key) or "").strip():
+                updated_cfg[key] = str(payload.get(key)).strip()
+        raw_port = str(payload.get("enrollment_port") or "").strip()
+        enrollment_port = _parse_int_field_value(raw_port, "Enrollment-Port") if raw_port else None
+        self._append_log("Fordere Client-Zertifikat beim TAK-Server an ...", "INFO")
+        try:
+            result = enroll_tak_certificate_into_cfg(
+                updated_cfg,
+                payload.get("username"),
+                str(payload.get("password") or ""),
+                enrollment_port=enrollment_port,
+            )
+        except (ValueError, RuntimeError, OSError) as exc:
+            self._append_log(f"Zertifikatsanforderung fehlgeschlagen: {exc}", "WARNING")
+            raise ValueError(f"Zertifikatsanforderung fehlgeschlagen: {exc}")
+        save_config(updated_cfg)
+        with self._lock:
+            self.cfg = updated_cfg
+        message = (
+            f"Client-Zertifikat erhalten ({result['subject']}, gültig bis {result['valid_until'][:10]}) "
+            f"und gespeichert: {updated_cfg['tak_server_client_cert']}. Gateway (neu) starten."
+        )
         self._append_log(message, "INFO")
         return {"ok": True, "message": message, "config": _build_browser_ui_form_state(updated_cfg)}
 
@@ -3824,6 +3963,12 @@ class GatewayApp:
         ttk.Button(cfg_frame, text="Import TAK data package…", command=self._import_tak_data_package).grid(
             row=4, column=4, columnspan=2, sticky="ew", padx=(8, 0), pady=(0, 4)
         )
+        ttk.Button(cfg_frame, text="Use .p12 certificate…", command=self._choose_tak_certificate).grid(
+            row=5, column=4, sticky="ew", padx=(8, 0), pady=(0, 4)
+        )
+        ttk.Button(cfg_frame, text="Request certificate…", command=self._enroll_tak_certificate).grid(
+            row=5, column=5, sticky="ew", padx=(8, 0), pady=(0, 4)
+        )
         cfg_label("WinTAK UDP Target IP:", row=5, col=2, padx=(8, 6), pady=(0, 4))
         self._local_tak_ip_var = tk.StringVar(value=str(self.cfg.get("local_tak_ip", WINTAK_REQUIRED_HOST)))
         ttk.Entry(cfg_frame, textvariable=self._local_tak_ip_var, width=16).grid(
@@ -4309,6 +4454,58 @@ class GatewayApp:
         self._server_protocol_var.set(package["protocol"])
         endpoint = format_tak_server_endpoint(package["host"], package["port"], package["protocol"])
         self._append_log(f"TAK-Datenpaket übernommen: {endpoint} (Zertifikate in {TAK_SERVER_CERT_DIRNAME}/).", "INFO")
+
+    def _sync_tak_server_form_to_cfg(self):
+        self.cfg["tak_server_host"] = self._server_host_var.get().strip()
+        self.cfg["tak_server_port"] = self._server_port_var.get().strip()
+        self.cfg["tak_server_protocol"] = self._server_protocol_var.get()
+
+    def _choose_tak_certificate(self):
+        from tkinter import filedialog, messagebox, simpledialog
+
+        path = filedialog.askopenfilename(
+            title="TAK-Zertifikat (.p12) auswählen",
+            filetypes=[("PKCS#12", "*.p12 *.pfx"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        password = simpledialog.askstring(
+            "Zertifikat", "Passwort der .p12 (leer = atakatak):", show="*", parent=self._root
+        )
+        self._sync_tak_server_form_to_cfg()
+        try:
+            with open(path, "rb") as fh:
+                info = store_tak_certificate_into_cfg(self.cfg, os.path.basename(path), fh.read(), password or None)
+            save_config(self.cfg)
+        except Exception as exc:
+            messagebox.showerror("Zertifikat", f"Zertifikat konnte nicht verwendet werden:\n{exc}")
+            return
+        self._server_protocol_var.set("SSL")
+        kind = "Truststore (CA)" if info["kind"] == "truststore" else "Client-Zertifikat"
+        self._append_log(f"{kind} übernommen: {info['path']} ({'; '.join(info['subjects'])})", "INFO")
+
+    def _enroll_tak_certificate(self):
+        from tkinter import messagebox, simpledialog
+
+        username = simpledialog.askstring("Zertifikat anfordern", "TAK-Server-Benutzername:", parent=self._root)
+        if not username:
+            return
+        password = simpledialog.askstring("Zertifikat anfordern", "Passwort:", show="*", parent=self._root)
+        if not password:
+            return
+        self._sync_tak_server_form_to_cfg()
+        try:
+            result = enroll_tak_certificate_into_cfg(self.cfg, username, password)
+            save_config(self.cfg)
+        except Exception as exc:
+            messagebox.showerror("Zertifikat anfordern", f"Zertifikatsanforderung fehlgeschlagen:\n{exc}")
+            return
+        self._server_protocol_var.set(normalize_tak_server_protocol(self.cfg.get("tak_server_protocol")))
+        self._server_port_var.set(str(self.cfg.get("tak_server_port", "")))
+        self._append_log(
+            f"Client-Zertifikat erhalten ({result['subject']}) und gespeichert: {self.cfg['tak_server_client_cert']}",
+            "INFO",
+        )
 
     def _scan_ble_devices(self):
         self._scan_ble_button.configure(state="disabled")

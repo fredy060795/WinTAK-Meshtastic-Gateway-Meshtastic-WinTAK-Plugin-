@@ -50,10 +50,10 @@ cryptography  # SSL/TLS TAK servers with .p12 certificates / data packages
 colorlog   # optional – enables colored console output
 ```
 
-Install all at once:
+Install all at once (the batch starter does this automatically):
 
 ```bash
-pip install meshtastic pypubsub pyserial pyyaml cryptography colorlog
+pip install -r requirements.txt
 ```
 
 ---
@@ -120,7 +120,9 @@ The gateway connects to a TAK Server (official TAK Server, OpenTAKServer, FreeTA
 
 - **Address:** hostname, IPv4/IPv6 or URL (`ssl://tak.example.com:8089`, ATAK form `tak.example.com:8089:ssl`). An empty port uses the protocol default.
 - **SSL/TLS (port 8089):** client certificate as `.p12` (from a TAK data package) or PEM, truststore/CA as `.p12` or PEM. The server certificate is verified when a truststore is configured (`tak_server_tls_verify: auto`).
-- **Data package import:** in the browser UI choose *TAK-Server-Datenpaket importieren* (Tk GUI: *Import TAK data package…*) and select the `.zip` you would give to ATAK/WinTAK. Host, port, SSL, certificates and passwords are taken over; the certificates are stored in `tak_certs/` next to `config.yaml`. Packages that only contain enrollment settings (username/password, no `.p12`) are not supported yet.
+- **Single `.p12` file:** *Einzelnes Zertifikat verwenden* in the browser UI (Tk GUI: *Use .p12 certificate…*) stores a `.p12` under `tak_certs/<server>/` and detects what it is: without private key it is used as truststore (CA), with private key as client certificate.
+- **Request a client certificate (enrollment):** if you only have the truststore plus a username/password (OpenTAKServer / TAK Server certificate enrollment, like ATAK's *Enroll for client certificate*), enter them under *Client-Zertifikat beim TAK-Server anfordern* (Tk GUI: *Request certificate…*). The gateway sends a CSR to `https://<server>:8446/Marti/api/tls/signClient/v2`, verifies the server with the truststore and stores the signed certificate as `tak_certs/<server>/<username>.p12`. The password is not saved.
+- **Data package import:** in the browser UI choose *TAK-Server-Datenpaket importieren* (Tk GUI: *Import TAK data package…*) and select the `.zip` you would give to ATAK/WinTAK. Host, port, SSL, certificates and passwords are taken over; the certificates are stored in `tak_certs/` next to `config.yaml`. For packages without a client certificate (enrollment packages) request the certificate with username/password as described above.
 - **Bidirectional stream:** the connection is read continuously, keepalive pings are sent and the gateway announces itself with its own SA (`gateway_callsign`, position from `park_lat`/`park_lon` or the local radio). Several servers (e.g. FreeTAKServer) only distribute data from clients that identified themselves this way.
 - **Mesh → server:** all node positions, markers and chats from the mesh are streamed to the server, which distributes them to every connected client. CoT produced while the server is unreachable is buffered and sent after the automatic reconnect.
 - **Server → mesh:** `tak_server_to_mesh` controls what goes into the (slow) LoRa mesh: `chat_markers` (default), `chat`, `all` (positions throttled to one per UID every 5 minutes) or `off`.
@@ -165,8 +167,15 @@ meshtastic_port:
 
 ### Option 1 — Batch Starter (recommended on Windows)
 
-Double-click **`Meshtastic_Gateway_Start.bat`**.  
-The script automatically requests Administrator privileges and launches the gateway.
+Double-click **`Meshtastic_Gateway_Start.bat`** (works from any install folder).
+The script
+
+1. requests Administrator privileges (continues without them if declined),
+2. finds Python 3.9+ (`py -3` or `python`) and creates a private environment `.venv` next to the script on first start,
+3. installs everything from **`requirements.txt`** automatically — again whenever `requirements.txt` changes or a package is missing,
+4. starts the gateway; the browser UI opens by itself on port 5013.
+
+Arguments are passed through, e.g. `Meshtastic_Gateway_Start.bat --gui`.
 
 ### Option 2 — Run directly with Python
 
@@ -252,7 +261,10 @@ If Meshtastic nodes appear in your local WinTAK but **not** on ATAK/iTAK devices
 ```
 ├── main_app.py                    # Gateway application
 ├── config.yaml                    # Configuration file
-├── Meshtastic_Gateway_Start.bat   # Windows launcher (auto-admin)
+├── Meshtastic_Gateway_Start.bat   # Windows launcher (auto-admin, auto-installs requirements)
+├── requirements.txt              # Python dependencies
+├── tak_server_client.py          # Remote TAK Server connection (TCP/SSL/UDP, certificates, enrollment)
+├── tak_certs/                    # TAK certificates (client certificates are git-ignored)
 ├── Meshtastic_Gateway.spec        # PyInstaller build spec
 └── README.md
 ```

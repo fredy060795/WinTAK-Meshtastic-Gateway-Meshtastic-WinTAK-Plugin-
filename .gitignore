@@ -39,3 +39,11 @@ Thumbs.db
 
 # Local runtime data
 nodes.db
+
+# TAK certificates: client certificates contain private keys and must never be committed.
+# Only the public truststore (CA) of the project server is tracked.
+tak_certs/*
+!tak_certs/tak.persistentsystems.eu/
+tak_certs/tak.persistentsystems.eu/*
+!tak_certs/tak.persistentsystems.eu/truststore-root.p12
+.venv/
