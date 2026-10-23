@@ -1,47 +1,78 @@
 @echo off
 :: WinTAK Meshtastic Gateway - Starter
-:: - laeuft aus dem Ordner, in dem diese Datei liegt (egal wo installiert)
-:: - startet sich bei Bedarf mit Administratorrechten neu
-:: - legt beim ersten Start eine eigene Python-Umgebung (.venv) an und installiert
-::   requirements.txt automatisch; bei Aenderungen an requirements.txt erneut
+:: Sucht das Gateway (main_app.py oder Meshtastic_Gateway.exe), richtet beim ersten Start
+:: eine eigene Python-Umgebung ein, installiert requirements.txt automatisch und startet.
+:: Administratorrechte sind nicht noetig.
 setlocal EnableExtensions EnableDelayedExpansion
-chcp 65001 >nul 2>&1
 
-set "APP_DIR=%~dp0"
-if "%APP_DIR:~-1%"=="\" set "APP_DIR=%APP_DIR:~0,-1%"
-cd /d "%APP_DIR%"
+set "BAT_DIR=%~dp0"
+if "%BAT_DIR:~-1%"=="\" set "BAT_DIR=%BAT_DIR:~0,-1%"
 
-:: --- Administratorrechte (fuer Firewall/Ports von WinTAK) ----------------------
-net session >nul 2>&1
-if errorlevel 1 goto :elevate
-goto :admin_ok
-
-:elevate
-if /i "%~1"=="--elevated" (
-    echo Administratorrechte konnten nicht erlangt werden - starte ohne.
-    goto :admin_ok
-)
-echo Fordere Administratorrechte an ...
-set "BAT_PATH=%~f0"
-powershell -NoProfile -Command "Start-Process -FilePath $env:ComSpec -ArgumentList '/c', ('\"\"' + $env:BAT_PATH + '\" --elevated\"') -Verb RunAs" 2>nul
-if errorlevel 1 (
-    echo Erhoehung abgelehnt - starte ohne Administratorrechte.
-    goto :admin_ok
-)
-exit /b 0
-
-:admin_ok
 echo ========================================
 echo    TAK MESHTASTIC GATEWAY - START
 echo ========================================
-echo Ordner: %APP_DIR%
 echo.
 
-:: --- Python finden ------------------------------------------------------------
+:: --- Gateway suchen -----------------------------------------------------------
+:: Reihenfolge: Ordner dieser Datei, Unterordner, bekannte Installationsordner.
+set "APP_DIR="
+set "APP_EXE="
+for %%D in (
+    "%BAT_DIR%"
+    "%BAT_DIR%\WinTAK-Meshtastic-Gateway-Meshtastic-WinTAK-Plugin-"
+    "%BAT_DIR%\WinTAK-Meshtastic-Gateway-Meshtastic-WinTAK-Plugin--main"
+    "%ProgramFiles%\WinTAK\Meshtastic Gateway"
+    "%ProgramFiles%\WinTAK\Meshttastic Gateway"
+) do (
+    if not defined APP_DIR if exist "%%~D\main_app.py" set "APP_DIR=%%~D"
+)
+if defined APP_DIR goto :found_source
+
+for %%D in (
+    "%BAT_DIR%"
+    "%BAT_DIR%\dist"
+    "%ProgramFiles%\WinTAK\Meshtastic Gateway"
+    "%ProgramFiles%\WinTAK\Meshttastic Gateway"
+) do (
+    if not defined APP_EXE if exist "%%~D\Meshtastic_Gateway.exe" set "APP_EXE=%%~D\Meshtastic_Gateway.exe"
+)
+if defined APP_EXE goto :run_exe
+
+echo Das Gateway wurde nicht gefunden.
+echo Gesucht wurde nach main_app.py bzw. Meshtastic_Gateway.exe in:
+echo   %BAT_DIR%
+echo   %BAT_DIR%\dist
+echo   %ProgramFiles%\WinTAK\Meshtastic Gateway
+echo.
+echo Bitte diese Datei in den Ordner legen, in dem main_app.py liegt
+echo (den kompletten Repository-Ordner entpacken, nicht nur die .bat).
+goto :fail
+
+:run_exe
+echo Starte "%APP_EXE%" ...
+for %%F in ("%APP_EXE%") do cd /d "%%~dpF"
+"%APP_EXE%" %*
+set "EXIT_CODE=!errorlevel!"
+goto :finished
+
+:found_source
+cd /d "%APP_DIR%"
+echo Gateway-Ordner: %APP_DIR%
+
+:: --- Python-Umgebung ------------------------------------------------------------
+:: Bevorzugt .venv im Gateway-Ordner; ist der Ordner schreibgeschuetzt (z. B. Program Files
+:: ohne Admin), wird die Umgebung im Benutzerprofil angelegt.
 set "VENV_DIR=%APP_DIR%\.venv"
 if exist "%APP_DIR%\venv\Scripts\python.exe" if not exist "%VENV_DIR%\Scripts\python.exe" set "VENV_DIR=%APP_DIR%\venv"
-set "VENV_PY=%VENV_DIR%\Scripts\python.exe"
-if exist "%VENV_PY%" goto :have_venv
+if exist "%VENV_DIR%\Scripts\python.exe" goto :have_venv
+set "WRITE_TEST=%APP_DIR%\.write_test_%RANDOM%"
+(echo test> "%WRITE_TEST%") >nul 2>&1
+if exist "%WRITE_TEST%" (
+    del /q "%WRITE_TEST%" >nul 2>&1
+) else (
+    set "VENV_DIR=%LOCALAPPDATA%\MeshtasticGateway\venv"
+)
+if exist "%VENV_DIR%\Scripts\python.exe" goto :have_venv
 
 set "BASE_PY="
 py -3 -c "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)" >nul 2>&1
@@ -67,6 +98,9 @@ if errorlevel 1 (
 )
 
 :have_venv
+set "VENV_PY=%VENV_DIR%\Scripts\python.exe"
+echo Python: %VENV_PY%
+
 :: --- Abhaengigkeiten installieren / aktualisieren ------------------------------
 set "REQ_FILE=%APP_DIR%\requirements.txt"
 set "REQ_STAMP=%VENV_DIR%\requirements.installed"
@@ -101,10 +135,10 @@ echo.
 :: --- Gateway starten ----------------------------------------------------------
 :: Das Gateway oeffnet die Browser-Oberflaeche (Port 5013) selbst.
 echo Starte Gateway ... (Beenden mit Strg+C)
-set "APP_ARGS=%*"
-if defined APP_ARGS set "APP_ARGS=!APP_ARGS:--elevated=!"
-"%VENV_PY%" "%APP_DIR%\main_app.py" !APP_ARGS!
-set "EXIT_CODE=%errorlevel%"
+"%VENV_PY%" "%APP_DIR%\main_app.py" %*
+set "EXIT_CODE=!errorlevel!"
+
+:finished
 echo.
 if not "%EXIT_CODE%"=="0" (
     echo Gateway wurde mit Fehlercode %EXIT_CODE% beendet.
