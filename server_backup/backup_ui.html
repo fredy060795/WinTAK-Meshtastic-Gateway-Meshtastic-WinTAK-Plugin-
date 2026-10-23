@@ -1,0 +1,436 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Server-Backup</title>
+<style>
+:root {
+  --bg: #f4f5f7; --card: #ffffff; --text: #1d2330; --muted: #6a7282; --line: #dde1e8;
+  --accent: #2f6fde; --accent-text: #ffffff; --ok: #1f8a4c; --warn: #b7791f; --bad: #c53030;
+  --field: #ffffff; --log: #10141c; --log-text: #c9d4e3;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #12151b; --card: #1b2029; --text: #e6e9ef; --muted: #8f98a8; --line: #2c3340;
+    --accent: #5b8ff0; --accent-text: #0d1117; --ok: #3fb872; --warn: #e0a43a; --bad: #f06a6a;
+    --field: #141821; --log: #0b0e13; --log-text: #b8c4d6;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.45 "Segoe UI", system-ui, -apple-system, sans-serif; }
+header { display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 14px 24px; background: var(--card); border-bottom: 1px solid var(--line);
+  position: sticky; top: 0; z-index: 5; }
+header h1 { font-size: 18px; margin: 0; font-weight: 600; }
+header .spacer { flex: 1; }
+main { max-width: 1180px; margin: 0 auto; padding: 20px 16px 60px;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; }
+.card.wide { grid-column: 1 / -1; }
+.card h2 { font-size: 15px; margin: 0 0 12px; font-weight: 600; }
+label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+input[type=text], input[type=number], input[type=password], select, textarea {
+  width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--field); color: var(--text); font: inherit; }
+textarea { min-height: 64px; resize: vertical; font-family: Consolas, monospace; font-size: 12px; }
+.row { display: flex; gap: 10px; }
+.row > * { flex: 1; min-width: 0; }
+.row > .narrow { flex: 0 0 90px; }
+.check { display: flex; gap: 8px; align-items: center; margin-top: 12px; color: var(--text); font-size: 13px; }
+.hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
+.btns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+button { padding: 7px 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--field);
+  color: var(--text); font: inherit; cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--accent); }
+button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+button.danger { color: var(--bad); }
+button:disabled { opacity: .5; cursor: default; }
+button.small { padding: 3px 9px; font-size: 12px; }
+.pill { display: inline-block; padding: 3px 10px; border-radius: 99px; font-size: 12px; font-weight: 600;
+  border: 1px solid currentColor; }
+.ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); } .muted { color: var(--muted); }
+.big { font-size: 22px; font-weight: 600; }
+.bar { height: 8px; background: var(--line); border-radius: 99px; overflow: hidden; margin: 10px 0 4px; }
+.bar > div { height: 100%; background: var(--accent); width: 0; transition: width .4s; }
+.bar.indet > div { width: 30%; animation: slide 1.4s infinite ease-in-out; }
+@keyframes slide { 0% { margin-left: -30%; } 100% { margin-left: 100%; } }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+th { color: var(--muted); font-weight: 500; font-size: 12px; }
+td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tablewrap { overflow-x: auto; }
+pre.log { background: var(--log); color: var(--log-text); padding: 12px; border-radius: 8px; height: 300px;
+  overflow: auto; font-size: 12px; margin: 0; white-space: pre-wrap; word-break: break-word; }
+.toast { position: fixed; right: 16px; bottom: 16px; max-width: 420px; padding: 12px 16px; border-radius: 8px;
+  background: var(--card); border: 1px solid var(--line); box-shadow: 0 6px 24px rgba(0,0,0,.18);
+  white-space: pre-wrap; display: none; z-index: 20; }
+dialog { border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--text);
+  max-width: 520px; width: calc(100% - 32px); }
+dialog::backdrop { background: rgba(0,0,0,.45); }
+.dirty { color: var(--warn); font-size: 12px; margin-left: 8px; display: none; }
+@media (max-width: 600px) { header { padding: 12px 16px; } main { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Server-Backup</h1>
+  <span id="statusPill" class="pill muted">…</span>
+  <span class="muted" id="nextRun"></span>
+  <span class="spacer"></span>
+  <button class="primary" id="btnBackup">Backup jetzt starten</button>
+  <button id="btnQuit" title="Programm beenden (Zeitplan laeuft dann nicht mehr)">Beenden</button>
+</header>
+
+<main>
+  <section class="card wide">
+    <h2>Status</h2>
+    <div id="jobBox">
+      <div class="big" id="jobTitle">Bereit</div>
+      <div class="muted" id="jobDetail"></div>
+      <div class="bar" id="jobBar" style="display:none"><div></div></div>
+      <div class="btns" id="jobBtns" style="display:none"><button class="danger" id="btnCancel">Abbrechen</button></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Server <span class="dirty">ungespeichert</span></h2>
+    <div class="row">
+      <div><label for="host">Server (Domain oder IP)</label><input type="text" id="host" placeholder="z. B. 82.165.11.84 oder server.example.de"></div>
+      <div class="narrow"><label for="port">SSH-Port</label><input type="number" id="port" min="1" max="65535"></div>
+    </div>
+    <label for="user">Benutzer</label><input type="text" id="user" placeholder="z. B. root oder meshtastic" autocomplete="off">
+    <label for="password">Passwort</label>
+    <input type="password" id="password" autocomplete="new-password">
+    <div class="hint" id="pwHint"></div>
+    <label for="key_file">SSH-Schlüssel (optional)</label>
+    <input type="text" id="key_file" placeholder="leer lassen = Anmeldung mit Passwort">
+    <div class="hint">Ist der Benutzer nicht root, wird das Passwort auch für <code>sudo</code> benutzt – ein komplettes Backup braucht Root-Rechte.</div>
+    <div class="btns">
+      <button class="primary" data-save>Speichern</button>
+      <button id="btnTest">Verbindung testen</button>
+      <button id="btnHostKey" title="Nötig, wenn der Server neu installiert wurde">Host-Key zurücksetzen</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Zeitplan <span class="dirty">ungespeichert</span></h2>
+    <label for="sch_type">Wie oft sichern?</label>
+    <select id="sch_type">
+      <option value="off">Nur manuell</option>
+      <option value="hours">Alle X Stunden</option>
+      <option value="daily">Täglich</option>
+      <option value="weekly">Wöchentlich</option>
+      <option value="monthly">Monatlich</option>
+    </select>
+    <div class="row">
+      <div data-sch="hours"><label for="sch_hours">Alle … Stunden</label>
+        <select id="sch_hours"><option>1</option><option>2</option><option>3</option><option>4</option><option>6</option><option>8</option><option>12</option></select></div>
+      <div data-sch="weekly"><label for="sch_weekday">Wochentag</label>
+        <select id="sch_weekday"><option value="0">Montag</option><option value="1">Dienstag</option><option value="2">Mittwoch</option><option value="3">Donnerstag</option><option value="4">Freitag</option><option value="5">Samstag</option><option value="6">Sonntag</option></select></div>
+      <div data-sch="monthly"><label for="sch_monthday">Tag im Monat</label><input type="number" id="sch_monthday" min="1" max="28"></div>
+      <div data-sch="time"><label for="sch_time" id="sch_time_label">Uhrzeit</label><input type="text" id="sch_time" placeholder="03:00"></div>
+    </div>
+    <div class="hint" id="schText"></div>
+    <label class="check" id="autostartRow"><input type="checkbox" id="autostart"> Mit Windows starten (läuft dann im Hintergrund, damit der Zeitplan greift)</label>
+    <div class="hint">Verpasste Termine (PC war aus) werden beim nächsten Start nachgeholt. Fehlgeschlagene Backups werden bis zu 3× im Abstand von 15 Minuten wiederholt.</div>
+    <div class="btns"><button class="primary" data-save>Speichern</button></div>
+  </section>
+
+  <section class="card">
+    <h2>Speicherort &amp; Aufbewahrung <span class="dirty">ungespeichert</span></h2>
+    <label for="backup_dir">Speicherort</label>
+    <input type="text" id="backup_dir">
+    <div class="btns" style="margin-top:8px"><button class="small" id="btnBrowse">Durchsuchen…</button><button class="small" id="btnOpen">Ordner öffnen</button></div>
+    <div class="hint" id="freeSpace"></div>
+    <div class="row">
+      <div><label for="keep_count">Anzahl Backups behalten</label><input type="number" id="keep_count" min="0"></div>
+      <div><label for="max_age">Löschen wenn älter als (Tage)</label><input type="number" id="max_age" min="0"></div>
+    </div>
+    <div class="hint">0 = keine Grenze. Ältere Backups werden erst <b>nach</b> einem erfolgreichen neuen Backup gelöscht. Das neueste und alle als „geschützt“ markierten Backups werden nie automatisch gelöscht.</div>
+    <div class="btns"><button class="primary" data-save>Speichern</button><button id="btnCleanup">Jetzt aufräumen</button></div>
+  </section>
+
+  <section class="card">
+    <h2>Art der Sicherung <span class="dirty">ungespeichert</span></h2>
+    <label for="mode">Was wird gesichert?</label>
+    <select id="mode">
+      <option value="files">Komplettes System – alle Dateien, Einstellungen, Programme (empfohlen)</option>
+      <option value="image">Festplatten-Image (Rohabbild, dd)</option>
+    </select>
+    <div class="hint" id="modeHint"></div>
+    <div data-mode="image"><label for="image_disk">Festplatte</label><input type="text" id="image_disk" placeholder="leer = automatisch (z. B. /dev/sda, /dev/vda)"></div>
+    <div data-mode="files"><label for="exclude_extra">Zusätzlich ausschließen (ein Pfad pro Zeile)</label><textarea id="exclude_extra" placeholder="/var/log/journal&#10;/home/user/grosse-downloads"></textarea></div>
+    <label for="pre_command">Befehl vor dem Backup (optional, läuft als root)</label>
+    <input type="text" id="pre_command" placeholder="z. B. mysqldump --all-databases > /root/db.sql">
+    <label for="post_command">Befehl nach dem Backup (optional)</label>
+    <input type="text" id="post_command" placeholder="z. B. systemctl start meinedienst">
+    <label class="check"><input type="checkbox" id="verify"> Archiv nach dem Backup auf Vollständigkeit prüfen</label>
+    <div class="btns"><button class="primary" data-save>Speichern</button></div>
+  </section>
+
+  <section class="card wide">
+    <h2>Vorhandene Backups</h2>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Datum</th><th>Server</th><th>Art</th><th>Größe</th><th>Dauer</th><th>Status</th><th>Geschützt</th><th></th></tr></thead>
+        <tbody id="backupRows"></tbody>
+      </table>
+    </div>
+    <div class="hint" id="noBackups"></div>
+  </section>
+
+  <section class="card wide">
+    <h2>Protokoll</h2>
+    <pre class="log" id="log"></pre>
+  </section>
+</main>
+
+<dialog id="restoreDlg">
+  <h2 style="margin-top:0">Backup wiederherstellen</h2>
+  <p id="restoreText"></p>
+  <div id="restoreModeText" class="hint"></div>
+  <label for="restoreConfirm">Zur Bestätigung den Servernamen eingeben: <b id="restoreHost"></b></label>
+  <input type="text" id="restoreConfirm" autocomplete="off">
+  <label class="check"><input type="checkbox" id="restoreReboot" checked> Server danach automatisch neu starten</label>
+  <div class="btns">
+    <button class="primary danger" id="restoreGo" style="color:var(--accent-text);background:var(--bad);border-color:var(--bad)">Wiederherstellen</button>
+    <button id="restoreCancel">Abbrechen</button>
+  </div>
+</dialog>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const TOKEN = "__TOKEN__";
+const $ = id => document.getElementById(id);
+let state = null, formLoaded = false, dirty = false, restoreFile = null, lastLogLen = 0;
+
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: body === undefined ? "GET" : "POST",
+    headers: {"X-Token": TOKEN, "Content-Type": "application/json"},
+    body: body === undefined ? undefined : JSON.stringify(body)
+  });
+  const data = await res.json().catch(() => ({ok: false, error: "Ungültige Antwort"}));
+  if (!res.ok || data.ok === false) throw new Error(data.error || ("HTTP " + res.status));
+  return data;
+}
+
+function toast(msg, cls) {
+  const t = $("toast");
+  t.textContent = msg; t.className = "toast " + (cls || "");
+  t.style.display = "block";
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => t.style.display = "none", cls === "bad" ? 9000 : 5000);
+}
+
+async function action(path, body, okMsg, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const r = await api(path, body || {});
+    if (okMsg) toast(typeof okMsg === "function" ? okMsg(r) : okMsg, "ok");
+    await refresh();
+    return r;
+  } catch (e) { toast(e.message, "bad"); }
+  finally { if (btn) btn.disabled = false; }
+}
+
+const fmtSize = n => {
+  if (n == null) return "–";
+  const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i ? n.toFixed(1) : n) + " " + u[i];
+};
+const fmtDur = s => {
+  s = Math.round(s || 0);
+  return s >= 3600 ? `${Math.floor(s / 3600)}h ${String(Math.floor(s % 3600 / 60)).padStart(2, "0")}m`
+                   : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
+};
+const fmtDate = ts => ts ? new Date(ts * 1000).toLocaleString("de-DE", {dateStyle: "medium", timeStyle: "short"}) : "–";
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+
+function fillForm(c) {
+  $("host").value = c.host; $("port").value = c.port; $("user").value = c.user;
+  $("password").value = ""; $("key_file").value = c.key_file;
+  $("mode").value = c.mode; $("image_disk").value = c.image_disk;
+  $("exclude_extra").value = c.exclude_extra; $("pre_command").value = c.pre_command;
+  $("post_command").value = c.post_command; $("verify").checked = !!c.verify;
+  $("backup_dir").value = c.backup_dir;
+  $("keep_count").value = c.retention.keep_count; $("max_age").value = c.retention.max_age_days;
+  $("sch_type").value = c.schedule.type; $("sch_hours").value = String(c.schedule.every_hours);
+  $("sch_weekday").value = String(c.schedule.weekday); $("sch_monthday").value = c.schedule.monthday;
+  $("sch_time").value = c.schedule.time;
+  setDirty(false); updateVisibility();
+}
+
+function readForm() {
+  return {
+    host: $("host").value, port: $("port").value, user: $("user").value,
+    password: $("password").value, key_file: $("key_file").value,
+    mode: $("mode").value, image_disk: $("image_disk").value,
+    exclude_extra: $("exclude_extra").value, pre_command: $("pre_command").value,
+    post_command: $("post_command").value, verify: $("verify").checked,
+    backup_dir: $("backup_dir").value,
+    retention: {keep_count: $("keep_count").value, max_age_days: $("max_age").value},
+    schedule: {type: $("sch_type").value, every_hours: $("sch_hours").value,
+               weekday: $("sch_weekday").value, monthday: $("sch_monthday").value, time: $("sch_time").value}
+  };
+}
+
+function setDirty(d) {
+  dirty = d;
+  document.querySelectorAll(".dirty").forEach(e => e.style.display = d ? "inline" : "none");
+}
+
+function updateVisibility() {
+  const t = $("sch_type").value;
+  document.querySelectorAll("[data-sch]").forEach(el => {
+    const k = el.dataset.sch;
+    el.style.display = (k === t || (k === "time" && t !== "off")) ? "" : "none";
+  });
+  $("sch_time_label").textContent = t === "hours" ? "Minute (hh:mm, nur mm zählt)" : "Uhrzeit (hh:mm)";
+  const m = $("mode").value;
+  document.querySelectorAll("[data-mode]").forEach(el => el.style.display = el.dataset.mode === m ? "" : "none");
+  $("modeHint").innerHTML = m === "files"
+    ? "Sichert das <b>gesamte Dateisystem</b> im laufenden Betrieb inkl. Rechten und Besitzern. Wiederherstellen: Server beim Anbieter mit <b>demselben Betriebssystem</b> neu installieren, hier „Wiederherstellen“ klicken – danach läuft alles wie zum Zeitpunkt des Backups."
+    : "Bit-genaue Kopie der ganzen Festplatte. Am besten aus dem <b>Rescue-System</b> des Anbieters sichern (im laufenden Betrieb kann das Image inkonsistent sein). Zurückspielen nur aus dem Rescue-System. Größe ≈ belegte Festplatte, dauert deutlich länger.";
+}
+
+async function save(btn) {
+  const r = await action("/api/config", readForm(), "Einstellungen gespeichert", btn);
+  if (r) { formLoaded = false; await refresh(); }
+}
+
+function renderJob(s) {
+  const j = s.job, pill = $("statusPill");
+  if (j) {
+    pill.textContent = j.kind === "restore" ? "Wiederherstellung läuft" : "Backup läuft";
+    pill.className = "pill warn";
+    $("jobTitle").textContent = j.phase;
+    let d = `${j.label} · ${fmtSize(j.bytes)} übertragen · ${fmtDur(j.elapsed)}`;
+    if (j.speed > 0) d += ` · ${fmtSize(j.speed)}/s`;
+    const bar = $("jobBar");
+    bar.style.display = "";
+    if (j.total) {
+      const pct = Math.min(100, j.bytes / j.total * 100);
+      bar.className = "bar"; bar.firstElementChild.style.width = pct + "%";
+      d += ` · ${pct.toFixed(0)} %`;
+    } else { bar.className = "bar indet"; bar.firstElementChild.style.width = ""; }
+    $("jobDetail").textContent = d;
+    $("jobBtns").style.display = "";
+  } else {
+    const lr = s.last_result;
+    pill.textContent = !lr ? "Bereit" : lr.ok ? "Letzter Lauf OK" : "Letzter Lauf fehlgeschlagen";
+    pill.className = "pill " + (!lr ? "muted" : lr.ok ? "ok" : "bad");
+    $("jobTitle").textContent = "Bereit";
+    $("jobDetail").textContent = lr ? `${fmtDate(lr.time)}: ${lr.message}` : "Noch kein Backup gelaufen.";
+    $("jobBar").style.display = "none";
+    $("jobBtns").style.display = "none";
+  }
+  $("btnBackup").disabled = !!j;
+}
+
+function renderBackups(s) {
+  const rows = s.backups.map(b => {
+    const st = !b.exists ? '<span class="bad">Datei fehlt</span>'
+      : b.status === "ok" ? '<span class="ok">OK</span>'
+      : `<span class="warn" title="${esc((b.warnings || []).join("\n"))}">mit Hinweisen</span>`;
+    return `<tr>
+      <td class="num">${fmtDate(b.created_ts)}</td>
+      <td>${esc(b.host)}</td>
+      <td>${b.mode === "image" ? "Image" : "Komplett"}</td>
+      <td class="num">${fmtSize(b.size)}</td>
+      <td class="num">${fmtDur(b.duration_s)}</td>
+      <td>${st}</td>
+      <td><input type="checkbox" data-keep="${esc(b.file)}" ${b.keep ? "checked" : ""} title="Geschützte Backups werden nie automatisch gelöscht"></td>
+      <td style="white-space:nowrap">
+        <button class="small" data-restore="${esc(b.file)}" ${b.exists ? "" : "disabled"}>Wiederherstellen</button>
+        <button class="small danger" data-delete="${esc(b.file)}">Löschen</button>
+      </td></tr>`;
+  }).join("");
+  $("backupRows").innerHTML = rows;
+  $("noBackups").textContent = s.backups.length ? "" : "Im Speicherort liegen noch keine Backups.";
+}
+
+async function refresh() {
+  try { state = await api("/api/state"); } catch (e) { $("statusPill").textContent = "Keine Verbindung zum Programm"; $("statusPill").className = "pill bad"; return; }
+  const s = state, c = s.config;
+  if (!formLoaded) { fillForm(c); formLoaded = true; }
+  $("pwHint").textContent = c.password_set ? "Ein Passwort ist gespeichert (verschlüsselt). Feld leer lassen, um es zu behalten." : "Noch kein Passwort gespeichert.";
+  $("password").placeholder = c.password_set ? "•••••••• (gespeichert)" : "";
+  $("nextRun").textContent = s.next_run ? "Nächstes Backup: " + fmtDate(s.next_run) : "Kein Zeitplan aktiv";
+  $("schText").textContent = s.schedule_text + (s.next_run ? " – nächstes: " + fmtDate(s.next_run) : "");
+  $("freeSpace").textContent = s.free_space != null ? "Frei am Speicherort: " + fmtSize(s.free_space) : "Speicherort existiert noch nicht (wird beim ersten Backup angelegt).";
+  $("autostartRow").style.display = s.autostart_supported ? "" : "none";
+  $("autostart").checked = s.autostart;
+  renderJob(s); renderBackups(s);
+  const logEl = $("log"), atBottom = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 20;
+  const text = s.log.join("\n");
+  if (text.length !== lastLogLen) { logEl.textContent = text; lastLogLen = text.length; if (atBottom) logEl.scrollTop = logEl.scrollHeight; }
+}
+
+document.querySelectorAll("input, select, textarea").forEach(el => {
+  if (["autostart", "restoreConfirm", "restoreReboot"].includes(el.id) || el.dataset.keep !== undefined) return;
+  el.addEventListener("input", () => { setDirty(true); updateVisibility(); });
+});
+document.querySelectorAll("[data-save]").forEach(b => b.addEventListener("click", () => save(b)));
+
+$("btnBackup").onclick = async e => {
+  if (dirty && !confirm("Es gibt ungespeicherte Änderungen. Erst speichern und dann sichern?")) return;
+  if (dirty) await save();
+  action("/api/backup", {}, "Backup gestartet", e.target);
+};
+$("btnCancel").onclick = e => { if (confirm("Laufenden Vorgang wirklich abbrechen?")) action("/api/cancel", {}, null, e.target); };
+$("btnTest").onclick = async e => {
+  if (dirty) await save();
+  e.target.textContent = "Teste …";
+  const r = await action("/api/test", {}, r => r.message, e.target);
+  e.target.textContent = "Verbindung testen";
+};
+$("btnHostKey").onclick = e => { if (confirm("Gespeicherten Host-Key dieses Servers vergessen? (nur nötig nach Neuinstallation)")) action("/api/hostkey/reset", {}, "Host-Key entfernt", e.target); };
+$("btnBrowse").onclick = async e => {
+  const r = await action("/api/browse", {}, null, e.target);
+  if (r && r.path) { $("backup_dir").value = r.path; setDirty(true); }
+};
+$("btnOpen").onclick = e => action("/api/open-folder", {}, null, e.target);
+$("btnCleanup").onclick = e => action("/api/cleanup", {}, r => `${r.deleted} Backup(s) gelöscht`, e.target);
+$("autostart").onchange = e => action("/api/autostart", {enabled: e.target.checked}, e.target.checked ? "Startet jetzt mit Windows" : "Autostart aus");
+$("btnQuit").onclick = async e => {
+  if (!confirm("Programm beenden? Geplante Backups laufen dann nicht mehr, bis es wieder gestartet wird.")) return;
+  try { await api("/api/quit", {}); document.body.innerHTML = '<p style="padding:40px;text-align:center">Server-Backup wurde beendet. Neu starten mit <b>start.bat</b>.</p>'; }
+  catch (err) { toast(err.message, "bad"); }
+};
+
+$("backupRows").addEventListener("click", e => {
+  const del = e.target.dataset.delete, res = e.target.dataset.restore;
+  if (del && confirm(`Backup ${del} endgültig löschen?`)) action("/api/delete", {file: del}, "Gelöscht", e.target);
+  if (res) openRestore(res);
+});
+$("backupRows").addEventListener("change", e => {
+  if (e.target.dataset.keep) action("/api/keep", {file: e.target.dataset.keep, keep: e.target.checked}, e.target.checked ? "Backup ist geschützt" : "Schutz entfernt");
+});
+
+function openRestore(file) {
+  const b = state.backups.find(x => x.file === file), c = state.config;
+  restoreFile = file;
+  $("restoreText").innerHTML = `Das Backup vom <b>${esc(fmtDate(b.created_ts))}</b> (${esc(b.host)}) wird auf <b>${esc(c.user)}@${esc(c.host)}</b> zurückgespielt. Dateien auf dem Server werden dabei <b>überschrieben</b>.`;
+  $("restoreModeText").innerHTML = b.mode === "image"
+    ? "Image: Der Server muss im <b>Rescue-System</b> laufen und unter „Festplatte“ muss das Ziel eingetragen sein (z. B. /dev/sda). Die komplette Festplatte wird überschrieben."
+    : "Komplett-Backup: Am besten auf einen frisch installierten Server mit <b>demselben Betriebssystem</b>. Danach werden initramfs und Bootloader automatisch neu eingerichtet.";
+  $("restoreHost").textContent = c.host;
+  $("restoreConfirm").value = "";
+  $("restoreDlg").showModal();
+}
+$("restoreCancel").onclick = () => $("restoreDlg").close();
+$("restoreGo").onclick = async e => {
+  const r = await action("/api/restore", {file: restoreFile, confirm: $("restoreConfirm").value, reboot: $("restoreReboot").checked}, "Wiederherstellung gestartet", e.target);
+  if (r) $("restoreDlg").close();
+};
+
+refresh();
+setInterval(refresh, 1500);
+</script>
+</body>
+</html>

@@ -48,3 +48,10 @@ tak_certs/tak.persistentsystems.eu/*
 !tak_certs/tak.persistentsystems.eu/truststore-root.p12
 .venv/
 gateway_crash.log
+
+# Server-Backup: lokale Einstellungen (enthalten das verschluesselte Server-Passwort) und Laufzeitdaten
+server_backup/backup_config.json
+server_backup/backup_state.json
+server_backup/backup_log.txt
+server_backup/known_hosts
+server_backup/*.tmp

@@ -1,0 +1,2 @@
+# Python-Abhaengigkeiten des Server-Backups (start.bat installiert sie automatisch in .venv).
+paramiko>=3.4       # SSH-Verbindung mit Passwort oder Schluessel
