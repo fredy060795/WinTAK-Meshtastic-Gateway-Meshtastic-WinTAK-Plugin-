@@ -610,6 +610,22 @@ def extract_cot_events(buffer_text):
         buffer_text = buffer_text[end.end():]
 
 
+_XML_DECLARATION_RE = re.compile(rb"^\s*<\?xml[^>]*\?>\s*", re.IGNORECASE)
+
+
+def prepare_cot_for_stream(payload):
+    """Bytes of one CoT event as TAK servers expect them in a stream.
+
+    No XML declaration and no separator between events: OpenTAKServer splits the stream at
+    ``</event>`` and parses each piece; a piece starting with whitespace followed by
+    ``<?xml ...?>`` is a parse error there and the event (plus the rest of the read) is dropped.
+    """
+    data = payload if isinstance(payload, bytes) else str(payload).encode("utf-8")
+    data = data.lstrip(b"\xef\xbb\xbf")
+    data = _XML_DECLARATION_RE.sub(b"", data, count=1)
+    return data.strip()
+
+
 def _cot_time(dt):
     return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
 
@@ -784,10 +800,12 @@ class TAKServerClient:
         return sock
 
     def _write(self, sock, payload):
-        data = payload if payload.endswith(b"\n") else payload + b"\n"
+        data = prepare_cot_for_stream(payload)
+        if not data:
+            return
         with self._send_lock:
             if self.protocol == "UDP":
-                sock.send(payload)
+                sock.send(data)
                 return
             deadline = time.monotonic() + SEND_TIMEOUT_SECONDS
             view = memoryview(data)
@@ -858,6 +876,8 @@ class TAKServerClient:
         return was
 
     def _report_connection_error(self, exc, connected_at=None):
+        if self._stop.is_set():
+            return  # socket closed by stop(); not an error
         quick_close = connected_at is not None and time.monotonic() - connected_at < CONFIRM_CONNECTION_SECONDS
         rejected = is_client_certificate_rejection(exc) or (
             self.protocol == "SSL" and quick_close and isinstance(exc, (ConnectionError, ssl.SSLError))

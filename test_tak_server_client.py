@@ -327,6 +327,31 @@ class TestClientConnections(unittest.TestCase):
             client.send(SAMPLE_EVENT)
             self.assertTrue(server.wait_for('uid="MESH-1"', timeout=12))
 
+    def test_stream_is_parseable_by_opentakserver(self):
+        """Replicates OpenTAKServer's EudHandler.handle() split/parse loop on what the gateway sends."""
+        import re
+        from xml.etree.ElementTree import ParseError as XmlParseError, fromstring as xml_fromstring
+
+        server = _FakeTakServer()
+        self.servers.append(server)
+        client, _ = self._client(server)
+        with_declaration = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        for i in range(5):
+            client.send((with_declaration + SAMPLE_EVENT.replace("MESH-1", f"MESH-{i}")).encode())
+        client.start()
+        self.assertTrue(server.wait_for('uid="MESH-4"', timeout=10))
+        parsed = []
+        cot = server.received.decode()
+        for c in re.split("</event>|</auth>", cot):
+            if "<event" in c:
+                try:
+                    xml_fromstring(c + "</event>")
+                    parsed.append(c)
+                except XmlParseError as exc:
+                    self.fail(f"OpenTAKServer would drop this event: {exc}: {c[:60]!r}")
+        self.assertEqual(len([c for c in parsed if 'uid="MESH-' in c]), 5)
+        self.assertIn('uid="GW-01"', parsed[0])
+
     def test_reconnects_after_server_restart_and_keeps_queue(self):
         server = _FakeTakServer()
         self.servers.append(server)
