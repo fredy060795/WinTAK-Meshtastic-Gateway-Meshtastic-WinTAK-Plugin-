@@ -235,20 +235,72 @@
               <div class="tiny">Mehrere Ports lassen sich per Strg/Shift auswählen oder nacheinander mit den Buttons hinzufügen.
                 Bluetooth-Geräte direkt als <code>BLE:&lt;Adresse oder Name&gt;</code>, WLAN-Nodes als <code>TCP:&lt;Host&gt;[:Port]</code> eintragen.</div>
             </div>
+            <div class="field-full">
+              <h3 style="margin:8px 0 0">Remote TAK Server</h3>
+              <div class="status-line" id="takServerStatus">TAK-Server: Gateway nicht gestartet.</div>
+            </div>
+            <div class="field-full">
+              <label for="dataPackageFile">TAK-Server-Datenpaket importieren (.zip aus ATAK/WinTAK/TAK Server)</label>
+              <div class="btn-row">
+                <input id="dataPackageFile" type="file" accept=".zip">
+                <button type="button" onclick="importDataPackage()">Datenpaket übernehmen</button>
+              </div>
+              <div class="tiny">Übernimmt Server-Adresse, Port, SSL, Client-Zertifikat und Truststore inkl. Passwörter.</div>
+            </div>
             <div class="field">
               <label for="tak_server_host">Remote TAK Host</label>
-              <input id="tak_server_host" type="text">
+              <input id="tak_server_host" type="text" placeholder="tak.example.com, 10.0.0.5 oder ssl://host:8089">
             </div>
             <div class="field">
               <label for="tak_server_port">Remote Port</label>
-              <input id="tak_server_port" type="number">
+              <input id="tak_server_port" type="number" placeholder="leer = Standard (8087 / SSL 8089)">
             </div>
             <div class="field">
               <label for="tak_server_protocol">Remote Protocol</label>
               <select id="tak_server_protocol">
-                <option>TCP</option>
-                <option>UDP</option>
+                <option value="SSL">SSL/TLS (Zertifikat)</option>
+                <option value="TCP">TCP (Streaming)</option>
+                <option value="UDP">UDP</option>
               </select>
+            </div>
+            <div class="field">
+              <label for="tak_server_tls_verify">Serverzertifikat prüfen</label>
+              <select id="tak_server_tls_verify">
+                <option value="auto">Auto (nur mit Truststore)</option>
+                <option value="true">Immer prüfen</option>
+                <option value="false">Nicht prüfen</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="tak_server_client_cert">Client-Zertifikat (.p12 oder .pem)</label>
+              <input id="tak_server_client_cert" type="text" placeholder="tak_certs/server/user.p12">
+            </div>
+            <div class="field">
+              <label for="tak_server_client_cert_password">Zertifikat-Passwort</label>
+              <input id="tak_server_client_cert_password" type="password" autocomplete="off" placeholder="Standard: atakatak">
+            </div>
+            <div class="field">
+              <label for="tak_server_ca_cert">Truststore / CA (.p12 oder .pem)</label>
+              <input id="tak_server_ca_cert" type="text" placeholder="tak_certs/server/truststore-root.p12">
+            </div>
+            <div class="field">
+              <label for="tak_server_ca_cert_password">Truststore-Passwort</label>
+              <input id="tak_server_ca_cert_password" type="password" autocomplete="off" placeholder="Standard: atakatak">
+            </div>
+            <div class="field">
+              <label for="tak_server_to_mesh">TAK-Server → Mesh</label>
+              <select id="tak_server_to_mesh">
+                <option value="chat_markers">Chat + Marker (empfohlen)</option>
+                <option value="chat">Nur Chat</option>
+                <option value="all">Alles inkl. Positionen (gedrosselt)</option>
+                <option value="off">Aus</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Weiterleitung</label>
+              <label class="check"><input id="local_tak_to_server" type="checkbox"> Lokales WinTAK → TAK-Server</label>
+              <label class="check"><input id="tak_server_to_local_tak" type="checkbox"> TAK-Server → lokales WinTAK</label>
+              <label class="check"><input id="tak_server_send_gateway_sa" type="checkbox"> Gateway meldet sich mit eigener SA an</label>
             </div>
             <div class="field">
               <label for="log_level">Log-Level</label>
@@ -406,13 +458,16 @@
     function collectForm() {
       const ids = [
         'meshtastic_port', 'tak_server_host', 'tak_server_port', 'tak_server_protocol',
+        'tak_server_tls_verify', 'tak_server_client_cert', 'tak_server_client_cert_password',
+        'tak_server_ca_cert', 'tak_server_ca_cert_password', 'tak_server_to_mesh',
         'local_tak_ip', 'local_tak_port', 'local_tak_chat_listen_port', 'local_tak_tcp_listen_port',
         'log_level', 'sync_interval_seconds', 'relay_text_from_ports', 'relay_text_to_mode',
         'relay_text_to_ports', 'park_lat', 'park_lon'
       ];
       const payload = {};
       ids.forEach((id) => payload[id] = document.getElementById(id).value);
-      ['log_raw_meshtastic_payloads', 'log_raw_meshtastic_payloads_full', 'relay_text_messages', 'send_nodes_without_gps', 'set_gateway_position_on_start']
+      ['log_raw_meshtastic_payloads', 'log_raw_meshtastic_payloads_full', 'relay_text_messages', 'send_nodes_without_gps', 'set_gateway_position_on_start',
+        'local_tak_to_server', 'tak_server_to_local_tak', 'tak_server_send_gateway_sa']
         .forEach((id) => payload[id] = document.getElementById(id).checked);
       return payload;
     }
@@ -560,6 +615,7 @@
       document.getElementById('gatewayStatus').textContent = state.status_text || '⬛ Stopped';
       document.getElementById('meshStatus').textContent = state.mesh_status || 'Gateway not started.';
       document.getElementById('cotStatus').textContent = state.cot_status || 'Gateway not started.';
+      renderTakServerStatus(state.tak_server, state.running);
       document.getElementById('stopBtn').disabled = !state.running;
       document.getElementById('syncBtn').disabled = !state.running;
       const dot = document.getElementById('statusDot');
@@ -569,8 +625,55 @@
       renderServiceInfo(service);
       if ((state.dependencies || []).length) {
         setNotice(`Fehlende Python-Pakete: ${state.dependencies.join(', ')}. Das Gateway kann damit ggf. nicht starten.`, true);
-      } else {
+        dependencyNoticeShown = true;
+      } else if (dependencyNoticeShown) {
+        // Only clear our own dependency hint, not errors from user actions.
         setNotice('');
+        dependencyNoticeShown = false;
+      }
+    }
+
+    let dependencyNoticeShown = false;
+
+    function renderTakServerStatus(status, running) {
+      const el = document.getElementById('takServerStatus');
+      if (!running || !status) {
+        el.textContent = 'TAK-Server: Gateway nicht gestartet.';
+        return;
+      }
+      if (!status.configured) {
+        el.textContent = 'TAK-Server: nicht konfiguriert.';
+        return;
+      }
+      const state = status.connected ? '🟢 verbunden' : '🔴 nicht verbunden';
+      const counters = `gesendet ${status.sent || 0} · empfangen ${status.received || 0} · Puffer ${status.queued || 0}`;
+      const error = !status.connected && status.last_error ? ` · Fehler: ${status.last_error}` : '';
+      el.textContent = `TAK-Server ${status.endpoint || ''}: ${state} · ${counters}${error}`;
+    }
+
+    function readFileAsBase64(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result).split(',', 2)[1] || '');
+        reader.onerror = () => reject(new Error('Datei konnte nicht gelesen werden.'));
+        reader.readAsDataURL(file);
+      });
+    }
+
+    async function importDataPackage() {
+      const input = document.getElementById('dataPackageFile');
+      const file = input.files && input.files[0];
+      if (!file) {
+        setNotice('Bitte zuerst ein Datenpaket (.zip) auswählen.', true);
+        return;
+      }
+      try {
+        const content = await readFileAsBase64(file);
+        const result = await api('/api/browser/import-data-package', { filename: file.name, content });
+        applyForm(result.config || {});
+        setNotice(result.message || 'Datenpaket übernommen.');
+      } catch (error) {
+        setNotice(error.message, true);
       }
     }
 

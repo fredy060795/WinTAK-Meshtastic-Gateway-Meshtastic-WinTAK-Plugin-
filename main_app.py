@@ -11,14 +11,13 @@ TAK Meshtastic Gateway - vollständige, robuste Version
 
 import os
 import sys
-import asyncio
 import argparse
 import base64
+import binascii
 import codecs
 import datetime
 import hashlib
 import http.server
-import ipaddress
 import inspect
 import json
 import math
@@ -27,16 +26,18 @@ import pathlib
 import queue
 import re
 import socket
+import shutil
 import sqlite3
 import time
 import logging
+import tempfile
 import threading
 import traceback
 import urllib.parse
 import uuid
 import webbrowser
+import zipfile
 import zlib
-import warnings
 from xml.etree.ElementTree import Element, ParseError, SubElement, tostring, fromstring
 try:
     import tkinter as tk
@@ -56,16 +57,16 @@ try:
 except Exception:
     colorlog = None
 
-try:
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message=r"The 'aiohttp' package is required but not installed\..*",
-            category=UserWarning,
-        )
-        import pytak
-except Exception:
-    pytak = None
+from tak_server_client import (
+    DEFAULT_TAK_SERVER_PORTS,
+    TAK_SERVER_PROTOCOLS,
+    TAKServerClient,
+    build_tak_ssl_context,
+    format_tak_server_endpoint,
+    load_tak_data_package,
+    normalize_tak_server_protocol,
+    parse_tak_server_endpoint,
+)
 
 try:
     import serial.tools.list_ports
@@ -135,8 +136,11 @@ RECENT_CHAT_CACHE_MAX_ENTRIES = 256
 RECENT_COT_IDENTITY_CACHE_TTL_SECONDS = 3600
 RECENT_COT_IDENTITY_CACHE_MAX_ENTRIES = 512
 EMPTY_MESHTASTIC_COT_ERROR = "Leere CoT-Nachricht kann nicht ins Mesh gesendet werden."
-PYTAK_REMOTE_QUEUE_TIMEOUT_SECONDS = 2.0
-PYTAK_REMOTE_RECONNECT_SECONDS = 10
+TAK_SERVER_TO_MESH_MODES = ("off", "chat", "chat_markers", "all")
+DEFAULT_TAK_SERVER_TO_MESH_MODE = "chat_markers"
+TAK_SERVER_SOURCE_PROTOCOL = "TAK-SERVER"
+TAK_SERVER_CERT_DIRNAME = "tak_certs"
+TAK_SERVER_PLI_TO_MESH_MIN_INTERVAL_SECONDS = 300
 MESHTASTIC_TEXT_CHUNK_MAX_BYTES = 180
 MESHTASTIC_DATA_PAYLOAD_MAX_BYTES = 180
 MESHTASTIC_COT_FRAGMENT_PREFIX = "COTM"
@@ -297,12 +301,75 @@ def _build_service_web_ui_status(bind_ip, port, cfg=None):
         "primary_path": "/",
         "monitor_path": f"/{SERVICE_WEB_UI_PRIMARY_FILE}",
         "maker_path": "/maker.html",
-        "remote_tak": {
-            "host": str(cfg.get("tak_server_host", "")).strip(),
-            "port": int(cfg.get("tak_server_port", 8088)),
-            "protocol": str(cfg.get("tak_server_protocol", "TCP")).upper(),
-        },
+        "remote_tak": _describe_remote_tak_from_cfg(cfg),
     }
+
+
+def _config_base_dir():
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _resolve_config_path(value):
+    text = str(value or "").strip().strip('"')
+    if not text:
+        return None
+    path = os.path.expandvars(os.path.expanduser(text))
+    if not os.path.isabs(path):
+        path = os.path.join(_config_base_dir(), path)
+    return path
+
+
+def resolve_remote_tak_endpoint(cfg):
+    """(host, port, protocol) of the remote TAK server from config, or None when not configured."""
+    cfg = cfg or {}
+    return parse_tak_server_endpoint(
+        cfg.get("tak_server_host", ""),
+        cfg.get("tak_server_port"),
+        cfg.get("tak_server_protocol", "TCP"),
+    )
+
+
+def _describe_remote_tak_from_cfg(cfg):
+    try:
+        endpoint = resolve_remote_tak_endpoint(cfg)
+    except ValueError:
+        endpoint = None
+    if endpoint is None:
+        return {"host": str((cfg or {}).get("tak_server_host", "")).strip(), "port": None, "protocol": None}
+    host, port, protocol = endpoint
+    return {"host": host, "port": port, "protocol": protocol, "url": format_tak_server_endpoint(host, port, protocol)}
+
+
+def _tak_server_tls_verify_setting(value):
+    text = str(value if value is not None else "auto").strip().lower()
+    if text in ("", "auto"):
+        return None
+    return as_bool(value)
+
+
+def import_tak_data_package_into_cfg(cfg, zip_path):
+    """Apply an ATAK/WinTAK server data package (.zip) to the config; certificates are copied next to config.yaml."""
+    package_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", os.path.splitext(os.path.basename(zip_path))[0]) or "server"
+    extract_dir = os.path.join(_config_base_dir(), TAK_SERVER_CERT_DIRNAME, package_name)
+    package = load_tak_data_package(zip_path, extract_dir)
+
+    def rel(path):
+        if not path:
+            return ""
+        try:
+            return os.path.relpath(path, _config_base_dir())
+        except ValueError:
+            return path
+
+    cfg["tak_server_host"] = package["host"]
+    cfg["tak_server_port"] = package["port"]
+    cfg["tak_server_protocol"] = package["protocol"]
+    cfg["tak_server_client_cert"] = rel(package["client_cert"])
+    cfg["tak_server_client_cert_password"] = package["client_cert_password"] if package["client_cert"] else ""
+    cfg["tak_server_ca_cert"] = rel(package["ca_cert"])
+    cfg["tak_server_ca_cert_password"] = package["ca_cert_password"] if package["ca_cert"] else ""
+    cfg.pop("tak_server_client_key", None)
+    return package
 
 
 def _utc_now():
@@ -474,6 +541,8 @@ class _ServiceWebUIRequestHandler(http.server.BaseHTTPRequestHandler):
                 response = controller.run_command(body.get("command", ""))
             elif request_path == "/api/browser/refresh-ports":
                 response = controller.refresh_detected_ports()
+            elif request_path == "/api/browser/import-data-package":
+                response = controller.import_data_package(body)
             elif request_path == "/api/browser/scan-ble":
                 response = controller.scan_ble_devices()
             else:
@@ -2613,18 +2682,43 @@ def _apply_settings_payload_to_cfg(cfg, payload, ports):
         cfg["log_level"] = "INFO"
     cfg["meshtastic_port"] = ports[0] if len(ports) == 1 else ports
     cfg["tak_server_host"] = str(payload.get("tak_server_host", cfg.get("tak_server_host", ""))).strip()
-    cfg["tak_server_protocol"] = str(
+    cfg["tak_server_protocol"] = normalize_tak_server_protocol(
         payload.get("tak_server_protocol", cfg.get("tak_server_protocol", "TCP"))
-    ).strip().upper() or "TCP"
-    if cfg["tak_server_protocol"] not in ("TCP", "UDP"):
-        cfg["tak_server_protocol"] = "TCP"
+    )
+    for key in ("tak_server_client_cert", "tak_server_ca_cert"):
+        cfg[key] = str(payload.get(key, cfg.get(key, "")) or "").strip()
+    for key in ("tak_server_client_cert_password", "tak_server_ca_cert_password"):
+        # Passwords are never sent to the browser; an empty field keeps the stored value.
+        submitted = str(payload.get(key, "") or "")
+        if submitted:
+            cfg[key] = submitted
+    tls_verify = str(payload.get("tak_server_tls_verify", cfg.get("tak_server_tls_verify", "auto"))).strip().lower()
+    cfg["tak_server_tls_verify"] = tls_verify if tls_verify in ("auto", "true", "false") else "auto"
+    to_mesh_mode = str(
+        payload.get("tak_server_to_mesh", cfg.get("tak_server_to_mesh", DEFAULT_TAK_SERVER_TO_MESH_MODE))
+    ).strip().lower()
+    cfg["tak_server_to_mesh"] = to_mesh_mode if to_mesh_mode in TAK_SERVER_TO_MESH_MODES else DEFAULT_TAK_SERVER_TO_MESH_MODE
+    for key in ("tak_server_to_local_tak", "local_tak_to_server", "tak_server_send_gateway_sa"):
+        cfg[key] = _config_bool_value(payload, key, cfg.get(key, True))
     cfg["local_tak_ip"] = str(
         payload.get("local_tak_ip", cfg.get("local_tak_ip", WINTAK_REQUIRED_HOST))
     ).strip() or WINTAK_REQUIRED_HOST
 
-    cfg["tak_server_port"] = _parse_int_field_value(
-        payload.get("tak_server_port", cfg.get("tak_server_port", 8088)), "Remote Port"
-    )
+    raw_server_port = str(payload.get("tak_server_port", cfg.get("tak_server_port", "")) or "").strip()
+    if raw_server_port:
+        cfg["tak_server_port"] = _parse_int_field_value(raw_server_port, "Remote Port")
+    else:
+        cfg["tak_server_port"] = DEFAULT_TAK_SERVER_PORTS[cfg["tak_server_protocol"]]
+    if cfg["tak_server_host"]:
+        try:
+            resolve_remote_tak_endpoint(cfg)
+        except ValueError as exc:
+            raise ValueError(f"Remote TAK Host: {exc}")
+    if cfg["tak_server_protocol"] == "SSL":
+        for key, label in (("tak_server_client_cert", "Client-Zertifikat"), ("tak_server_ca_cert", "CA/Truststore")):
+            path = _resolve_config_path(cfg.get(key))
+            if path and not os.path.isfile(path):
+                raise ValueError(f"{label} nicht gefunden: {path}")
     cfg["local_tak_port"] = _parse_int_field_value(
         payload.get("local_tak_port", cfg.get("local_tak_port", 4242)), "Local TAK Port"
     )
@@ -2717,7 +2811,16 @@ def _build_browser_ui_form_state(cfg):
         "meshtastic_port": _format_ports_for_entry(cfg.get("meshtastic_port")),
         "tak_server_host": str(cfg.get("tak_server_host", "")),
         "tak_server_port": str(cfg.get("tak_server_port", 8088)),
-        "tak_server_protocol": str(cfg.get("tak_server_protocol", "TCP")).upper(),
+        "tak_server_protocol": normalize_tak_server_protocol(cfg.get("tak_server_protocol", "TCP")),
+        "tak_server_client_cert": str(cfg.get("tak_server_client_cert", "") or ""),
+        "tak_server_client_cert_password": "",
+        "tak_server_ca_cert": str(cfg.get("tak_server_ca_cert", "") or ""),
+        "tak_server_ca_cert_password": "",
+        "tak_server_tls_verify": str(cfg.get("tak_server_tls_verify", "auto")).lower(),
+        "tak_server_to_mesh": str(cfg.get("tak_server_to_mesh", DEFAULT_TAK_SERVER_TO_MESH_MODE)).lower(),
+        "tak_server_to_local_tak": as_bool(cfg.get("tak_server_to_local_tak", True)),
+        "local_tak_to_server": as_bool(cfg.get("local_tak_to_server", True)),
+        "tak_server_send_gateway_sa": as_bool(cfg.get("tak_server_send_gateway_sa", True)),
         "local_tak_ip": str(cfg.get("local_tak_ip", WINTAK_REQUIRED_HOST)),
         "local_tak_port": str(cfg.get("local_tak_port", 4242)),
         "local_tak_chat_listen_port": str(cfg.get("local_tak_chat_listen_port", DEFAULT_CHAT_LISTEN_PORT)),
@@ -2960,6 +3063,7 @@ class _ServiceWebUIController:
                 "logs": list(self._logs),
                 "wintak_monitor": list(self._wintak_monitor),
                 "dependencies": self._missing_dependencies(),
+                "tak_server": self._gateway.get_tak_server_status() if self._gateway is not None else None,
             }
 
     def refresh_detected_ports(self):
@@ -2970,6 +3074,43 @@ class _ServiceWebUIController:
             self._detected_ports = serial_ports + ble_ports
             detected_ports = [dict(item) for item in self._detected_ports]
         return {"ok": True, "detected_ports": detected_ports}
+
+    def import_data_package(self, payload):
+        filename = os.path.basename(str(payload.get("filename") or "server.zip")) or "server.zip"
+        if not filename.lower().endswith(".zip"):
+            raise ValueError("Bitte ein TAK-Datenpaket im .zip-Format auswählen.")
+        try:
+            content = base64.b64decode(str(payload.get("content") or ""), validate=True)
+        except (binascii.Error, ValueError):
+            raise ValueError("Datenpaket konnte nicht gelesen werden (ungültige Daten).")
+        if not content:
+            raise ValueError("Datenpaket ist leer.")
+        temp_dir = tempfile.mkdtemp(prefix="takgw-dp-")
+        try:
+            zip_path = os.path.join(temp_dir, filename)
+            with open(zip_path, "wb") as fh:
+                fh.write(content)
+            with self._lock:
+                updated_cfg = dict(self.cfg)
+            try:
+                package = import_tak_data_package_into_cfg(updated_cfg, zip_path)
+            except (zipfile.BadZipFile, ValueError, KeyError) as exc:
+                raise ValueError(f"Datenpaket ungültig: {exc}")
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        save_config(updated_cfg)
+        with self._lock:
+            self.cfg = updated_cfg
+        endpoint = format_tak_server_endpoint(package["host"], package["port"], package["protocol"])
+        message = f"Datenpaket übernommen: {endpoint}"
+        if package.get("requires_enrollment"):
+            message += (
+                " – Achtung: das Paket enthält kein Client-Zertifikat (Zertifikats-Enrollment per Benutzer/Passwort). "
+                "Bitte ein Datenpaket mit .p12-Client-Zertifikat verwenden."
+            )
+        message += " Gateway neu starten, damit die Verbindung verwendet wird."
+        self._append_log(message, "INFO")
+        return {"ok": True, "message": message, "config": _build_browser_ui_form_state(updated_cfg)}
 
     def scan_ble_devices(self):
         try:
@@ -3523,7 +3664,7 @@ class GatewayApp:
                 f"{self.cfg.get('local_tak_tcp_receiver_port', TCP_RECEIVER_DEFAULT_PORT)}",
             ),
             ("WinTAK TCP In", f"0.0.0.0:{self.cfg.get('local_tak_tcp_listen_port', TCP_LISTENER_DEFAULT_PORT)}"),
-            ("Remote TAK", f"{self.cfg.get('tak_server_protocol', 'TCP')} {self.cfg.get('tak_server_host', '82.165.11.84')}:{self.cfg.get('tak_server_port', 8088)}"),
+            ("Remote TAK", _describe_remote_tak_from_cfg(self.cfg).get("url") or "nicht konfiguriert"),
         ]
         for title, value in endpoint_items:
             card = tk.Frame(
@@ -3671,17 +3812,18 @@ class GatewayApp:
         )
 
         cfg_label("Remote Protocol:", row=5, col=0, pady=(0, 4))
-        server_protocol = str(self.cfg.get("tak_server_protocol", "TCP")).upper()
-        if server_protocol not in ("TCP", "UDP"):
-            server_protocol = "TCP"
+        server_protocol = normalize_tak_server_protocol(self.cfg.get("tak_server_protocol", "TCP"))
         self._server_protocol_var = tk.StringVar(value=server_protocol)
         ttk.Combobox(
             cfg_frame,
             textvariable=self._server_protocol_var,
             state="readonly",
-            values=["TCP", "UDP"],
+            values=list(TAK_SERVER_PROTOCOLS),
             width=10,
         ).grid(row=5, column=1, sticky="w", padx=(6, 12), pady=(0, 4))
+        ttk.Button(cfg_frame, text="Import TAK data package…", command=self._import_tak_data_package).grid(
+            row=4, column=4, columnspan=2, sticky="ew", padx=(8, 0), pady=(0, 4)
+        )
         cfg_label("WinTAK UDP Target IP:", row=5, col=2, padx=(8, 6), pady=(0, 4))
         self._local_tak_ip_var = tk.StringVar(value=str(self.cfg.get("local_tak_ip", WINTAK_REQUIRED_HOST)))
         ttk.Entry(cfg_frame, textvariable=self._local_tak_ip_var, width=16).grid(
@@ -4147,6 +4289,27 @@ class GatewayApp:
                 merged.append(port)
             self._ports_var.set(", ".join(merged))
 
+    def _import_tak_data_package(self):
+        from tkinter import filedialog, messagebox
+
+        zip_path = filedialog.askopenfilename(
+            title="TAK-Server-Datenpaket auswählen",
+            filetypes=[("TAK data package", "*.zip"), ("All files", "*.*")],
+        )
+        if not zip_path:
+            return
+        try:
+            package = import_tak_data_package_into_cfg(self.cfg, zip_path)
+            save_config(self.cfg)
+        except Exception as exc:
+            messagebox.showerror("Datenpaket", f"Datenpaket konnte nicht übernommen werden:\n{exc}")
+            return
+        self._server_host_var.set(package["host"])
+        self._server_port_var.set(str(package["port"]))
+        self._server_protocol_var.set(package["protocol"])
+        endpoint = format_tak_server_endpoint(package["host"], package["port"], package["protocol"])
+        self._append_log(f"TAK-Datenpaket übernommen: {endpoint} (Zertifikate in {TAK_SERVER_CERT_DIRNAME}/).", "INFO")
+
     def _scan_ble_devices(self):
         self._scan_ble_button.configure(state="disabled")
         self._append_log(f"BLE-Scan läuft (ca. {BLE_SCAN_TIMEOUT_HINT_SECONDS} s) ...", "INFO")
@@ -4583,17 +4746,24 @@ class TAKMeshtasticGateway:
         self.cfg = cfg or {}
         self.gateway_callsign = str(self.cfg.get("gateway_callsign", "MSHT-GW")).strip() or "MSHT-GW"
         self.gateway_uid = str(self.cfg.get("gateway_uid", "GW-01")).strip() or "GW-01"
-        self.server_ip = self.cfg.get("tak_server_host", "82.165.11.84")
-        # Validate port numbers
+        # Remote TAK Server: Hostname/IP/URL (ssl://host:8089, host:8089:ssl, ...)
         try:
-            server_port = int(self.cfg.get("tak_server_port", 8088))
-            if not (1 <= server_port <= 65535):
-                raise ValueError(f"Invalid server port: {server_port}")
-            self.server_port = server_port
-        except (ValueError, TypeError) as e:
-            raise ValueError(f"Invalid tak_server_port in config: {e}")
-        
-        self.server_protocol = str(self.cfg.get("tak_server_protocol", "TCP")).upper()
+            self.remote_tak_endpoint = resolve_remote_tak_endpoint(self.cfg)
+        except ValueError as e:
+            raise ValueError(f"Invalid tak_server_host/tak_server_port in config: {e}")
+        if self.remote_tak_endpoint is not None:
+            self.server_ip, self.server_port, self.server_protocol = self.remote_tak_endpoint
+        else:
+            self.server_ip, self.server_port, self.server_protocol = "", None, "TCP"
+        to_mesh_mode = str(self.cfg.get("tak_server_to_mesh", DEFAULT_TAK_SERVER_TO_MESH_MODE)).strip().lower()
+        self.tak_server_to_mesh = (
+            to_mesh_mode if to_mesh_mode in TAK_SERVER_TO_MESH_MODES else DEFAULT_TAK_SERVER_TO_MESH_MODE
+        )
+        self.tak_server_to_local_tak = as_bool(self.cfg.get("tak_server_to_local_tak", True))
+        self.local_tak_to_server = as_bool(self.cfg.get("local_tak_to_server", True))
+        self.tak_server_send_gateway_sa = as_bool(self.cfg.get("tak_server_send_gateway_sa", True))
+        self.tak_server_client = None
+        self._tak_server_pli_forward_times = {}
 
         # lokaler WinTAK / TAK-Client (Standard)
         self.tak_ip = self.cfg.get("local_tak_ip", WINTAK_REQUIRED_HOST)
@@ -4688,18 +4858,12 @@ class TAKMeshtasticGateway:
             self.cfg.get("prefer_local_tcp_over_udp", True)
         )
 
-        # Remote server socket(s)
-        self.sock_remote = None  # für TCP: persistent socket; für UDP: socket used for sendto
-        self.remote_pytak_loop = None
-        self.remote_pytak_queue = None
-        self.remote_pytak_ready = threading.Event()
-        self.remote_cot_url = self._build_remote_cot_url()
 
         # interne State
         self.logger = self.setup_logging()
         self.service_web_ui = None
         self.service_web_ui_port = SERVICE_WEB_UI_PORT
-        self.service_web_ui_bind_ip = detect_reachable_local_ip(self.server_ip)
+        self.service_web_ui_bind_ip = detect_reachable_local_ip(self.server_ip or None)
         if as_bool(self.cfg.get("enable_service_web_ui", True)):
             try:
                 self.service_web_ui = start_gateway_service_web_ui(
@@ -6415,89 +6579,171 @@ class TAKMeshtasticGateway:
             return self.park_coords[0], self.park_coords[1], 0
         return 0.0, 0.0, 0.0
 
-    def _build_remote_cot_url(self):
-        protocol = str(self.server_protocol or "TCP").strip().lower()
-        host = str(self.server_ip or "").strip()
-        if not protocol or not host:
+    def _build_tak_server_ssl_context(self):
+        return build_tak_ssl_context(
+            client_cert=_resolve_config_path(self.cfg.get("tak_server_client_cert")),
+            client_cert_password=str(self.cfg.get("tak_server_client_cert_password", "") or "") or None,
+            client_key=_resolve_config_path(self.cfg.get("tak_server_client_key")),
+            ca_cert=_resolve_config_path(self.cfg.get("tak_server_ca_cert")),
+            ca_cert_password=str(self.cfg.get("tak_server_ca_cert_password", "") or "") or None,
+            verify=_tak_server_tls_verify_setting(self.cfg.get("tak_server_tls_verify")),
+            check_hostname=as_bool(self.cfg.get("tak_server_tls_check_hostname", False)),
+        )
+
+    def _get_gateway_sa_position(self):
+        if self.park_coords is not None:
+            return self.park_coords
+        for iface in self._get_interfaces_snapshot():
+            try:
+                info = iface.getMyNodeInfo() if hasattr(iface, "getMyNodeInfo") else None
+            except Exception:
+                info = None
+            position = (info or {}).get("position") or {}
+            lat = to_float_or_none(position.get("latitude"))
+            lon = to_float_or_none(position.get("longitude"))
+            if lat is None and position.get("latitudeI") is not None:
+                lat = to_float_or_none(position.get("latitudeI"))
+                lat = lat / 1e7 if lat is not None else None
+            if lon is None and position.get("longitudeI") is not None:
+                lon = to_float_or_none(position.get("longitudeI"))
+                lon = lon / 1e7 if lon is not None else None
+            if lat is not None and lon is not None and not (lat == 0.0 and lon == 0.0):
+                return lat, lon
+        return None
+
+    def _build_gateway_sa_xml(self):
+        """Own SA (presence) of the gateway, like ATAK/WinTAK send it when connecting to a TAK server.
+
+        Some servers (e.g. FreeTAKServer) only accept and distribute data from a connection after
+        the client identified itself with such an SA event.
+        """
+        now = datetime.datetime.now(datetime.timezone.utc)
+        stale = now + datetime.timedelta(seconds=max(120, 3 * int(self.cfg.get("tak_server_sa_interval_seconds", 60) or 60)))
+        position = self._get_gateway_sa_position()
+        if position is None:
+            lat, lon, ce = 0.0, 0.0, "9999999.0"
+        else:
+            (lat, lon), ce = position, "10.0"
+        event = Element("event", {
+            "version": "2.0",
+            "uid": self.gateway_uid,
+            "type": "a-f-G-U-C",
+            "how": "h-g-i-g-o" if position is None else "h-e",
+            "time": _utc_isoformat_z(now),
+            "start": _utc_isoformat_z(now),
+            "stale": _utc_isoformat_z(stale),
+        })
+        SubElement(event, "point", {
+            "lat": f"{lat:.6f}", "lon": f"{lon:.6f}", "hae": "0.0", "ce": ce, "le": "9999999.0",
+        })
+        detail = SubElement(event, "detail")
+        SubElement(detail, "takv", {
+            "device": "Meshtastic Gateway",
+            "platform": "WinTAK-Meshtastic-Gateway",
+            "os": sys.platform,
+            "version": "1.0",
+        })
+        SubElement(detail, "contact", {"callsign": self.gateway_callsign, "endpoint": "*:-1:stcp"})
+        SubElement(detail, "uid", {"Droid": self.gateway_callsign})
+        SubElement(detail, "__group", {
+            "name": str(self.cfg.get("tak_server_team", "Cyan") or "Cyan"),
+            "role": str(self.cfg.get("tak_server_role", "Team Member") or "Team Member"),
+        })
+        SubElement(detail, "status", {"battery": "100"})
+        SubElement(detail, "track", {"speed": "0.0", "course": "0.0"})
+        return tostring(event, encoding="utf-8")
+
+    def _start_tak_server_client(self):
+        if self.remote_tak_endpoint is None:
+            self.logger.info("Kein Remote-TAK-Server konfiguriert (tak_server_host leer).")
             return None
-        raw_host = host[1:-1] if host.startswith("[") and host.endswith("]") else host
-        try:
-            parsed_host = ipaddress.ip_address(raw_host)
-            if isinstance(parsed_host, ipaddress.IPv6Address):
-                host = f"[{raw_host}]"
-        except ValueError:
-            host = raw_host
-        return f"{protocol}://{host}:{self.server_port}"
-
-    def _should_use_pytak_remote(self):
-        return pytak is not None and self.server_protocol in {"TCP", "UDP"} and self.remote_cot_url is not None
-
-    def _reset_remote_pytak_state(self):
-        with self.server_lock:
-            self.remote_pytak_loop = None
-            self.remote_pytak_queue = None
-            self.remote_pytak_ready.clear()
-
-    async def _wait_for_remote_pytak_shutdown(self):
-        while not self.shutdown_flag.is_set():
-            await asyncio.sleep(0.25)
-
-    async def _run_remote_pytak_client(self):
-        if not self.remote_cot_url:
-            raise ValueError("Remote-TAK-URL konnte nicht aus Host/Port/Protokoll erstellt werden.")
-
-        config = {
-            "COT_URL": self.remote_cot_url,
-            "PYTAK_NO_HELLO": "1",
-        }
-        if self.logger.getEffectiveLevel() <= logging.DEBUG:
-            config["DEBUG"] = "1"
-
-        clitool = pytak.CLITool(config)
-        await clitool.setup()
-        with self.server_lock:
-            self.remote_pytak_loop = asyncio.get_running_loop()
-            self.remote_pytak_queue = clitool.tx_queue
-            self.remote_pytak_ready.set()
-        self.logger.info(f"PyTAK-Remote aktiv: {self.remote_cot_url}")
-
-        run_task = asyncio.create_task(clitool.run())
-        stop_task = asyncio.create_task(self._wait_for_remote_pytak_shutdown())
-        try:
-            done, pending = await asyncio.wait(
-                {run_task, stop_task},
-                return_when=asyncio.FIRST_COMPLETED,
+        host, port, protocol = self.remote_tak_endpoint
+        if protocol == "SSL" and not self.cfg.get("tak_server_client_cert"):
+            self.logger.warning(
+                "SSL-TAK-Server ohne Client-Zertifikat konfiguriert. Die meisten TAK Server (Port 8089) "
+                "verlangen ein Client-Zertifikat – Datenpaket importieren oder tak_server_client_cert setzen."
             )
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
-            for task in done:
-                error = task.exception()
-                if error is not None and task is run_task:
-                    raise error
-        finally:
-            run_task.cancel()
-            stop_task.cancel()
-            await asyncio.gather(run_task, stop_task, return_exceptions=True)
-            self._reset_remote_pytak_state()
+        sa_interval = int(self.cfg.get("tak_server_sa_interval_seconds", 60) or 0)
+        client = TAKServerClient(
+            host,
+            port,
+            protocol,
+            logger=self.logger,
+            ssl_context_factory=self._build_tak_server_ssl_context,
+            on_event=self._handle_tak_server_event,
+            sa_builder=self._build_gateway_sa_xml if self.tak_server_send_gateway_sa else None,
+            sa_interval_seconds=sa_interval if self.tak_server_send_gateway_sa else 0,
+            uid=self.gateway_uid,
+        )
+        self.tak_server_client = client
+        client.start()
+        return client
 
-    def _send_remote_packet_via_pytak(self, packet_xml, label):
-        with self.server_lock:
-            loop = self.remote_pytak_loop
-            queue = self.remote_pytak_queue
-            is_ready = self.remote_pytak_ready.is_set()
-        if not is_ready or loop is None or queue is None:
-            self.logger.debug("PyTAK-Remote ist noch nicht bereit, Remote-CoT wird derzeit übersprungen.")
+    def get_tak_server_status(self):
+        client = getattr(self, "tak_server_client", None)
+        if client is None:
+            return {"configured": self.remote_tak_endpoint is not None, "connected": False}
+        status = client.get_status()
+        status["configured"] = True
+        return status
+
+    def _send_packet_to_remote_tak(self, packet_xml, label):
+        client = getattr(self, "tak_server_client", None)
+        if client is None:
             return False
-        try:
-            future = asyncio.run_coroutine_threadsafe(queue.put(packet_xml), loop)
-            future.result(timeout=PYTAK_REMOTE_QUEUE_TIMEOUT_SECONDS)
-            self.logger.info(f"Remote-PyTAK in Queue gestellt: {self.remote_cot_url} ({label})")
+        client.send(packet_xml)
+        if client.connected:
+            self.logger.debug(f"Remote-TAK gesendet an {client.endpoint} ({label})")
+        else:
+            self.logger.debug(f"Remote-TAK nicht verbunden, CoT gepuffert für {client.endpoint} ({label})")
+        return True
+
+    def _tak_server_event_allowed_to_mesh(self, packet_xml, metadata, is_chat):
+        mode = self.tak_server_to_mesh
+        if mode == "off":
+            return False
+        if is_chat:
             return True
-        except Exception as exc:
-            self.logger.warning(f"Fehler beim Einreihen an Remote-PyTAK ({type(exc).__name__}): {exc}")
-            self._reset_remote_pytak_state()
+        if metadata is None or mode == "chat":
             return False
+        if metadata.get("is_pli"):
+            if mode != "all":
+                return False
+            # Server distributes every client's SA every few seconds; LoRa cannot carry that.
+            uid = metadata.get("uid") or ""
+            now = time.monotonic()
+            last = self._tak_server_pli_forward_times.get(uid)
+            if last is not None and now - last < TAK_SERVER_PLI_TO_MESH_MIN_INTERVAL_SECONDS:
+                return False
+            self._tak_server_pli_forward_times[uid] = now
+            return True
+        return True
+
+    def _handle_tak_server_event(self, event_xml):
+        """CoT received from the remote TAK server (other ATAK/WinTAK/iTAK clients)."""
+        if TAK_PING_TYPE_PATTERN.search(event_xml) or TAK_PONG_TYPE_PATTERN.search(event_xml):
+            return
+        normalized_packet = self._normalize_inbound_tak_packet(event_xml)
+        if not normalized_packet:
+            return
+        metadata = self._extract_cot_event_metadata(normalized_packet)
+        event_type = (metadata or {}).get("type") or ""
+        if event_type.startswith("t-x-"):
+            return  # Server-Steuernachrichten (Protokollaushandlung etc.)
+        if metadata is not None and metadata.get("uid") == self.gateway_uid:
+            return
+        is_chat = bool(self._extract_tak_chat_payload(normalized_packet))
+        server_label = self.tak_server_client.endpoint if self.tak_server_client else "TAK-Server"
+        if self._tak_server_event_allowed_to_mesh(normalized_packet, metadata, is_chat):
+            self.handle_inbound_tak_packet(
+                normalized_packet,
+                source_addr=server_label,
+                source_protocol=TAK_SERVER_SOURCE_PROTOCOL,
+                packet_size=len(_ensure_bytes(event_xml)),
+            )
+        if self.tak_server_to_local_tak:
+            packet_bytes = _ensure_bytes(normalized_packet)
+            self._send_packet_to_tak(packet_bytes, f"TAK-Server {(metadata or {}).get('uid') or ''}".strip(), include_remote=False)
 
     def _register_local_tak_tcp_peer(self, conn, endpoint):
         if conn is None:
@@ -6600,7 +6846,7 @@ class TAKMeshtasticGateway:
                     self._local_tak_tcp_push_peer = None
         return 0
 
-    def _send_packet_to_tak(self, packet_xml, label):
+    def _send_packet_to_tak(self, packet_xml, label, include_remote=True):
         cot_dedupe_key = self._build_cot_dedupe_key(packet_xml)
         if cot_dedupe_key:
             self._remember_recent_chat(self.recent_cot_ids, cot_dedupe_key)
@@ -6639,37 +6885,8 @@ class TAKMeshtasticGateway:
             self._send_packet_to_local_tak_tcp(packet_xml, label)
             self._send_packet_to_local_tak_tcp_push(packet_xml, label)
 
-        if self._should_use_pytak_remote():
-            # PyTAK replaces the legacy remote socket path when available so packets
-            # are not sent twice to the same remote TAK endpoint unless PyTAK is
-            # currently unavailable, in which case we fall back to the legacy socket.
-            if self._send_remote_packet_via_pytak(packet_xml, label):
-                return
-            self.logger.debug("PyTAK-Remote nicht verfügbar, verwende Remote-Socket-Fallback.")
-
-        if self.server_protocol == "UDP":
-            with self.server_lock:
-                sock = self.sock_remote
-                if sock:
-                    try:
-                        sock.sendto(packet_xml, (self.server_ip, self.server_port))
-                        self.logger.info(f"Remote-UDP gesendet an {self.server_ip}:{self.server_port} ({label})")
-                    except (socket.timeout, socket.error, OSError) as e:
-                        self.logger.warning(f"Fehler beim Senden an Remote-UDP-Server ({type(e).__name__}): {e}")
-        else:
-            with self.server_lock:
-                s = self.sock_remote
-                if s:
-                    try:
-                        s.sendall(packet_xml + b"\n")
-                        self.logger.info(f"Remote-TCP gesendet an {self.server_ip}:{self.server_port} ({label})")
-                    except (socket.timeout, socket.error, OSError) as e:
-                        self.logger.warning(f"Fehler beim Senden an Remote-TCP-Server ({type(e).__name__}), Socket wird zurückgesetzt: {e}")
-                        try:
-                            s.close()
-                        except Exception:
-                            pass
-                        self.sock_remote = None
+        if include_remote:
+            self._send_packet_to_remote_tak(packet_xml, label)
 
     def _build_chat_cot_xml(
         self,
@@ -8562,6 +8779,11 @@ class TAKMeshtasticGateway:
         was_normalized=None,
     ):
         metadata = self._extract_cot_event_metadata(packet_xml)
+        if metadata is not None and str(metadata.get("type") or "").startswith("t-x-"):
+            # TAK-Steuernachrichten (Ping/Pong, Protokollaushandlung) gehören nicht ins Mesh.
+            self.logger.debug(f"TAK-Steuernachricht {metadata.get('type')} nicht weitergeleitet.")
+            return
+        from_tak_server = str(source_protocol or "").upper() == TAK_SERVER_SOURCE_PROTOCOL
 
         chat_payload = self._extract_tak_chat_payload(packet_xml)
         self._log_inbound_tak_diagnostics(
@@ -8593,6 +8815,9 @@ class TAKMeshtasticGateway:
             if self._was_seen_recently(self.recent_tak_chat_ids, dedupe_key):
                 self.logger.debug("TAK-Chat wegen Duplikat-Schutz ignoriert.")
                 return
+
+            if not from_tak_server and getattr(self, "local_tak_to_server", False):
+                self._send_packet_to_remote_tak(_ensure_bytes(packet_xml), f"WinTAK-Chat {chat_payload['sender_callsign']}")
 
             # Notify the UI so it can display the received WinTAK message.
             cb = self.wintak_tcp_chat_callback
@@ -8682,6 +8907,10 @@ class TAKMeshtasticGateway:
                 discard_reason="nicht als CoT oder Chat erkannt",
             )
             return
+
+        if not from_tak_server and getattr(self, "local_tak_to_server", False):
+            # WinTAK/ATAK am Gateway -> Remote-TAK-Server (Gateway arbeitet wie ein TAK-Proxy).
+            self._send_packet_to_remote_tak(_ensure_bytes(packet_xml), f"WinTAK-CoT {metadata.get('uid') or ''}".strip())
 
         try:
             send_result = self._forward_cot_to_meshtastic(packet_xml)
@@ -9089,59 +9318,12 @@ class TAKMeshtasticGateway:
             ).start()
 
     def maintain_server(self):
-        """
-        Stellt Verbindung zum entfernten TAK-Server her (bei TCP persistent),
-        oder bereitet UDP Socket vor (bei UDP).
-        Führt Wiederverbindungen durch.
-        """
-        self.logger.info(f"Server-Mode: {self.server_protocol} -> {self.server_ip}:{self.server_port}")
-        if self._should_use_pytak_remote():
-            self.logger.info(f"PyTAK-Transport aktiviert für Remote-TAK: {self.remote_cot_url}")
-            while not self.shutdown_flag.is_set():
-                try:
-                    asyncio.run(self._run_remote_pytak_client())
-                except Exception as e:
-                    self.logger.warning(f"PyTAK-Remote-Verbindung fehlgeschlagen: {e}")
-                finally:
-                    self._reset_remote_pytak_state()
-                if not self.shutdown_flag.is_set():
-                    self.shutdown_flag.wait(PYTAK_REMOTE_RECONNECT_SECONDS)
+        """Hält die Verbindung zum Remote-TAK-Server (TCP/SSL/UDP) inkl. Wiederverbindung."""
+        client = self._start_tak_server_client()
+        if client is None:
             return
-        if pytak is None:
-            self.logger.info("PyTAK nicht verfügbar, verwende klassischen Remote-Socket-Transport.")
-        if self.server_protocol == "UDP":
-            try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                sock.settimeout(self.SOCKET_TIMEOUT)
-                with self.server_lock:
-                    self.sock_remote = sock
-                self.logger.info("Remote-UDP-Socket bereit.")
-            except Exception as e:
-                self.logger.error(f"Fehler beim Erstellen des Remote-UDP-Sockets: {e}")
-            # Keep monitoring for shutdown
-            while not self.shutdown_flag.is_set():
-                time.sleep(10)
-            return
-
-        # TCP: persistent Verbindung aufbauen und bei Fehlern zurücksetzen
-        while not self.shutdown_flag.is_set():
-            if self.sock_remote is None:
-                try:
-                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    s.settimeout(10)
-                    s.connect((self.server_ip, self.server_port))
-                    s.settimeout(None)
-                    with self.server_lock:
-                        self.sock_remote = s
-                    self.logger.info("✅ REMOTE SERVER (TCP) CONNECTED")
-                except Exception as e:
-                    with self.server_lock:
-                        self.sock_remote = None
-                    self.logger.warning(f"Verbindung zum Remote-Take-Server fehlgeschlagen: {e}")
-            time.sleep(10)
-        
-        # Cleanup on shutdown
-        self._cleanup_server_socket()
+        self.shutdown_flag.wait()
+        client.stop()
 
     def on_any_packet(self, packet, interface):
         """
@@ -9462,17 +9644,10 @@ class TAKMeshtasticGateway:
             self.logger.error("Fehler in send_broadcast:\n" + traceback.format_exc())
 
     def _cleanup_server_socket(self):
-        """
-        Cleanup remote server socket
-        """
-        self._reset_remote_pytak_state()
-        with self.server_lock:
-            if self.sock_remote:
-                try:
-                    self.sock_remote.close()
-                except Exception:
-                    pass
-                self.sock_remote = None
+        """Stop the remote TAK server connection."""
+        client = getattr(self, "tak_server_client", None)
+        if client is not None:
+            client.stop(timeout=2)
 
     def cleanup(self):
         """
@@ -9679,7 +9854,8 @@ def resolve_app_start_mode(args, has_tk):
 
 
 def _run_browser_mode(cfg, _args):
-    bind_ip = detect_reachable_local_ip(cfg.get("tak_server_host"))
+    remote_tak = _describe_remote_tak_from_cfg(cfg)
+    bind_ip = detect_reachable_local_ip(remote_tak.get("host") if remote_tak.get("port") else None)
     service = start_gateway_service_web_ui(
         bind_ip,
         port=SERVICE_WEB_UI_PORT,
@@ -9726,7 +9902,7 @@ def _run_terminal_mode(cfg, args):
         print("WARNUNG: Folgende Python-Pakete fehlen oder konnten nicht importiert werden:")
         for m in missing:
             print(" - " + m)
-        print("Bitte installiere sie (z.B. pip install meshtastic pypubsub pyserial colorlog pyyaml pytak).")
+        print("Bitte installiere sie (z.B. pip install meshtastic pypubsub pyserial colorlog pyyaml cryptography).")
         print("Fortfahren? (Enter=ja, Ctrl-C zum Abbrechen)")
         input()
 

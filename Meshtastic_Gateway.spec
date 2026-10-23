@@ -11,6 +11,8 @@ a = Analysis(
         'meshtastic.tcp_interface',
         'bleak',
         'bleak.backends.winrt',
+        'tak_server_client',
+        'cryptography.hazmat.primitives.serialization.pkcs12',
     ],
     hookspath=[],
     hooksconfig={},

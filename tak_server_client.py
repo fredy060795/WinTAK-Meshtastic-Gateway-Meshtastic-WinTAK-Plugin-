@@ -1,0 +1,645 @@
+"""
+Remote TAK Server client for the WinTAK Meshtastic Gateway.
+
+Implements the connection behaviour of ATAK/WinTAK "TAK Server" streams:
+
+* Streaming CoT XML over TCP (``tcp``), TLS (``ssl``/``tls``, port 8089 with client
+  certificates) or fire-and-forget UDP.
+* Hostnames, IPv4/IPv6 and ``ssl://host:port`` style URLs as server address.
+* Client certificates as PKCS#12 (``.p12`` from a TAK data package) or PEM files,
+  CA/truststore as ``.p12`` or PEM.
+* Import of ATAK/WinTAK server data packages (``.zip`` with ``.pref`` + certificates).
+* The connection is read continuously (the server distributes other clients' CoT to us;
+  a client that never reads is dropped by TAK Server as a slow consumer), keepalive
+  pings are sent, the gateway announces itself with its own SA on connect and
+  periodically, and the link is re-established automatically.
+* Outgoing CoT is queued, so packets produced while the server is unreachable are sent
+  after reconnecting instead of being lost.
+"""
+
+import collections
+import datetime
+import ipaddress
+import os
+import re
+import select
+import shutil
+import socket
+import ssl
+import tempfile
+import threading
+import time
+import zipfile
+from xml.etree.ElementTree import ParseError, fromstring
+
+DEFAULT_TAK_SERVER_PORTS = {"TCP": 8087, "UDP": 8087, "SSL": 8089}
+TAK_SERVER_PROTOCOLS = ("TCP", "UDP", "SSL")
+_PROTOCOL_ALIASES = {
+    "TCP": "TCP",
+    "STCP": "TCP",
+    "UDP": "UDP",
+    "SSL": "SSL",
+    "TLS": "SSL",
+    "TCPS": "SSL",
+}
+DEFAULT_TAK_CERT_PASSWORD = "atakatak"
+DEFAULT_SEND_QUEUE_SIZE = 2000
+DEFAULT_KEEPALIVE_SECONDS = 30
+DEFAULT_SA_INTERVAL_SECONDS = 60
+DEFAULT_RECONNECT_SECONDS = 10
+MAX_RECONNECT_SECONDS = 60
+CONNECT_TIMEOUT_SECONDS = 15
+SOCKET_IO_TIMEOUT_SECONDS = 1.0
+SEND_TIMEOUT_SECONDS = 15
+MAX_STREAM_BUFFER_CHARS = 4 * 1024 * 1024
+_EVENT_END_RE = re.compile(r"</event\s*>|<event\b[^>]*/>", re.IGNORECASE)
+_EVENT_START_RE = re.compile(r"<event\b", re.IGNORECASE)
+
+
+def normalize_tak_server_protocol(value, default="TCP"):
+    text = str(value or "").strip().upper()
+    return _PROTOCOL_ALIASES.get(text, default)
+
+
+def _split_host_port(text):
+    """Split ``host``, ``host:port``, ``[v6]:port`` or a bare IPv6 address."""
+    text = text.strip().strip("/")
+    if text.startswith("["):
+        closing = text.find("]")
+        if closing < 0:
+            raise ValueError(f"Ungültige IPv6-Adresse: {text}")
+        host = text[1:closing]
+        rest = text[closing + 1:]
+        if rest.startswith(":") and rest[1:]:
+            return host, rest[1:]
+        return host, None
+    if text.count(":") == 1:
+        host, port = text.split(":", 1)
+        return host, port or None
+    return text, None
+
+
+def parse_tak_server_endpoint(host_text, port=None, protocol=None):
+    """Resolve the configured remote TAK server into ``(host, port, protocol)``.
+
+    Accepts plain hostnames/IPs as well as ATAK style strings:
+    ``tak.example.com``, ``10.0.0.5:8089``, ``ssl://tak.example.com:8089``,
+    ``tak.example.com:8089:ssl`` (ATAK connectString) or ``[2001:db8::1]:8087``.
+    A protocol/port inside the host text wins over the separate fields.
+    """
+    text = str(host_text or "").strip()
+    if not text:
+        return None
+    url_protocol = None
+    match = re.match(r"^([a-zA-Z][a-zA-Z0-9+.-]*)://(.*)$", text)
+    if match:
+        url_protocol = normalize_tak_server_protocol(match.group(1), default=None)
+        if url_protocol is None:
+            raise ValueError(f"Unbekanntes TAK-Server-Protokoll in '{text}' (erlaubt: tcp, udp, ssl/tls).")
+        rest = match.group(2)
+        if rest.startswith("["):
+            closing = rest.find("]")
+            text = rest if closing < 0 else rest[:closing + 1] + rest[closing + 1:].split("/", 1)[0]
+        else:
+            text = rest.split("/", 1)[0]
+    else:
+        # ATAK connectString: host:port:proto
+        parts = text.rsplit(":", 2)
+        if len(parts) == 3 and parts[1].isdigit() and normalize_tak_server_protocol(parts[2], None):
+            if not (":" in parts[0] and not parts[0].startswith("[")):
+                url_protocol = normalize_tak_server_protocol(parts[2])
+                text = f"{parts[0]}:{parts[1]}"
+    try:
+        ipaddress.ip_address(text)
+        host, text_port = text, None  # bare IPv6 / IPv4
+    except ValueError:
+        host, text_port = _split_host_port(text)
+    if not host:
+        raise ValueError("TAK-Server-Adresse enthält keinen Host.")
+    resolved_protocol = url_protocol or normalize_tak_server_protocol(protocol)
+    resolved_port = text_port if text_port is not None else port
+    if resolved_port in (None, ""):
+        resolved_port = DEFAULT_TAK_SERVER_PORTS[resolved_protocol]
+    try:
+        resolved_port = int(resolved_port)
+    except (TypeError, ValueError):
+        raise ValueError(f"Ungültiger TAK-Server-Port: {resolved_port}")
+    if not 1 <= resolved_port <= 65535:
+        raise ValueError(f"TAK-Server-Port außerhalb 1-65535: {resolved_port}")
+    return host, resolved_port, resolved_protocol
+
+
+def format_tak_server_endpoint(host, port, protocol):
+    shown_host = f"[{host}]" if ":" in str(host) else host
+    return f"{str(protocol).lower()}://{shown_host}:{port}"
+
+
+# ---------------------------------------------------------------------------
+# Certificates
+# ---------------------------------------------------------------------------
+
+def _load_pkcs12(path, password):
+    try:
+        from cryptography.hazmat.primitives.serialization import pkcs12
+    except Exception as exc:  # pragma: no cover - depends on installation
+        raise RuntimeError(
+            "Für .p12-Zertifikate wird das Python-Paket 'cryptography' benötigt (pip install cryptography)."
+        ) from exc
+    with open(path, "rb") as fh:
+        data = fh.read()
+    candidates = []
+    for candidate in (password, DEFAULT_TAK_CERT_PASSWORD, ""):
+        if candidate is None or candidate in candidates:
+            continue
+        candidates.append(candidate)
+    last_error = None
+    for candidate in candidates:
+        try:
+            return pkcs12.load_key_and_certificates(data, candidate.encode("utf-8") if candidate else None)
+        except ValueError as exc:
+            last_error = exc
+    raise ValueError(
+        f"Zertifikat {os.path.basename(path)} konnte nicht geöffnet werden (falsches Passwort?): {last_error}"
+    )
+
+
+def _cert_to_pem(cert):
+    from cryptography.hazmat.primitives.serialization import Encoding
+
+    return cert.public_bytes(Encoding.PEM)
+
+
+def _key_to_pem(key):
+    from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat
+
+    return key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
+
+
+def _is_pkcs12_path(path):
+    return str(path or "").lower().endswith((".p12", ".pfx"))
+
+
+def build_tak_ssl_context(
+    client_cert=None,
+    client_cert_password=None,
+    client_key=None,
+    ca_cert=None,
+    ca_cert_password=None,
+    verify=None,
+    check_hostname=False,
+):
+    """Create an SSL context the way ATAK/WinTAK connect to TAK Server.
+
+    ``verify=None`` means: verify the server against the given CA/truststore, and accept
+    any server certificate when no CA was configured (common for self-signed TAK servers).
+    """
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    if verify is None:
+        verify = bool(ca_cert)
+    if verify:
+        context.check_hostname = bool(check_hostname)
+        context.verify_mode = ssl.CERT_REQUIRED
+        if ca_cert:
+            if _is_pkcs12_path(ca_cert):
+                _key, cert, additional = _load_pkcs12(ca_cert, ca_cert_password)
+                certs = [c for c in [cert] + list(additional or []) if c is not None]
+                if not certs:
+                    raise ValueError(f"Truststore {os.path.basename(ca_cert)} enthält keine Zertifikate.")
+                context.load_verify_locations(cadata="".join(_cert_to_pem(c).decode("ascii") for c in certs))
+            else:
+                context.load_verify_locations(cafile=ca_cert)
+        else:
+            context.load_default_certs()
+    else:
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+
+    if client_cert:
+        if _is_pkcs12_path(client_cert):
+            key, cert, additional = _load_pkcs12(client_cert, client_cert_password)
+            if key is None or cert is None:
+                raise ValueError(
+                    f"Client-Zertifikat {os.path.basename(client_cert)} enthält keinen privaten Schlüssel."
+                )
+            temp_dir = tempfile.mkdtemp(prefix="takgw-")
+            try:
+                cert_path = os.path.join(temp_dir, "client.pem")
+                key_path = os.path.join(temp_dir, "client.key")
+                fd = os.open(cert_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(_cert_to_pem(cert))
+                    for extra in additional or []:
+                        fh.write(_cert_to_pem(extra))
+                fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(_key_to_pem(key))
+                context.load_cert_chain(cert_path, key_path)
+            finally:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+        else:
+            context.load_cert_chain(client_cert, client_key or None, password=client_cert_password or None)
+    return context
+
+
+# ---------------------------------------------------------------------------
+# Data packages
+# ---------------------------------------------------------------------------
+
+def _pref_entries(pref_xml):
+    try:
+        root = fromstring(pref_xml)
+    except ParseError as exc:
+        raise ValueError(f"Ungültige .pref-Datei im Datenpaket: {exc}")
+    entries = {}
+    for entry in root.iter():
+        if entry.tag.split("}")[-1] != "entry":
+            continue
+        key = entry.get("key")
+        if key:
+            entries[key] = (entry.text or "").strip()
+    return entries
+
+
+def load_tak_data_package(zip_path, extract_dir):
+    """Read an ATAK/WinTAK server connection data package.
+
+    Extracts the certificates into ``extract_dir`` and returns a dict with
+    ``host``, ``port``, ``protocol``, ``client_cert``, ``client_cert_password``,
+    ``ca_cert``, ``ca_cert_password`` and ``description``.
+    """
+    with zipfile.ZipFile(zip_path) as archive:
+        members = [name for name in archive.namelist() if not name.endswith("/")]
+        pref_names = [name for name in members if name.lower().endswith(".pref")]
+        if not pref_names:
+            raise ValueError("Datenpaket enthält keine .pref-Datei mit Server-Verbindung.")
+        entries = {}
+        for name in pref_names:
+            entries.update(_pref_entries(archive.read(name)))
+
+        connect_string = entries.get("connectString0", "")
+        if not connect_string:
+            raise ValueError("Datenpaket enthält keinen Server (connectString0 fehlt).")
+        host, port, protocol = parse_tak_server_endpoint(connect_string)
+
+        os.makedirs(extract_dir, exist_ok=True)
+        cert_members = {os.path.basename(name).lower(): name for name in members if _is_pkcs12_path(name)}
+
+        def extract(location):
+            if not location:
+                return None
+            member = cert_members.get(os.path.basename(location.replace("\\", "/")).lower())
+            if member is None:
+                return None
+            target = os.path.join(extract_dir, os.path.basename(member))
+            with archive.open(member) as src, open(target, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            return target
+
+        ca_location = entries.get("caLocation0") or entries.get("caLocation")
+        client_location = entries.get("certificateLocation0") or entries.get("certificateLocation")
+        ca_cert = extract(ca_location)
+        client_cert = extract(client_location)
+        # Some packages only reference the files implicitly; fall back to the file names.
+        if ca_cert is None or client_cert is None:
+            for lower_name in cert_members:
+                looks_like_ca = "trust" in lower_name or lower_name.startswith("ca")
+                if ca_cert is None and looks_like_ca:
+                    ca_cert = extract(lower_name)
+                elif client_cert is None and not looks_like_ca:
+                    client_cert = extract(lower_name)
+
+    enroll = str(entries.get("enrollForCertificateWithTrust0", "")).lower() == "true"
+    if protocol == "SSL" and client_cert is None and not enroll:
+        raise ValueError("Datenpaket enthält kein Client-Zertifikat (.p12) für die SSL-Verbindung.")
+    return {
+        "host": host,
+        "port": port,
+        "protocol": protocol,
+        "description": entries.get("description0", ""),
+        "client_cert": client_cert,
+        "client_cert_password": entries.get("clientPassword0") or entries.get("clientPassword") or DEFAULT_TAK_CERT_PASSWORD,
+        "ca_cert": ca_cert,
+        "ca_cert_password": entries.get("caPassword0") or entries.get("caPassword") or DEFAULT_TAK_CERT_PASSWORD,
+        "requires_enrollment": enroll and client_cert is None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# CoT stream helpers
+# ---------------------------------------------------------------------------
+
+def extract_cot_events(buffer_text):
+    """Split a streaming CoT buffer into complete ``<event>`` documents.
+
+    Returns ``(events, remaining_buffer)``.
+    """
+    events = []
+    while True:
+        start = _EVENT_START_RE.search(buffer_text)
+        if start is None:
+            # Keep a possible partial "<eve" tail only.
+            return events, buffer_text[-16:] if len(buffer_text) > 16 else buffer_text
+        end = _EVENT_END_RE.search(buffer_text, start.start())
+        if end is None:
+            remaining = buffer_text[start.start():]
+            if len(remaining) > MAX_STREAM_BUFFER_CHARS:
+                remaining = ""
+            return events, remaining
+        events.append(buffer_text[start.start():end.end()])
+        buffer_text = buffer_text[end.end():]
+
+
+def _cot_time(dt):
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
+
+
+def build_tak_ping_xml(uid):
+    now = datetime.datetime.now(datetime.timezone.utc)
+    stale = now + datetime.timedelta(seconds=20)
+    return (
+        f'<event version="2.0" uid="{uid}-ping" type="t-x-c-t" how="h-g-i-g-o" '
+        f'time="{_cot_time(now)}" start="{_cot_time(now)}" stale="{_cot_time(stale)}">'
+        '<point lat="0.0" lon="0.0" hae="0.0" ce="9999999.0" le="9999999.0"/><detail/></event>'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Connection
+# ---------------------------------------------------------------------------
+
+class TAKServerClient:
+    """Persistent, bidirectional connection to a remote TAK Server."""
+
+    def __init__(
+        self,
+        host,
+        port,
+        protocol="TCP",
+        *,
+        logger,
+        ssl_context_factory=None,
+        on_event=None,
+        sa_builder=None,
+        sa_interval_seconds=DEFAULT_SA_INTERVAL_SECONDS,
+        keepalive_seconds=DEFAULT_KEEPALIVE_SECONDS,
+        reconnect_seconds=DEFAULT_RECONNECT_SECONDS,
+        queue_size=DEFAULT_SEND_QUEUE_SIZE,
+        uid="GW-01",
+        socket_factory=None,
+    ):
+        self.host = host
+        self.port = int(port)
+        self.protocol = normalize_tak_server_protocol(protocol)
+        self.logger = logger
+        self.endpoint = format_tak_server_endpoint(host, self.port, self.protocol)
+        self._ssl_context_factory = ssl_context_factory
+        self._on_event = on_event
+        self._sa_builder = sa_builder
+        self.sa_interval_seconds = max(0, int(sa_interval_seconds or 0))
+        self.keepalive_seconds = max(5, int(keepalive_seconds or DEFAULT_KEEPALIVE_SECONDS))
+        self.reconnect_seconds = max(1, int(reconnect_seconds or DEFAULT_RECONNECT_SECONDS))
+        self.uid = uid
+        self._socket_factory = socket_factory or socket.create_connection
+        self._queue = collections.deque(maxlen=max(1, int(queue_size)))
+        self._queue_cv = threading.Condition()
+        self._stop = threading.Event()
+        self._sock = None
+        self._sock_lock = threading.Lock()
+        self._send_lock = threading.Lock()
+        self._thread = None
+        self._connected = threading.Event()
+        self._dropped = 0
+        self.status = {
+            "endpoint": self.endpoint,
+            "connected": False,
+            "last_error": "",
+            "sent": 0,
+            "received": 0,
+            "queued": 0,
+            "connected_since": None,
+        }
+
+    # -- public API -------------------------------------------------------
+
+    @property
+    def connected(self):
+        return self._connected.is_set()
+
+    def start(self):
+        if self._thread is not None:
+            return
+        self._thread = threading.Thread(target=self._run, daemon=True, name="tak-server-client")
+        self._thread.start()
+
+    def stop(self, timeout=5):
+        self._stop.set()
+        with self._queue_cv:
+            self._queue_cv.notify_all()
+        self._close_socket()
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
+
+    def send(self, packet_xml):
+        """Queue a CoT event for the server. Returns False if it had to drop the oldest entry."""
+        payload = packet_xml if isinstance(packet_xml, bytes) else str(packet_xml).encode("utf-8")
+        payload = payload.strip()
+        if not payload:
+            return True
+        with self._queue_cv:
+            dropped = len(self._queue) == self._queue.maxlen
+            if dropped:
+                self._dropped += 1
+            self._queue.append(payload)
+            self.status["queued"] = len(self._queue)
+            self._queue_cv.notify()
+        if dropped and self._dropped % 100 == 1:
+            self.logger.warning(
+                f"TAK-Server {self.endpoint} nicht erreichbar: Sende-Puffer voll, älteste CoT werden verworfen."
+            )
+        return not dropped
+
+    def get_status(self):
+        status = dict(self.status)
+        status["connected"] = self.connected
+        with self._queue_cv:
+            status["queued"] = len(self._queue)
+        return status
+
+    # -- internals --------------------------------------------------------
+
+    def _close_socket(self):
+        with self._sock_lock:
+            sock, self._sock = self._sock, None
+        self._connected.clear()
+        self.status["connected"] = False
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+    def _open_socket(self):
+        if self.protocol == "UDP":
+            family = socket.AF_INET6 if ":" in self.host else socket.AF_INET
+            sock = socket.socket(family, socket.SOCK_DGRAM)
+            sock.connect((self.host, self.port))
+            return sock
+        raw = self._socket_factory((self.host, self.port), CONNECT_TIMEOUT_SECONDS)
+        try:
+            raw.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        except Exception:
+            pass
+        if self.protocol == "SSL":
+            context = self._ssl_context_factory() if self._ssl_context_factory else build_tak_ssl_context()
+            raw.settimeout(CONNECT_TIMEOUT_SECONDS)
+            sock = context.wrap_socket(raw, server_hostname=self.host)
+        else:
+            sock = raw
+        sock.settimeout(SOCKET_IO_TIMEOUT_SECONDS)
+        return sock
+
+    def _write(self, sock, payload):
+        data = payload if payload.endswith(b"\n") else payload + b"\n"
+        with self._send_lock:
+            if self.protocol == "UDP":
+                sock.send(payload)
+                return
+            deadline = time.monotonic() + SEND_TIMEOUT_SECONDS
+            view = memoryview(data)
+            while view:
+                try:
+                    sent = sock.send(view)
+                except (socket.timeout, ssl.SSLWantWriteError):
+                    if time.monotonic() > deadline:
+                        raise TimeoutError("TAK-Server nimmt keine Daten an (Sende-Timeout).")
+                    continue
+                view = view[sent:]
+
+    def _send_sa(self, sock):
+        if self._sa_builder is None:
+            return
+        try:
+            sa = self._sa_builder()
+        except Exception as exc:
+            self.logger.debug(f"Gateway-SA konnte nicht erstellt werden: {exc}")
+            return
+        if sa:
+            self._write(sock, sa if isinstance(sa, bytes) else sa.encode("utf-8"))
+
+    def _run(self):
+        delay = self.reconnect_seconds
+        while not self._stop.is_set():
+            try:
+                self.logger.info(f"Verbinde mit TAK-Server {self.endpoint} ...")
+                sock = self._open_socket()
+                with self._sock_lock:
+                    self._sock = sock
+                self._connected.set()
+                self.status.update(connected=True, last_error="", connected_since=time.time())
+                self.logger.info(f"✅ TAK-Server verbunden: {self.endpoint}")
+                delay = self.reconnect_seconds
+                self._send_sa(sock)
+                self._serve(sock)
+            except ssl.SSLError as exc:
+                self.status["last_error"] = f"TLS: {exc}"
+                self.logger.warning(
+                    f"TLS-Verbindung zu {self.endpoint} fehlgeschlagen: {exc}. "
+                    "Client-Zertifikat/Passwort und Truststore prüfen."
+                )
+            except Exception as exc:
+                self.status["last_error"] = str(exc)
+                self.logger.warning(f"TAK-Server {self.endpoint} nicht verbunden: {type(exc).__name__}: {exc}")
+            finally:
+                was_connected = self.connected
+                self._close_socket()
+                if was_connected and not self._stop.is_set():
+                    self.logger.warning(f"TAK-Server-Verbindung {self.endpoint} getrennt, neuer Versuch folgt.")
+            if self._stop.wait(delay):
+                break
+            delay = min(delay * 2, MAX_RECONNECT_SECONDS)
+
+    def _serve(self, sock):
+        """Single-threaded loop: read server traffic, send queued CoT, keep the stream alive.
+
+        Reading and writing happen on one thread because an SSL socket must not be used
+        concurrently from several threads.
+        """
+        last_write = time.monotonic()
+        last_sa = time.monotonic()
+        buffer_text = ""
+        while not self._stop.is_set():
+            if self.protocol != "UDP":
+                buffer_text = self._read_available(sock, buffer_text)
+                if buffer_text is None:
+                    return
+            with self._queue_cv:
+                if not self._queue and self.protocol == "UDP":
+                    self._queue_cv.wait(timeout=1.0)
+                payload = self._queue.popleft() if self._queue else None
+                self.status["queued"] = len(self._queue)
+            now = time.monotonic()
+            if payload is not None:
+                try:
+                    self._write(sock, payload)
+                except Exception:
+                    # Put it back so it is delivered after reconnect.
+                    with self._queue_cv:
+                        self._queue.appendleft(payload)
+                    raise
+                self.status["sent"] += 1
+                last_write = now
+                continue
+            if self.sa_interval_seconds and now - last_sa >= self.sa_interval_seconds:
+                self._send_sa(sock)
+                last_sa = last_write = now
+            elif self.protocol != "UDP" and now - last_write >= self.keepalive_seconds:
+                self._write(sock, build_tak_ping_xml(self.uid).encode("utf-8"))
+                last_write = now
+
+    def _wait_readable(self, sock, timeout):
+        pending = getattr(sock, "pending", None)
+        if callable(pending) and pending():
+            return True
+        with self._queue_cv:
+            if self._queue:
+                timeout = 0
+        try:
+            readable, _, _ = select.select([sock], [], [], timeout)
+        except (OSError, ValueError):
+            raise ConnectionError("Socket geschlossen.")
+        return bool(readable)
+
+    def _read_available(self, sock, buffer_text):
+        """Read whatever the server sent. Returns the new buffer or None when the server closed."""
+        # Short wait so queued packets are not delayed; up to 0.5 s when idle.
+        while self._wait_readable(sock, 0.5):
+            try:
+                data = sock.recv(65536)
+            except (socket.timeout, ssl.SSLWantReadError):
+                return buffer_text
+            if not data:
+                self.logger.info(f"TAK-Server {self.endpoint} hat die Verbindung geschlossen.")
+                return None
+            if data[:1] == b"\xbf" and not buffer_text:
+                # TAK protocol (protobuf) is only used after negotiation, which we never request.
+                self.logger.debug("Unerwartetes TAK-Protobuf-Paket vom Server ignoriert.")
+                continue
+            buffer_text += data.decode("utf-8", errors="ignore")
+            events, buffer_text = extract_cot_events(buffer_text)
+            for event_xml in events:
+                self.status["received"] += 1
+                if self._on_event is None:
+                    continue
+                try:
+                    self._on_event(event_xml)
+                except Exception as exc:
+                    self.logger.debug(f"Fehler beim Verarbeiten einer TAK-Server-Nachricht: {exc}")
+            with self._queue_cv:
+                if self._queue:
+                    break
+        return buffer_text
