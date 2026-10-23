@@ -1,82 +1,120 @@
 @echo off
-:: Startet die Gateway-App im angegebenen Ordner; startet sich selbst als Admin falls nötig
+:: WinTAK Meshtastic Gateway - Starter
+:: - laeuft aus dem Ordner, in dem diese Datei liegt (egal wo installiert)
+:: - startet sich bei Bedarf mit Administratorrechten neu
+:: - legt beim ersten Start eine eigene Python-Umgebung (.venv) an und installiert
+::   requirements.txt automatisch; bei Aenderungen an requirements.txt erneut
 setlocal EnableExtensions EnableDelayedExpansion
+chcp 65001 >nul 2>&1
 
-:: Admin-Prüfung
+set "APP_DIR=%~dp0"
+if "%APP_DIR:~-1%"=="\" set "APP_DIR=%APP_DIR:~0,-1%"
+cd /d "%APP_DIR%"
+
+:: --- Administratorrechte (fuer Firewall/Ports von WinTAK) ----------------------
 net session >nul 2>&1
-if %errorLevel% neq 0 (
-    powershell -Command "Start-Process -FilePath '%~0' -Verb RunAs"
-    exit /b
+if errorlevel 1 goto :elevate
+goto :admin_ok
+
+:elevate
+if /i "%~1"=="--elevated" (
+    echo Administratorrechte konnten nicht erlangt werden - starte ohne.
+    goto :admin_ok
 )
+echo Fordere Administratorrechte an ...
+set "BAT_PATH=%~f0"
+powershell -NoProfile -Command "Start-Process -FilePath $env:ComSpec -ArgumentList '/c', ('\"\"' + $env:BAT_PATH + '\" --elevated\"') -Verb RunAs" 2>nul
+if errorlevel 1 (
+    echo Erhoehung abgelehnt - starte ohne Administratorrechte.
+    goto :admin_ok
+)
+exit /b 0
 
-:: Wechsel in den expliziten Install-Ordner (achte auf exakte Schreibweise)
-cd /d "C:\Program Files\WinTAK\Meshttastic Gateway"
-
+:admin_ok
 echo ========================================
 echo    TAK MESHTASTIC GATEWAY - START
 echo ========================================
+echo Ordner: %APP_DIR%
 echo.
 
-set "PYTHON_CMD="
-if exist ".\venv\Scripts\python.exe" (
-    set "PYTHON_CMD=""%CD%\venv\Scripts\python.exe"""
-) else (
-    where py >nul 2>&1
-    if %errorlevel%==0 (
-        set "PYTHON_CMD=py -3"
-    ) else (
-        where python >nul 2>&1
-        if %errorlevel%==0 (
-            set "PYTHON_CMD=python"
-        )
-    )
+:: --- Python finden ------------------------------------------------------------
+set "VENV_DIR=%APP_DIR%\.venv"
+if exist "%APP_DIR%\venv\Scripts\python.exe" if not exist "%VENV_DIR%\Scripts\python.exe" set "VENV_DIR=%APP_DIR%\venv"
+set "VENV_PY=%VENV_DIR%\Scripts\python.exe"
+if exist "%VENV_PY%" goto :have_venv
+
+set "BASE_PY="
+py -3 -c "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)" >nul 2>&1
+if not errorlevel 1 set "BASE_PY=py -3"
+if defined BASE_PY goto :create_venv
+:: "python" kann der Microsoft-Store-Platzhalter sein - deshalb wirklich ausfuehren.
+python -c "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)" >nul 2>&1
+if not errorlevel 1 set "BASE_PY=python"
+if defined BASE_PY goto :create_venv
+
+echo Python 3.9 oder neuer wurde nicht gefunden.
+echo Bitte Python von https://www.python.org/downloads/ installieren
+echo (beim Setup "Add python.exe to PATH" anhaken) und danach diese Datei erneut starten.
+start "" "https://www.python.org/downloads/"
+goto :fail
+
+:create_venv
+echo Erstelle Python-Umgebung in "%VENV_DIR%" ...
+%BASE_PY% -m venv "%VENV_DIR%"
+if errorlevel 1 (
+    echo Python-Umgebung konnte nicht erstellt werden.
+    goto :fail
 )
 
-if not defined PYTHON_CMD (
-    echo Python wurde nicht gefunden. Installiere Python 3.8+ oder erstelle eine venv.
-    echo Oeffne Python-Downloadseite...
-    start "" "https://www.python.org/downloads/"
-    pause
-    exit /b 1
+:have_venv
+:: --- Abhaengigkeiten installieren / aktualisieren ------------------------------
+set "REQ_FILE=%APP_DIR%\requirements.txt"
+set "REQ_STAMP=%VENV_DIR%\requirements.installed"
+if not exist "%REQ_FILE%" goto :deps_check
+if not exist "%REQ_STAMP%" goto :install_deps
+fc /b "%REQ_FILE%" "%REQ_STAMP%" >nul 2>&1
+if errorlevel 1 goto :install_deps
+
+:deps_check
+"%VENV_PY%" -c "import meshtastic, pubsub, serial, yaml, cryptography" >nul 2>&1
+if not errorlevel 1 goto :deps_ok
+if not exist "%REQ_FILE%" (
+    echo requirements.txt fehlt - Abhaengigkeiten koennen nicht installiert werden.
+    goto :fail
 )
 
-echo Verwende: %PYTHON_CMD%
-
-set "GATEWAY_IP="
-for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "$udp = New-Object System.Net.Sockets.UdpClient; try { $udp.Connect('8.8.8.8',53); ($udp.Client.LocalEndPoint).Address.IPAddressToString } catch { '' } finally { $udp.Close() }"`) do (
-    if not defined GATEWAY_IP set "GATEWAY_IP=%%I"
+:install_deps
+echo Installiere Abhaengigkeiten aus requirements.txt (einmalig, kann einige Minuten dauern) ...
+"%VENV_PY%" -m pip install --disable-pip-version-check --upgrade pip >nul 2>&1
+"%VENV_PY%" -m pip install --disable-pip-version-check -r "%REQ_FILE%"
+if errorlevel 1 (
+    echo.
+    echo Installation der Abhaengigkeiten fehlgeschlagen. Internetverbindung pruefen und erneut starten.
+    goto :fail
 )
-if not defined GATEWAY_IP (
-    for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "$ip = [System.Net.Dns]::GetHostAddresses([System.Net.Dns]::GetHostName()) ^| Where-Object { $_.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork -and -not $_.IPAddressToString.StartsWith('127.') -and -not $_.IPAddressToString.StartsWith('169.254.') } ^| Select-Object -First 1 -ExpandProperty IPAddressToString; if ($ip) { $ip } else { '127.0.0.1' }"`) do (
-        if not defined GATEWAY_IP set "GATEWAY_IP=%%I"
-    )
-)
+copy /y "%REQ_FILE%" "%REQ_STAMP%" >nul
 
-set "UI_URL=http://%GATEWAY_IP%:5013/"
-
-echo Starte Backend-Dienst...
-start "WinTAK Meshtastic Gateway Backend" cmd /k %PYTHON_CMD% main_app.py --all-ports
-
-echo HTML-UI wird erwartet unter: %UI_URL%
-echo Warte auf Port 5013 und oeffne dann den Standard-Browser...
-
-set "BROWSER_OPENED="
-for /l %%N in (1,1,20) do (
-    powershell -NoProfile -Command "$client = New-Object System.Net.Sockets.TcpClient; try { $iar = $client.BeginConnect('%GATEWAY_IP%', 5013, $null, $null); if ($iar.AsyncWaitHandle.WaitOne(750) -and $client.Connected) { exit 0 } else { exit 1 } } catch { exit 1 } finally { $client.Close() }" >nul 2>&1
-    if !errorlevel! equ 0 (
-        start "" "%UI_URL%"
-        set "BROWSER_OPENED=1"
-        goto :browser_done
-    )
-    timeout /t 1 /nobreak >nul
-)
-
-:browser_done
-if not defined BROWSER_OPENED (
-    echo Backend antwortet noch nicht auf Port 5013.
-    echo Bitte oeffne spaeter manuell: %UI_URL%
-)
-
+:deps_ok
+echo Abhaengigkeiten OK.
 echo.
-echo Anwendung beendet.
+
+:: --- Gateway starten ----------------------------------------------------------
+:: Das Gateway oeffnet die Browser-Oberflaeche (Port 5013) selbst.
+echo Starte Gateway ... (Beenden mit Strg+C)
+set "APP_ARGS=%*"
+if defined APP_ARGS set "APP_ARGS=!APP_ARGS:--elevated=!"
+"%VENV_PY%" "%APP_DIR%\main_app.py" !APP_ARGS!
+set "EXIT_CODE=%errorlevel%"
+echo.
+if not "%EXIT_CODE%"=="0" (
+    echo Gateway wurde mit Fehlercode %EXIT_CODE% beendet.
+    goto :fail
+)
+echo Gateway beendet.
 pause
+exit /b 0
+
+:fail
+echo.
+pause
+exit /b 1

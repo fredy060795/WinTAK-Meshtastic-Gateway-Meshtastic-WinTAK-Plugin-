@@ -1,0 +1,8 @@
+# Python-Abhaengigkeiten des WinTAK Meshtastic Gateway.
+# Meshtastic_Gateway_Start.bat installiert sie beim Start automatisch in .venv.
+meshtastic>=2.5      # Meshtastic USB/BLE/TCP (bringt bleak, protobuf, pyserial, pypubsub mit)
+pypubsub>=4.0
+pyserial>=3.5
+PyYAML>=6.0          # config.yaml
+cryptography>=41     # SSL/TLS-TAK-Server, .p12-Zertifikate, Zertifikatsanforderung
+colorlog>=6.0        # farbige Konsolenausgabe (optional)
