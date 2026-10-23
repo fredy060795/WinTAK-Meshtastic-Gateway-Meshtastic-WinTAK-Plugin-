@@ -47,3 +47,4 @@ tak_certs/*
 tak_certs/tak.persistentsystems.eu/*
 !tak_certs/tak.persistentsystems.eu/truststore-root.p12
 .venv/
+gateway_crash.log

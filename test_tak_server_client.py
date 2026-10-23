@@ -76,9 +76,9 @@ def _make_cert(common_name, issuer_key=None, issuer_cert=None, is_ca=False):
 class _PKI:
     """CA + server cert + client cert, like a TAK Server installation."""
 
-    def __init__(self, directory):
+    def __init__(self, directory, ca_name="TAK-CA"):
         self.dir = directory
-        self.ca_key, self.ca_cert = _make_cert("TAK-CA", is_ca=True)
+        self.ca_key, self.ca_cert = _make_cert(ca_name, is_ca=True)
         self.server_key, self.server_cert = _make_cert("localhost", self.ca_key, self.ca_cert)
         self.client_key, self.client_cert = _make_cert("gateway", self.ca_key, self.ca_cert)
         pem = serialization.Encoding.PEM
@@ -121,10 +121,20 @@ class _FakeTakServer:
         threading.Thread(target=self._accept, daemon=True).start()
 
     def _accept(self):
-        conn, _ = self.listener.accept()
-        if self.ssl_context is not None:
-            conn = self.ssl_context.wrap_socket(conn, server_side=True)
+        while True:
+            try:
+                conn, _ = self.listener.accept()
+            except OSError:
+                return
+            if self.ssl_context is None:
+                break
+            try:
+                conn = self.ssl_context.wrap_socket(conn, server_side=True)
+            except (ssl.SSLError, OSError):
+                conn.close()
+                continue  # e.g. client rejected our certificate and will retry
             self.client_cert = conn.getpeercert()
+            break
         conn.settimeout(0.2)
         self.conn = conn
         self.connected.set()
@@ -214,7 +224,7 @@ class TestClientConnections(unittest.TestCase):
         client, received = self._client(server)
         client.send(SAMPLE_EVENT)  # queued before connect -> must not be lost
         client.start()
-        self.assertTrue(server.wait_for('uid="MESH-1"'))
+        self.assertTrue(server.wait_for('uid="MESH-1"', timeout=12))
         self.assertLess(server.received.index(b'uid="GW-01"'), server.received.index(b'uid="MESH-1"'))
         server.push('<?xml version="1.0"?>' + SAMPLE_EVENT.replace("MESH-1", "ATAK-7"))
         deadline = time.time() + 5
@@ -245,9 +255,77 @@ class TestClientConnections(unittest.TestCase):
         )
         client.start()
         client.send(SAMPLE_EVENT)
-        self.assertTrue(server.wait_for('uid="MESH-1"'))
+        self.assertTrue(server.wait_for('uid="MESH-1"', timeout=12))
         subject = dict(x[0] for x in server.client_cert["subject"])
         self.assertEqual(subject["commonName"], "gateway")
+
+    def test_server_requiring_client_cert_gives_clear_error_and_no_data_loss(self):
+        pki = _PKI(self.tmp)
+        server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        server_ctx.load_cert_chain(pki.server_pem, pki.server_key_pem)
+        server_ctx.load_verify_locations(cafile=pki.ca_pem)
+        server_ctx.verify_mode = ssl.CERT_REQUIRED
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(5)
+        port = listener.getsockname()[1]
+        stop = threading.Event()
+
+        def serve():
+            listener.settimeout(0.2)
+            while not stop.is_set():
+                try:
+                    conn, _ = listener.accept()
+                except (socket.timeout, OSError):
+                    continue
+                try:
+                    tls = server_ctx.wrap_socket(conn, server_side=True)
+                    tls.recv(10)
+                except (ssl.SSLError, OSError):
+                    pass
+                finally:
+                    conn.close()
+
+        threading.Thread(target=serve, daemon=True).start()
+        logger = _Logger()
+        client = TAKServerClient(
+            "localhost", port, "SSL", logger=logger, reconnect_seconds=1, has_client_certificate=False,
+            ssl_context_factory=lambda: build_tak_ssl_context(ca_cert=pki.truststore_p12, ca_cert_password="atakatak"),
+        )
+        self.clients.append(client)
+        client.send(SAMPLE_EVENT)
+        client.start()
+        try:
+            deadline = time.time() + 10
+            while "Client-Zertifikat" not in client.get_status()["last_error"] and time.time() < deadline:
+                time.sleep(0.1)
+            status = client.get_status()
+            self.assertIn("kein", status["last_error"])
+            self.assertFalse(status["connected"])
+            self.assertEqual(status["queued"], 1, "queued CoT must be kept for a later, accepted session")
+            self.assertFalse(any("✅" in line for line in logger.lines))
+        finally:
+            stop.set()
+            listener.close()
+
+    def test_public_ca_fallback_when_server_cert_not_in_truststore(self):
+        pki = _PKI(self.tmp)
+        other = _PKI(tempfile.mkdtemp(dir=self.tmp), ca_name="Other-CA")  # truststore of a different CA
+        server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        server_ctx.load_cert_chain(pki.server_pem, pki.server_key_pem)
+        server = _FakeTakServer(server_ctx)
+        self.servers.append(server)
+        # Simulate the OS trust store containing the server's CA (like Let's Encrypt on Windows).
+        with unittest.mock.patch.dict(os.environ, {"SSL_CERT_FILE": pki.ca_pem}):
+            client, _ = self._client(
+                server, "SSL",
+                ssl_context_factory=lambda: build_tak_ssl_context(ca_cert=other.truststore_p12),
+                fallback_ssl_context_factory=lambda: build_tak_ssl_context(
+                    ca_cert=other.truststore_p12, trust_system_cas=True),
+            )
+            client.start()
+            client.send(SAMPLE_EVENT)
+            self.assertTrue(server.wait_for('uid="MESH-1"', timeout=12))
 
     def test_reconnects_after_server_restart_and_keeps_queue(self):
         server = _FakeTakServer()
@@ -431,10 +509,47 @@ class TestCertificateEnrollment(unittest.TestCase):
         try:
             client.start()
             client.send(SAMPLE_EVENT)
-            self.assertTrue(tak.wait_for('uid="MESH-1"'))
+            self.assertTrue(tak.wait_for('uid="MESH-1"', timeout=12))
         finally:
             client.stop(timeout=2)
             tak.close()
+
+    def test_enrollment_accepts_public_certificate_on_enrollment_port(self):
+        other = _PKI(tempfile.mkdtemp(dir=self.tmp), ca_name="Other-CA")
+        with unittest.mock.patch.dict(os.environ, {"SSL_CERT_FILE": self.pki.ca_pem}):
+            result = enroll_tak_client_certificate(
+                "localhost", "alice", "secret", os.path.join(self.tmp, "o2"), port=self.server.port,
+                ca_cert=other.truststore_p12, ca_cert_password="atakatak",
+            )
+        self.assertIn("CN=alice", result["subject"])
+
+    def test_wrong_port_requiring_client_cert_is_explained(self):
+        server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        server_ctx.load_cert_chain(self.pki.server_pem, self.pki.server_key_pem)
+        server_ctx.load_verify_locations(cafile=self.pki.ca_pem)
+        server_ctx.verify_mode = ssl.CERT_REQUIRED
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+
+        def serve():
+            conn, _ = listener.accept()
+            try:
+                server_ctx.wrap_socket(conn, server_side=True).recv(10)
+            except (ssl.SSLError, OSError):
+                pass
+            conn.close()
+
+        threading.Thread(target=serve, daemon=True).start()
+        try:
+            with self.assertRaisesRegex(ValueError, "8446"):
+                enroll_tak_client_certificate(
+                    "localhost", "alice", "secret", os.path.join(self.tmp, "o3"), port=port,
+                    ca_cert=self.pki.truststore_p12,
+                )
+        finally:
+            listener.close()
 
     def test_wrong_password_is_reported(self):
         with self.assertRaisesRegex(ValueError, "401"):
@@ -444,7 +559,7 @@ class TestCertificateEnrollment(unittest.TestCase):
             )
 
     def test_untrusted_server_is_rejected(self):
-        other = _PKI(tempfile.mkdtemp(dir=self.tmp))
+        other = _PKI(tempfile.mkdtemp(dir=self.tmp), ca_name="Other-CA")
         with self.assertRaisesRegex(ValueError, "Truststore"):
             enroll_tak_client_certificate(
                 "localhost", "alice", "secret", os.path.join(self.tmp, "o"), port=self.server.port,
