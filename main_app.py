@@ -6819,7 +6819,7 @@ class TAKMeshtasticGateway:
             return self.park_coords[0], self.park_coords[1], 0
         return 0.0, 0.0, 0.0
 
-    def _build_tak_server_ssl_context(self):
+    def _build_tak_server_ssl_context(self, trust_system_cas=False):
         return build_tak_ssl_context(
             client_cert=_resolve_config_path(self.cfg.get("tak_server_client_cert")),
             client_cert_password=str(self.cfg.get("tak_server_client_cert_password", "") or "") or None,
@@ -6828,6 +6828,7 @@ class TAKMeshtasticGateway:
             ca_cert_password=str(self.cfg.get("tak_server_ca_cert_password", "") or "") or None,
             verify=_tak_server_tls_verify_setting(self.cfg.get("tak_server_tls_verify")),
             check_hostname=as_bool(self.cfg.get("tak_server_tls_check_hostname", False)),
+            trust_system_cas=trust_system_cas,
         )
 
     def _get_gateway_sa_position(self):
@@ -6910,6 +6911,11 @@ class TAKMeshtasticGateway:
             protocol,
             logger=self.logger,
             ssl_context_factory=self._build_tak_server_ssl_context,
+            fallback_ssl_context_factory=lambda: self._build_tak_server_ssl_context(trust_system_cas=True),
+            has_client_certificate=bool(
+                self.cfg.get("tak_server_client_cert") and _resolve_config_path(self.cfg.get("tak_server_client_cert"))
+                and os.path.isfile(_resolve_config_path(self.cfg.get("tak_server_client_cert")))
+            ),
             on_event=self._handle_tak_server_event,
             sa_builder=self._build_gateway_sa_xml if self.tak_server_send_gateway_sa else None,
             sa_interval_seconds=sa_interval if self.tak_server_send_gateway_sa else 0,

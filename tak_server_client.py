@@ -47,6 +47,7 @@ DEFAULT_SEND_QUEUE_SIZE = 2000
 DEFAULT_KEEPALIVE_SECONDS = 30
 DEFAULT_SA_INTERVAL_SECONDS = 60
 DEFAULT_RECONNECT_SECONDS = 10
+CONFIRM_CONNECTION_SECONDS = 5
 MAX_RECONNECT_SECONDS = 60
 CONNECT_TIMEOUT_SECONDS = 15
 SOCKET_IO_TIMEOUT_SECONDS = 1.0
@@ -196,11 +197,14 @@ def build_tak_ssl_context(
     ca_cert_password=None,
     verify=None,
     check_hostname=False,
+    trust_system_cas=False,
 ):
     """Create an SSL context the way ATAK/WinTAK connect to TAK Server.
 
     ``verify=None`` means: verify the server against the given CA/truststore, and accept
     any server certificate when no CA was configured (common for self-signed TAK servers).
+    ``trust_system_cas=True`` additionally accepts publicly trusted server certificates
+    (e.g. Let's Encrypt in front of OpenTAKServer); the host name is then always checked.
     """
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
@@ -218,6 +222,9 @@ def build_tak_ssl_context(
                 context.load_verify_locations(cadata="".join(_cert_to_pem(c).decode("ascii") for c in certs))
             else:
                 context.load_verify_locations(cafile=ca_cert)
+            if trust_system_cas:
+                context.load_default_certs()
+                context.check_hostname = True
         else:
             context.load_default_certs()
     else:
@@ -249,6 +256,32 @@ def build_tak_ssl_context(
         else:
             context.load_cert_chain(client_cert, client_key or None, password=client_cert_password or None)
     return context
+
+
+def describe_server_certificate(host, port, timeout=10):
+    """Who issued the server's certificate? Used to explain verification failures."""
+    try:
+        from cryptography import x509
+
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        with socket.create_connection((host, int(port)), timeout=timeout) as raw:
+            with context.wrap_socket(raw, server_hostname=host) as tls:
+                der = tls.getpeercert(binary_form=True)
+        cert = x509.load_der_x509_certificate(der)
+        return f"Serverzertifikat: {cert.subject.rfc4514_string()}, ausgestellt von {cert.issuer.rfc4514_string()}"
+    except Exception as exc:
+        return f"Serverzertifikat konnte nicht gelesen werden ({exc})"
+
+
+def is_client_certificate_rejection(exc):
+    """True when the server closed the TLS session because no/an unaccepted client certificate was sent."""
+    text = str(exc).upper()
+    return any(marker in text for marker in (
+        "CERTIFICATE_REQUIRED", "BAD_CERTIFICATE", "UNKNOWN_CA", "CERTIFICATE_UNKNOWN",
+        "CERTIFICATE_EXPIRED", "CERTIFICATE_REVOKED", "HANDSHAKE_FAILURE",
+    ))
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +372,10 @@ def load_tak_data_package(zip_path, extract_dir):
 # ---------------------------------------------------------------------------
 
 DEFAULT_TAK_ENROLLMENT_PORT = 8446
+
+
+class _EnrollmentHTTPError(ValueError):
+    """HTTP error status from the enrollment API (the connection itself worked)."""
 
 
 def inspect_pkcs12_file(path, password=None):
@@ -449,28 +486,47 @@ def enroll_tak_client_certificate(
     shown_host = f"[{host}]" if ":" in str(host) else host
     base_url = f"https://{shown_host}:{int(port)}"
     auth = "Basic " + base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
-    if opener is None:
-        opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=context))
+    openers = [opener] if opener is not None else [urllib.request.build_opener(urllib.request.HTTPSHandler(context=context))]
+    if opener is None and ca_cert and verify is not False:
+        # The enrollment port is often served by nginx with a public certificate (Let's Encrypt)
+        # instead of one from the TAK CA: then accept publicly trusted certificates for this host.
+        system_context = build_tak_ssl_context(
+            ca_cert=ca_cert, ca_cert_password=ca_cert_password, verify=True, trust_system_cas=True
+        )
+        openers.append(urllib.request.build_opener(urllib.request.HTTPSHandler(context=system_context)))
 
     def request(path, data=None, headers=None):
-        req = urllib.request.Request(base_url + path, data=data, method="POST" if data is not None else "GET")
-        req.add_header("Authorization", auth)
-        for key, value in (headers or {}).items():
-            req.add_header(key, value)
-        try:
-            with opener.open(req, timeout=timeout) as response:
-                return response.read()
-        except urllib.error.HTTPError as exc:
-            if exc.code == 401:
-                raise ValueError("Server lehnt Benutzername/Passwort ab (HTTP 401).")
-            raise ValueError(f"Server antwortet mit HTTP {exc.code} auf {path}.")
-        except urllib.error.URLError as exc:
-            reason = exc.reason
-            if isinstance(reason, ssl.SSLCertVerificationError):
-                raise ValueError(
-                    f"Serverzertifikat von {base_url} passt nicht zum Truststore: {reason.verify_message}"
-                )
-            raise ValueError(f"{base_url} nicht erreichbar: {reason}")
+        while True:
+            req = urllib.request.Request(base_url + path, data=data, method="POST" if data is not None else "GET")
+            req.add_header("Authorization", auth)
+            for key, value in (headers or {}).items():
+                req.add_header(key, value)
+            try:
+                with openers[0].open(req, timeout=timeout) as response:
+                    return response.read()
+            except urllib.error.HTTPError as exc:
+                if exc.code == 401:
+                    raise ValueError("Server lehnt Benutzername/Passwort ab (HTTP 401).")
+                raise _EnrollmentHTTPError(f"Server antwortet mit HTTP {exc.code} auf {path}.")
+            except (urllib.error.URLError, ssl.SSLError, ConnectionError) as exc:
+                reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+                if isinstance(reason, ssl.SSLCertVerificationError):
+                    if len(openers) > 1:
+                        openers.pop(0)
+                        continue
+                    raise ValueError(
+                        f"Serverzertifikat von {base_url} ist weder vom Truststore noch von einer öffentlichen "
+                        f"Zertifizierungsstelle für {host} ausgestellt ({reason.verify_message}). "
+                        f"{describe_server_certificate(host, port)}. Den passenden Truststore verwenden oder "
+                        "\"Serverzertifikat prüfen\" auf \"Nicht prüfen\" stellen."
+                    )
+                if is_client_certificate_rejection(reason) or isinstance(reason, ConnectionError):
+                    raise ValueError(
+                        f"Port {port} verlangt bereits ein Client-Zertifikat – das ist nicht der Port für die "
+                        f"Zertifikatsanforderung. Bei OpenTAKServer/TAK Server ist das Port "
+                        f"{DEFAULT_TAK_ENROLLMENT_PORT} (Feld leer lassen)."
+                    )
+                raise ValueError(f"{base_url} nicht erreichbar: {reason}")
 
     name_entries = []
     try:
@@ -478,7 +534,7 @@ def enroll_tak_client_certificate(
         for element in config_root.iter():
             if element.tag.split("}")[-1] == "nameEntry" and element.get("name") and element.get("value"):
                 name_entries.append((element.get("name").upper(), element.get("value")))
-    except (ValueError, ParseError):
+    except (_EnrollmentHTTPError, ParseError):
         # Optional endpoint; enrollment also works without the extra name entries.
         name_entries = []
 
@@ -583,6 +639,8 @@ class TAKServerClient:
         *,
         logger,
         ssl_context_factory=None,
+        fallback_ssl_context_factory=None,
+        has_client_certificate=True,
         on_event=None,
         sa_builder=None,
         sa_interval_seconds=DEFAULT_SA_INTERVAL_SECONDS,
@@ -598,6 +656,9 @@ class TAKServerClient:
         self.logger = logger
         self.endpoint = format_tak_server_endpoint(host, self.port, self.protocol)
         self._ssl_context_factory = ssl_context_factory
+        self._fallback_ssl_context_factory = fallback_ssl_context_factory
+        self._use_fallback_ssl = False
+        self.has_client_certificate = has_client_certificate
         self._on_event = on_event
         self._sa_builder = sa_builder
         self.sa_interval_seconds = max(0, int(sa_interval_seconds or 0))
@@ -613,6 +674,7 @@ class TAKServerClient:
         self._send_lock = threading.Lock()
         self._thread = None
         self._connected = threading.Event()
+        self._confirmed = False
         self._dropped = 0
         self.status = {
             "endpoint": self.endpoint,
@@ -665,7 +727,7 @@ class TAKServerClient:
 
     def get_status(self):
         status = dict(self.status)
-        status["connected"] = self.connected
+        status["connected"] = self.connected and self._confirmed
         with self._queue_cv:
             status["queued"] = len(self._queue)
         return status
@@ -699,9 +761,23 @@ class TAKServerClient:
         except Exception:
             pass
         if self.protocol == "SSL":
-            context = self._ssl_context_factory() if self._ssl_context_factory else build_tak_ssl_context()
+            factory = self._ssl_context_factory
+            if self._use_fallback_ssl and self._fallback_ssl_context_factory is not None:
+                factory = self._fallback_ssl_context_factory
+            context = factory() if factory else build_tak_ssl_context()
             raw.settimeout(CONNECT_TIMEOUT_SECONDS)
-            sock = context.wrap_socket(raw, server_hostname=self.host)
+            try:
+                sock = context.wrap_socket(raw, server_hostname=self.host)
+            except ssl.SSLCertVerificationError:
+                raw.close()
+                if self._use_fallback_ssl or self._fallback_ssl_context_factory is None:
+                    raise
+                # Server certificate not from the truststore: try publicly trusted CAs (with host name check).
+                self._use_fallback_ssl = True
+                self.logger.info(
+                    f"Serverzertifikat von {self.endpoint} nicht vom Truststore – prüfe gegen öffentliche Zertifizierungsstellen."
+                )
+                return self._open_socket()
         else:
             sock = raw
         sock.settimeout(SOCKET_IO_TIMEOUT_SECONDS)
@@ -738,34 +814,76 @@ class TAKServerClient:
     def _run(self):
         delay = self.reconnect_seconds
         while not self._stop.is_set():
+            connected_at = None
             try:
                 self.logger.info(f"Verbinde mit TAK-Server {self.endpoint} ...")
                 sock = self._open_socket()
                 with self._sock_lock:
                     self._sock = sock
                 self._connected.set()
+                self._confirmed = False
+                connected_at = time.monotonic()
                 self.status.update(connected=True, last_error="", connected_since=time.time())
-                self.logger.info(f"✅ TAK-Server verbunden: {self.endpoint}")
-                delay = self.reconnect_seconds
+                if self.protocol == "SSL":
+                    # With TLS 1.3 a missing/rejected client certificate is only reported after the
+                    # handshake, so "connected" is logged once the server kept the session open.
+                    self.logger.info(f"TLS-Verbindung zu {self.endpoint} aufgebaut, warte auf Annahme durch den Server ...")
+                else:
+                    self._confirm_connection()
                 self._send_sa(sock)
                 self._serve(sock)
-            except ssl.SSLError as exc:
-                self.status["last_error"] = f"TLS: {exc}"
-                self.logger.warning(
-                    f"TLS-Verbindung zu {self.endpoint} fehlgeschlagen: {exc}. "
-                    "Client-Zertifikat/Passwort und Truststore prüfen."
-                )
             except Exception as exc:
-                self.status["last_error"] = str(exc)
-                self.logger.warning(f"TAK-Server {self.endpoint} nicht verbunden: {type(exc).__name__}: {exc}")
+                self._report_connection_error(exc, connected_at=connected_at)
             finally:
-                was_connected = self.connected
+                was_confirmed = self._confirmed
                 self._close_socket()
-                if was_connected and not self._stop.is_set():
+                if was_confirmed and not self._stop.is_set():
                     self.logger.warning(f"TAK-Server-Verbindung {self.endpoint} getrennt, neuer Versuch folgt.")
+            if self._confirmed_once_recently():
+                delay = self.reconnect_seconds
             if self._stop.wait(delay):
                 break
             delay = min(delay * 2, MAX_RECONNECT_SECONDS)
+
+    def _confirm_connection(self):
+        if self._confirmed:
+            return
+        self._confirmed = True
+        self.logger.info(f"✅ TAK-Server verbunden: {self.endpoint}")
+
+    def _confirmed_once_recently(self):
+        # Reset the back-off only after a session that was really accepted by the server.
+        was = self._confirmed
+        self._confirmed = False
+        return was
+
+    def _report_connection_error(self, exc, connected_at=None):
+        quick_close = connected_at is not None and time.monotonic() - connected_at < CONFIRM_CONNECTION_SECONDS
+        rejected = is_client_certificate_rejection(exc) or (
+            self.protocol == "SSL" and quick_close and isinstance(exc, (ConnectionError, ssl.SSLError))
+        )
+        if rejected and self.protocol == "SSL":
+            if not self.has_client_certificate:
+                message = (
+                    "Server verlangt ein Client-Zertifikat, es ist aber keins eingerichtet. In der Browser-UI "
+                    "\"Zertifikat anfordern\" (Benutzername/Passwort) ausführen oder eine Client-.p12 hochladen."
+                )
+            else:
+                message = (
+                    "Server hat das Client-Zertifikat abgelehnt (abgelaufen, gesperrt oder von einer anderen CA). "
+                    "Neues Zertifikat anfordern bzw. passendes Datenpaket importieren."
+                )
+            self.status["last_error"] = message
+            self.logger.warning(f"TAK-Server {self.endpoint}: {message} ({exc})")
+            return
+        if isinstance(exc, ssl.SSLCertVerificationError):
+            message = f"Serverzertifikat nicht vertrauenswürdig: {exc.verify_message}. Truststore prüfen."
+        elif isinstance(exc, ssl.SSLError):
+            message = f"TLS-Fehler: {exc}"
+        else:
+            message = f"{type(exc).__name__}: {exc}"
+        self.status["last_error"] = message
+        self.logger.warning(f"TAK-Server {self.endpoint} nicht verbunden: {message}")
 
     def _serve(self, sock):
         """Single-threaded loop: read server traffic, send queued CoT, keep the stream alive.
@@ -775,12 +893,24 @@ class TAKServerClient:
         """
         last_write = time.monotonic()
         last_sa = time.monotonic()
+        session_start = time.monotonic()
+        received_at_start = self.status["received"]
         buffer_text = ""
         while not self._stop.is_set():
             if self.protocol != "UDP":
                 buffer_text = self._read_available(sock, buffer_text)
                 if buffer_text is None:
                     return
+            if not self._confirmed:
+                if (
+                    time.monotonic() - session_start >= CONFIRM_CONNECTION_SECONDS
+                    or self.status["received"] > received_at_start
+                ):
+                    self._confirm_connection()
+                else:
+                    # Hold back queued CoT until the server accepted the session; with TLS 1.3 a
+                    # rejection arrives after the handshake and data written meanwhile would be lost.
+                    continue
             with self._queue_cv:
                 if not self._queue and self.protocol == "UDP":
                     self._queue_cv.wait(timeout=1.0)
@@ -810,7 +940,7 @@ class TAKServerClient:
         if callable(pending) and pending():
             return True
         with self._queue_cv:
-            if self._queue:
+            if self._queue and self._confirmed:
                 timeout = 0
         try:
             readable, _, _ = select.select([sock], [], [], timeout)
@@ -844,6 +974,6 @@ class TAKServerClient:
                 except Exception as exc:
                     self.logger.debug(f"Fehler beim Verarbeiten einer TAK-Server-Nachricht: {exc}")
             with self._queue_cv:
-                if self._queue:
+                if self._queue and self._confirmed:
                     break
         return buffer_text
