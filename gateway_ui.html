@@ -240,21 +240,14 @@
               <div class="status-line" id="takServerStatus">TAK-Server: Gateway nicht gestartet.</div>
             </div>
             <div class="field-full">
-              <label for="dataPackageFile">TAK-Server-Datenpaket importieren (.zip aus ATAK/WinTAK/TAK Server)</label>
+              <label for="dataPackageFile">Datenpaket (.zip) oder Zertifikat (.p12) hochladen</label>
               <div class="btn-row">
-                <input id="dataPackageFile" type="file" accept=".zip">
-                <button type="button" onclick="importDataPackage()">Datenpaket übernehmen</button>
+                <input id="dataPackageFile" type="file" accept=".zip,.p12,.pfx" onchange="updateUploadPasswordField()">
+                <input id="certificateUploadPassword" type="password" autocomplete="off" placeholder=".p12-Passwort (leer = atakatak)" style="max-width:240px" disabled>
+                <button type="button" onclick="importTakFile()">Datei übernehmen</button>
               </div>
-              <div class="tiny">Übernimmt Server-Adresse, Port, SSL, Client-Zertifikat und Truststore inkl. Passwörter.</div>
-            </div>
-            <div class="field-full">
-              <label for="certificateFile">Einzelnes Zertifikat verwenden (.p12 – Truststore oder Client-Zertifikat)</label>
-              <div class="btn-row">
-                <input id="certificateFile" type="file" accept=".p12,.pfx">
-                <input id="certificateUploadPassword" type="password" autocomplete="off" placeholder="Passwort (leer = atakatak)" style="max-width:220px">
-                <button type="button" onclick="uploadCertificate()">Zertifikat übernehmen</button>
-              </div>
-              <div class="tiny">Wird automatisch erkannt: ohne privaten Schlüssel = Truststore (CA), mit Schlüssel = Client-Zertifikat.</div>
+              <div class="tiny">.zip: übernimmt Server-Adresse, Port, SSL, Client-Zertifikat und Truststore inkl. Passwörter.
+                .p12: wird automatisch erkannt – ohne privaten Schlüssel als Truststore (CA), mit Schlüssel als Client-Zertifikat.</div>
             </div>
             <div class="field-full">
               <label>Client-Zertifikat beim TAK-Server anfordern (Benutzername/Passwort, wie in ATAK)</label>
@@ -679,13 +672,33 @@
       });
     }
 
-    async function uploadCertificate() {
-      const input = document.getElementById('certificateFile');
+    function isCertificateFile(file) {
+      return /\.(p12|pfx)$/i.test((file && file.name) || '');
+    }
+
+    function updateUploadPasswordField() {
+      const input = document.getElementById('dataPackageFile');
+      const file = input.files && input.files[0];
+      document.getElementById('certificateUploadPassword').disabled = !isCertificateFile(file);
+    }
+
+    async function importTakFile() {
+      const input = document.getElementById('dataPackageFile');
       const file = input.files && input.files[0];
       if (!file) {
-        setNotice('Bitte zuerst eine .p12-Datei auswählen.', true);
+        setNotice('Bitte zuerst ein Datenpaket (.zip) oder Zertifikat (.p12) auswählen.', true);
         return;
       }
+      if (isCertificateFile(file)) {
+        await uploadCertificate(file);
+      } else if (/\.zip$/i.test(file.name)) {
+        await importDataPackage(file);
+      } else {
+        setNotice('Nur .zip-Datenpakete und .p12-Zertifikate werden unterstützt.', true);
+      }
+    }
+
+    async function uploadCertificate(file) {
       try {
         const content = await readFileAsBase64(file);
         const result = await api('/api/browser/upload-certificate', {
@@ -695,6 +708,7 @@
           tak_server_host: document.getElementById('tak_server_host').value,
         });
         applyForm(result.config || {});
+        document.getElementById('certificateUploadPassword').value = '';
         setNotice(result.message || 'Zertifikat übernommen.');
       } catch (error) {
         setNotice(error.message, true);
@@ -724,13 +738,7 @@
       }
     }
 
-    async function importDataPackage() {
-      const input = document.getElementById('dataPackageFile');
-      const file = input.files && input.files[0];
-      if (!file) {
-        setNotice('Bitte zuerst ein Datenpaket (.zip) auswählen.', true);
-        return;
-      }
+    async function importDataPackage(file) {
       try {
         const content = await readFileAsBase64(file);
         const result = await api('/api/browser/import-data-package', { filename: file.name, content });

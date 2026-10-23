@@ -3960,7 +3960,7 @@ class GatewayApp:
             values=list(TAK_SERVER_PROTOCOLS),
             width=10,
         ).grid(row=5, column=1, sticky="w", padx=(6, 12), pady=(0, 4))
-        ttk.Button(cfg_frame, text="Import TAK data package…", command=self._import_tak_data_package).grid(
+        ttk.Button(cfg_frame, text="Import TAK package / .p12…", command=self._import_tak_data_package).grid(
             row=4, column=4, columnspan=2, sticky="ew", padx=(8, 0), pady=(0, 4)
         )
         ttk.Button(cfg_frame, text="Use .p12 certificate…", command=self._choose_tak_certificate).grid(
@@ -4438,10 +4438,18 @@ class GatewayApp:
         from tkinter import filedialog, messagebox
 
         zip_path = filedialog.askopenfilename(
-            title="TAK-Server-Datenpaket auswählen",
-            filetypes=[("TAK data package", "*.zip"), ("All files", "*.*")],
+            title="TAK-Datenpaket (.zip) oder Zertifikat (.p12) auswählen",
+            filetypes=[
+                ("TAK data package / certificate", "*.zip *.p12 *.pfx"),
+                ("TAK data package", "*.zip"),
+                ("PKCS#12 certificate", "*.p12 *.pfx"),
+                ("All files", "*.*"),
+            ],
         )
         if not zip_path:
+            return
+        if zip_path.lower().endswith((".p12", ".pfx")):
+            self._choose_tak_certificate(zip_path)
             return
         try:
             package = import_tak_data_package_into_cfg(self.cfg, zip_path)
@@ -4460,13 +4468,14 @@ class GatewayApp:
         self.cfg["tak_server_port"] = self._server_port_var.get().strip()
         self.cfg["tak_server_protocol"] = self._server_protocol_var.get()
 
-    def _choose_tak_certificate(self):
+    def _choose_tak_certificate(self, path=None):
         from tkinter import filedialog, messagebox, simpledialog
 
-        path = filedialog.askopenfilename(
-            title="TAK-Zertifikat (.p12) auswählen",
-            filetypes=[("PKCS#12", "*.p12 *.pfx"), ("All files", "*.*")],
-        )
+        if path is None:
+            path = filedialog.askopenfilename(
+                title="TAK-Zertifikat (.p12) auswählen",
+                filetypes=[("PKCS#12", "*.p12 *.pfx"), ("All files", "*.*")],
+            )
         if not path:
             return
         password = simpledialog.askstring(

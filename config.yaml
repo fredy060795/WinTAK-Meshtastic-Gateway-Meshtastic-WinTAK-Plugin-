@@ -25,7 +25,7 @@ relay_text_messages: true
 # ── Remote TAK Server ─────────────────────────────────────────────────────────
 # Adresse: Hostname, IP oder URL – z. B. tak.example.com, 10.0.0.5, ssl://tak.example.com:8089
 # oder ATAK-Form tak.example.com:8089:ssl. Leer lassen = kein Remote-Server.
-# Am einfachsten: in der Browser-UI "TAK-Server-Datenpaket importieren" (.zip aus TAK Server/ATAK)
+# Am einfachsten: in der Browser-UI "Datenpaket (.zip) oder Zertifikat (.p12) hochladen"
 # – das setzt Host, Port, SSL, Zertifikate und Passwörter automatisch.
 tak_server_host: tak.persistentsystems.eu
 # Port leer lassen = Standard: TCP 8087 (bzw. 8088 Streaming-TCP bei TAK Server), SSL 8089
