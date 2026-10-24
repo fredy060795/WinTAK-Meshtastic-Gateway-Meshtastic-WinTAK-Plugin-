@@ -1,7 +1,9 @@
 gateway_callsign: MSHT-GW
 gateway_uid: GW-01
-# Einzelner Port:
-meshtastic_port: COM7
+# AUTO = angeschlossene Meshtastic-Funkgeräte automatisch erkennen (USB-Kennung).
+# Oder ein fester Port, z. B. COM12. Ist ein fester COM-Port nicht vorhanden (Windows hat
+# umnummeriert) und genau ein Meshtastic-Gerät erkannt, wird automatisch dieses verwendet.
+meshtastic_port: AUTO
 # Mehrere Ports (Liste für Multi-Stream-Betrieb):
 # meshtastic_port:
 #   - COM7
@@ -97,6 +99,17 @@ tak_multicast_groups:
 # Optional: eigene Bind-IP für den TCP-Listener. Standard ist 0.0.0.0,
 # damit WinTAK wie bei LPU5 auch von anderen Systemen per TCP 8088 verbinden kann.
 # local_tak_tcp_listen_ip: 0.0.0.0
+
+# ── Mesh schonen (Kanalauslastung) ────────────────────────────────────────────
+# Begrenzt, was von WinTAK/TAK-Server ins LoRa-Mesh gesendet wird. Chat geht immer sofort.
+# Profil: sparsam | normal | schnell | aus | eigene (dann gelten die Werte unten)
+# mesh_airtime_preset: normal
+# mesh_pli_min_interval_seconds: 60          # Position pro Teilnehmer höchstens alle X s
+# mesh_pli_stationary_interval_seconds: 300  # bei Stillstand höchstens alle X s
+# mesh_pli_min_distance_m: 25                # "Stillstand" = weniger als X m bewegt
+# mesh_marker_repeat_interval_seconds: 1800  # unveränderte Marker höchstens alle X s wiederholen
+# mesh_chutil_limit_pli: 25                  # ab X % Kanalauslastung Positionen zurückhalten
+# mesh_chutil_limit_markers: 40              # ab X % auch Marker zurückhalten
 
 # true  = alle Nodes anzeigen – Nodes ohne GPS-Fix werden bei park_lat/park_lon platziert (empfohlen)
 # false = nur Nodes mit gültigen GPS-Koordinaten senden

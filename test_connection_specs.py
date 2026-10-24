@@ -165,3 +165,43 @@ class TestTerminalPortSelection(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestMeshtasticPortDetection(unittest.TestCase):
+    def _fake_serial(self, ports):
+        entries = [types.SimpleNamespace(device=d, vid=v, description=desc, manufacturer="", product="") for d, v, desc in ports]
+        return types.SimpleNamespace(tools=types.SimpleNamespace(list_ports=types.SimpleNamespace(comports=lambda: entries)))
+
+    def test_classification_and_labels(self):
+        fake = self._fake_serial([
+            ("COM3", None, "Standard-Seriell über Bluetooth"),
+            ("COM12", 0x10C4, "Silicon Labs CP210x USB to UART Bridge"),
+            ("COM14", 0x239A, "RAK4631"),
+            ("COM20", 0x1366, "J-Link"),
+        ])
+        with mock.patch.object(main_app, "serial", fake):
+            details = {d["device"]: d for d in main_app.detect_serial_port_details()}
+            self.assertEqual(main_app.detect_meshtastic_serial_ports(), ["COM14", "COM12"])
+        self.assertIsNone(details["COM3"]["meshtastic"])
+        self.assertEqual(details["COM12"]["meshtastic"], "possible")
+        self.assertTrue(details["COM14"]["label"].startswith("★"))
+        self.assertIsNone(details["COM20"]["meshtastic"])
+
+    def test_vanished_com_port_is_replaced_by_detected_radio(self):
+        fake = self._fake_serial([("COM12", 0x10C4, "CP210x"), ("COM3", None, "Bluetooth")])
+        gw = _make_stub_gateway(["COM7", "BLE:Node"])
+        with mock.patch.object(main_app, "serial", fake):
+            self.assertEqual(gw._effective_ports(), ["COM12", "BLE:Node"])
+
+    def test_auto_uses_all_detected_radios(self):
+        fake = self._fake_serial([("COM12", 0x10C4, "CP210x"), ("COM14", 0x303A, "ESP32-S3")])
+        gw = _make_stub_gateway(["AUTO"])
+        with mock.patch.object(main_app, "serial", fake):
+            self.assertEqual(sorted(gw._effective_ports()), ["COM12", "COM14"])
+        self.assertFalse(is_serial_port_spec("auto"))
+
+    def test_ambiguous_replacement_keeps_configured_port(self):
+        fake = self._fake_serial([("COM12", 0x10C4, "CP210x"), ("COM14", 0x1A86, "CH340")])
+        gw = _make_stub_gateway(["COM7"])
+        with mock.patch.object(main_app, "serial", fake):
+            self.assertEqual(gw._effective_ports(), ["COM7"])

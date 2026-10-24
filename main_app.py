@@ -58,6 +58,7 @@ try:
 except Exception:
     colorlog = None
 
+from mesh_airtime import DECISION_SEND, MeshAirtimeGovernor, slim_cot_for_mesh
 from tak_server_client import (
     DEFAULT_TAK_SERVER_PORTS,
     TAK_SERVER_PROTOCOLS,
@@ -481,6 +482,41 @@ def enroll_tak_certificate_into_cfg(cfg, username, password, enrollment_port=Non
     return result
 
 
+AUTOSTART_FILENAME = "Meshtastic Gateway.cmd"
+
+
+def _autostart_path():
+    appdata = os.environ.get("APPDATA")
+    if os.name != "nt" or not appdata:
+        return None
+    return os.path.join(appdata, "Microsoft", "Windows", "Start Menu", "Programs", "Startup", AUTOSTART_FILENAME)
+
+
+def is_autostart_enabled():
+    path = _autostart_path()
+    return bool(path and os.path.isfile(path))
+
+
+def set_autostart_enabled(enabled):
+    """Start the gateway with Windows (Startup folder entry that runs the start script minimized)."""
+    path = _autostart_path()
+    if path is None:
+        raise ValueError("Autostart ist nur unter Windows verfügbar.")
+    if not enabled:
+        if os.path.isfile(path):
+            os.remove(path)
+        return False
+    starter = os.path.join(_config_base_dir(), "Meshtastic_Gateway_Start.bat")
+    if not os.path.isfile(starter):
+        raise ValueError(f"Startdatei nicht gefunden: {starter}")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\r\n") as fh:
+        fh.write("@echo off\n")
+        fh.write(":: Automatisch angelegt vom WinTAK Meshtastic Gateway (Einstellungen > Autostart)\n")
+        fh.write(f'start "Meshtastic Gateway" /min "{starter}"\n')
+    return True
+
+
 def _utc_now():
     return datetime.datetime.now(datetime.timezone.utc)
 
@@ -650,6 +686,10 @@ class _ServiceWebUIRequestHandler(http.server.BaseHTTPRequestHandler):
                 response = controller.run_command(body.get("command", ""))
             elif request_path == "/api/browser/refresh-ports":
                 response = controller.refresh_detected_ports()
+            elif request_path == "/api/browser/save-settings":
+                response = controller.save_settings(body)
+            elif request_path == "/api/browser/autostart":
+                response = controller.set_autostart(body)
             elif request_path == "/api/browser/upload-certificate":
                 response = controller.upload_certificate(body)
             elif request_path == "/api/browser/enroll-certificate":
@@ -2603,6 +2643,39 @@ def detect_serial_port_devices():
     return [entry["device"] for entry in detect_serial_port_details()]
 
 
+# USB vendor IDs: boards with native USB that Meshtastic flashes (RAK/Adafruit nRF52, ESP32-S3)
+# and USB-UART bridges used on most other Meshtastic boards (Heltec, T-Beam, Station G2 ...).
+MESHTASTIC_NATIVE_USB_VIDS = {0x239A, 0x303A}
+MESHTASTIC_UART_BRIDGE_VIDS = {0x10C4, 0x1A86, 0x0403}
+# Debug probes / dev kits that are never a Meshtastic radio (same list as the Meshtastic CLI).
+NON_MESHTASTIC_USB_VIDS = {0x1366, 0x0483, 0x1915, 0x0925, 0x04B4}
+AUTO_PORT_SPEC = "AUTO"
+
+
+def classify_meshtastic_serial_port(port):
+    """"likely", "possible" or None for a pyserial ListPortInfo."""
+    vid = getattr(port, "vid", None)
+    if vid is None or vid in NON_MESHTASTIC_USB_VIDS:
+        return None  # e.g. Bluetooth virtual COM ports, J-Link
+    if vid in MESHTASTIC_NATIVE_USB_VIDS:
+        return "likely"
+    text = " ".join(
+        str(getattr(port, attr, "") or "") for attr in ("description", "manufacturer", "product")
+    ).lower()
+    if "meshtastic" in text:
+        return "likely"
+    if vid in MESHTASTIC_UART_BRIDGE_VIDS:
+        return "possible"
+    return None
+
+
+def detect_meshtastic_serial_ports():
+    """Device names that look like Meshtastic radios, best candidates first."""
+    details = [entry for entry in detect_serial_port_details() if entry.get("meshtastic")]
+    details.sort(key=lambda entry: (entry["meshtastic"] != "likely", entry["device"]))
+    return [entry["device"] for entry in details]
+
+
 def detect_serial_port_details():
     """Return detected serial ports with human-friendly labels."""
     if serial is None:
@@ -2613,6 +2686,7 @@ def detect_serial_port_details():
             device = str(getattr(port, "device", "") or "").strip()
             if not device:
                 continue
+            meshtastic_hint = classify_meshtastic_serial_port(port)
             info_parts = []
             for value in (
                 getattr(port, "description", None),
@@ -2623,12 +2697,12 @@ def detect_serial_port_details():
                 if not text or text.lower() == "n/a" or text in info_parts:
                     continue
                 info_parts.append(text)
-            details.append(
-                {
-                    "device": device,
-                    "label": f"{device} - {' | '.join(info_parts)}" if info_parts else device,
-                }
-            )
+            label = f"{device} - {' | '.join(info_parts)}" if info_parts else device
+            if meshtastic_hint == "likely":
+                label = "★ " + label + "  (Meshtastic-Gerät)"
+            elif meshtastic_hint == "possible":
+                label = label + "  (mögliches Meshtastic-Gerät)"
+            details.append({"device": device, "label": label, "meshtastic": meshtastic_hint})
         return details
     except Exception:
         return []
@@ -2660,6 +2734,8 @@ def parse_meshtastic_connection_spec(port):
         if lower.startswith(prefix):
             target = text[len(prefix):].strip()
             return {"kind": "ble", "target": target or None, "spec": text}
+    if lower == "auto":
+        return {"kind": "auto", "target": None, "spec": text}
     if lower in ("ble", "bt", "bluetooth"):
         return {"kind": "ble", "target": None, "spec": text}
     for prefix in MESHTASTIC_TCP_PREFIXES:
@@ -2814,6 +2890,7 @@ def _apply_settings_payload_to_cfg(cfg, payload, ports):
     cfg["tak_server_to_mesh"] = to_mesh_mode if to_mesh_mode in TAK_SERVER_TO_MESH_MODES else DEFAULT_TAK_SERVER_TO_MESH_MODE
     for key in ("tak_server_to_local_tak", "local_tak_to_server", "tak_server_send_gateway_sa"):
         cfg[key] = _config_bool_value(payload, key, cfg.get(key, True))
+    _apply_mesh_airtime_payload_to_cfg(cfg, payload)
     cfg["local_tak_ip"] = str(
         payload.get("local_tak_ip", cfg.get("local_tak_ip", WINTAK_REQUIRED_HOST))
     ).strip() or WINTAK_REQUIRED_HOST
@@ -2919,6 +2996,44 @@ def _apply_settings_payload_to_cfg(cfg, payload, ports):
         )
 
 
+MESH_AIRTIME_PRESETS = {
+    # name: (pli_min_interval, pli_stationary_interval, pli_min_distance_m, chutil_limit_pli, chutil_limit_markers)
+    "sparsam": (120, 600, 50, 20, 35),
+    "normal": (60, 300, 25, 25, 40),
+    "schnell": (20, 120, 10, 35, 50),
+}
+MESH_AIRTIME_NUMBER_FIELDS = (
+    ("mesh_pli_min_interval_seconds", "Position min. Abstand (s)", 5, 3600),
+    ("mesh_pli_stationary_interval_seconds", "Position bei Stillstand (s)", 10, 7200),
+    ("mesh_pli_min_distance_m", "Mindestbewegung (m)", 0, 10000),
+    ("mesh_marker_repeat_interval_seconds", "Marker-Wiederholung (s)", 60, 86400),
+    ("mesh_chutil_limit_pli", "Kanalgrenze Positionen (%)", 1, 100),
+    ("mesh_chutil_limit_markers", "Kanalgrenze Marker (%)", 1, 100),
+)
+
+
+def _apply_mesh_airtime_payload_to_cfg(cfg, payload):
+    preset = str(payload.get("mesh_airtime_preset", cfg.get("mesh_airtime_preset", "normal")) or "normal").strip().lower()
+    if preset == "aus":
+        cfg["mesh_airtime_preset"] = "aus"
+        cfg["mesh_airtime_control"] = False
+        return
+    cfg["mesh_airtime_control"] = True
+    if preset in MESH_AIRTIME_PRESETS:
+        cfg["mesh_airtime_preset"] = preset
+        values = MESH_AIRTIME_PRESETS[preset]
+        for (key, _label, _low, _high), value in zip(
+            [f for f in MESH_AIRTIME_NUMBER_FIELDS if f[0] != "mesh_marker_repeat_interval_seconds"], values
+        ):
+            cfg[key] = value
+        return
+    cfg["mesh_airtime_preset"] = "eigene"
+    for key, label, low, high in MESH_AIRTIME_NUMBER_FIELDS:
+        raw = str(payload.get(key, cfg.get(key, "")) or "").strip()
+        if raw:
+            cfg[key] = _parse_int_field_value(raw, label, min_value=low, max_value=high)
+
+
 def _build_browser_ui_form_state(cfg):
     relay_to_ports = _config_ports_to_list(cfg.get("relay_text_to_ports"))
     return {
@@ -2935,6 +3050,20 @@ def _build_browser_ui_form_state(cfg):
         "tak_server_to_local_tak": as_bool(cfg.get("tak_server_to_local_tak", True)),
         "local_tak_to_server": as_bool(cfg.get("local_tak_to_server", True)),
         "tak_server_send_gateway_sa": as_bool(cfg.get("tak_server_send_gateway_sa", True)),
+        "mesh_airtime_preset": str(
+            cfg.get("mesh_airtime_preset") or ("aus" if not as_bool(cfg.get("mesh_airtime_control", True)) else "normal")
+        ),
+        **{
+            key: str(cfg.get(key, default))
+            for key, default in (
+                ("mesh_pli_min_interval_seconds", 60),
+                ("mesh_pli_stationary_interval_seconds", 300),
+                ("mesh_pli_min_distance_m", 25),
+                ("mesh_marker_repeat_interval_seconds", 1800),
+                ("mesh_chutil_limit_pli", 25),
+                ("mesh_chutil_limit_markers", 40),
+            )
+        },
         "local_tak_ip": str(cfg.get("local_tak_ip", WINTAK_REQUIRED_HOST)),
         "local_tak_port": str(cfg.get("local_tak_port", 4242)),
         "local_tak_chat_listen_port": str(cfg.get("local_tak_chat_listen_port", DEFAULT_CHAT_LISTEN_PORT)),
@@ -3178,7 +3307,32 @@ class _ServiceWebUIController:
                 "wintak_monitor": list(self._wintak_monitor),
                 "dependencies": self._missing_dependencies(),
                 "tak_server": self._gateway.get_tak_server_status() if self._gateway is not None else None,
+                "dashboard": self._gateway.get_dashboard_status() if self._gateway is not None else None,
+                "autostart": is_autostart_enabled(),
+                "autostart_supported": _autostart_path() is not None,
+                "setup_completed": as_bool(self.cfg.get("setup_completed", False)),
             }
+
+    def save_settings(self, payload):
+        """Save the form without starting the gateway (used by the setup wizard)."""
+        ports = _parse_ports_text(payload.get("meshtastic_port", "")) or ["AUTO"]
+        with self._lock:
+            updated_cfg = dict(self.cfg)
+        _apply_settings_payload_to_cfg(updated_cfg, payload, ports)
+        if "setup_completed" in payload:
+            updated_cfg["setup_completed"] = as_bool(payload.get("setup_completed"))
+        save_config(updated_cfg)
+        with self._lock:
+            self.cfg = updated_cfg
+        return {"ok": True, "config": _build_browser_ui_form_state(updated_cfg)}
+
+    def set_autostart(self, payload):
+        try:
+            enabled = set_autostart_enabled(as_bool(payload.get("enabled")))
+        except OSError as exc:
+            raise ValueError(f"Autostart konnte nicht geändert werden: {exc}")
+        self._append_log("Autostart mit Windows " + ("aktiviert." if enabled else "deaktiviert."), "INFO")
+        return {"ok": True, "autostart": enabled}
 
     def refresh_detected_ports(self):
         serial_ports = detect_serial_port_details()
@@ -5101,6 +5255,12 @@ class TAKMeshtasticGateway:
 
         # interne State
         self.logger = self.setup_logging()
+        self.mesh_airtime = MeshAirtimeGovernor(
+            MeshAirtimeGovernor.settings_from_cfg(self.cfg),
+            channel_utilization=self._get_mesh_channel_utilization,
+            send_deferred=self._send_deferred_cot_to_mesh,
+            logger=self.logger,
+        )
         self.service_web_ui = None
         self.service_web_ui_port = SERVICE_WEB_UI_PORT
         self.service_web_ui_bind_ip = detect_reachable_local_ip(self.server_ip or None)
@@ -5219,6 +5379,7 @@ class TAKMeshtasticGateway:
                     "Beim Start konnte noch keine Meshtastic-Verbindung (COM/BLE/TCP) aufgebaut werden. "
                     "Weitere Verbindungsversuche erfolgen automatisch."
                 )
+            self.mesh_airtime.start()
             # Start maintenance thread
             threading.Thread(target=self.maintain_server, daemon=True).start()
             self._register_local_nodes()
@@ -6819,6 +6980,104 @@ class TAKMeshtasticGateway:
             return self.park_coords[0], self.park_coords[1], 0
         return 0.0, 0.0, 0.0
 
+    def _get_mesh_channel_utilization(self):
+        """Highest channel utilization (percent) reported by the connected local radios, or None."""
+        values = []
+        for iface in self._get_interfaces_snapshot():
+            try:
+                info = iface.getMyNodeInfo() if hasattr(iface, "getMyNodeInfo") else None
+            except Exception:
+                info = None
+            metrics = (info or {}).get("deviceMetrics") or {}
+            value = to_float_or_none(metrics.get("channelUtilization"))
+            if value is not None:
+                values.append(value)
+        return max(values) if values else None
+
+    def _get_mesh_air_util_tx(self):
+        values = []
+        for iface in self._get_interfaces_snapshot():
+            try:
+                info = iface.getMyNodeInfo() if hasattr(iface, "getMyNodeInfo") else None
+            except Exception:
+                info = None
+            value = to_float_or_none(((info or {}).get("deviceMetrics") or {}).get("airUtilTx"))
+            if value is not None:
+                values.append(value)
+        return max(values) if values else None
+
+    def _send_deferred_cot_to_mesh(self, packet_xml, metadata):
+        if self.shutdown_flag.is_set():
+            return
+        result = self._forward_cot_to_meshtastic(packet_xml)
+        self.logger.info(
+            f"{_get_cot_subject_label(metadata)} {metadata.get('uid') or ''} zeitversetzt ins Mesh gesendet "
+            f"({result.get('transport')})."
+        )
+
+    def get_map_nodes(self, limit=500):
+        """Mesh nodes known to the connected radios, for the map/table in the browser UI."""
+        nodes = {}
+        for iface in self._get_interfaces_snapshot():
+            for node_id, node in list((getattr(iface, "nodes", None) or {}).items()):
+                user = node.get("user") or {}
+                position = node.get("position") or {}
+                lat = to_float_or_none(position.get("latitude"))
+                lon = to_float_or_none(position.get("longitude"))
+                if lat is None and position.get("latitudeI") is not None:
+                    lat = to_float_or_none(position.get("latitudeI"))
+                    lat = lat / 1e7 if lat is not None else None
+                if lon is None and position.get("longitudeI") is not None:
+                    lon = to_float_or_none(position.get("longitudeI"))
+                    lon = lon / 1e7 if lon is not None else None
+                if lat is not None and lon is not None and lat == 0.0 and lon == 0.0:
+                    lat = lon = None
+                key = str(user.get("id") or node_id)
+                metrics = node.get("deviceMetrics") or {}
+                entry = {
+                    "id": key,
+                    "name": str(user.get("longName") or user.get("shortName") or key),
+                    "short": str(user.get("shortName") or ""),
+                    "lat": lat,
+                    "lon": lon,
+                    "last_heard": node.get("lastHeard"),
+                    "snr": node.get("snr"),
+                    "hops": node.get("hopsAway"),
+                    "battery": metrics.get("batteryLevel"),
+                    "local": key in self.local_node_ids,
+                }
+                previous = nodes.get(key)
+                if previous is None or (entry["last_heard"] or 0) > (previous["last_heard"] or 0):
+                    nodes[key] = entry
+        ordered = sorted(nodes.values(), key=lambda item: -(item["last_heard"] or 0))
+        return ordered[:limit]
+
+    def get_dashboard_status(self):
+        interfaces = self._get_interfaces_snapshot()
+        nodes = self.get_map_nodes()
+        with self.local_tak_tcp_peer_lock:
+            tcp_peers = len(self.local_tak_tcp_peers)
+        with self._local_tak_tcp_push_lock:
+            receiver_connected = self._local_tak_tcp_push_conn is not None
+        return {
+            "radio": {
+                "configured": [str(p) for p in self.ports],
+                "connected": [self._get_interface_label(iface) for iface in interfaces],
+                "missing": self._get_missing_configured_ports(interfaces),
+                "node_count": len(nodes),
+                "nodes_with_position": sum(1 for n in nodes if n["lat"] is not None),
+            },
+            "wintak": {"tcp_connections": tcp_peers, "receiver_connected": receiver_connected},
+            "airtime": self.get_mesh_airtime_status(),
+            "nodes": nodes,
+        }
+
+    def get_mesh_airtime_status(self):
+        governor = getattr(self, "mesh_airtime", None)
+        status = governor.get_status() if governor is not None else {}
+        status["air_util_tx"] = self._get_mesh_air_util_tx()
+        return status
+
     def _build_tak_server_ssl_context(self, trust_system_cas=False):
         return build_tak_ssl_context(
             client_cert=_resolve_config_path(self.cfg.get("tak_server_client_cert")),
@@ -7272,8 +7531,46 @@ class TAKMeshtasticGateway:
         with self.interface_lock:
             return list(self.interfaces)
 
+    def _effective_ports(self):
+        """Configured ports with "AUTO" expanded and vanished COM ports replaced by a detected radio.
+
+        Windows renumbers COM ports when a radio is plugged into another USB socket (COM7 -> COM12).
+        If a configured serial port does not exist but exactly one unused Meshtastic radio is
+        detected, that one is used instead.
+        """
+        configured = [str(port).strip() for port in self.ports if str(port).strip()]
+        if serial is None:
+            return [port for port in configured if port.upper() != AUTO_PORT_SPEC]
+        try:
+            present = {str(p.device).upper() for p in serial.tools.list_ports.comports()}
+        except Exception:
+            return [port for port in configured if port.upper() != AUTO_PORT_SPEC]
+        candidates = [port for port in detect_meshtastic_serial_ports()]
+        used = {port.upper() for port in configured if port.upper() in present}
+        result = []
+        for port in configured:
+            upper = port.upper()
+            if upper == AUTO_PORT_SPEC:
+                result.extend(c for c in candidates if c.upper() not in used and c not in result)
+                continue
+            if not is_serial_port_spec(port) or upper in present:
+                result.append(port)
+                continue
+            free = [c for c in candidates if c.upper() not in used and c not in result]
+            if len(free) == 1:
+                if not getattr(self, "_port_substitution_logged", {}).get(upper):
+                    self._port_substitution_logged = {**getattr(self, "_port_substitution_logged", {}), upper: True}
+                    self.logger.warning(
+                        f"{port} ist nicht vorhanden – verwende das erkannte Meshtastic-Gerät an {free[0]}."
+                    )
+                result.append(free[0])
+                used.add(free[0].upper())
+            else:
+                result.append(port)
+        return result
+
     def _get_missing_configured_ports(self, interfaces=None):
-        configured_ports = {str(port).strip().upper() for port in self.ports if str(port).strip()}
+        configured_ports = {str(port).strip().upper() for port in self._effective_ports() if str(port).strip()}
         connected_ports = set()
         for iface in interfaces or []:
             label = self._get_interface_label(iface).strip().upper()
@@ -7380,7 +7677,7 @@ class TAKMeshtasticGateway:
         if meshtastic is None:
             return self._get_interfaces_snapshot()
 
-        ports_to_connect = [str(port).strip() for port in self.ports if str(port).strip()]
+        ports_to_connect = [str(port).strip() for port in self._effective_ports() if str(port).strip()]
         stale_interfaces = []
         with self.interface_lock:
             if force_reconnect:
@@ -7757,7 +8054,9 @@ class TAKMeshtasticGateway:
         packet_bytes = _ensure_bytes(packet_xml).strip()
         if not packet_bytes:
             return b""
-        return zlib.compress(packet_bytes)
+        # Smaller XML + best compression: every byte saved is LoRa airtime, and a payload that
+        # fits into one packet avoids a multi-packet FTN transfer.
+        return zlib.compress(slim_cot_for_mesh(packet_bytes), 9)
 
     def _prepare_meshtastic_forwarder_packets(self, payload):
         """Return a list of raw ATAK_FORWARDER payloads for *payload* bytes.
@@ -9159,6 +9458,17 @@ class TAKMeshtasticGateway:
             # WinTAK/ATAK am Gateway -> Remote-TAK-Server (Gateway arbeitet wie ein TAK-Proxy).
             self._send_packet_to_remote_tak(_ensure_bytes(packet_xml), f"WinTAK-CoT {metadata.get('uid') or ''}".strip())
 
+        governor = getattr(self, "mesh_airtime", None)
+        if governor is not None:
+            decision, reason = governor.decide(packet_xml, metadata)
+            if decision != DECISION_SEND:
+                if cot_dedupe_key:
+                    self._remember_recent_chat(self.recent_cot_ids, cot_dedupe_key)
+                self.logger.debug(
+                    f"Mesh-Airtime: {_get_cot_subject_label(metadata)} {metadata.get('uid') or ''} nicht sofort gesendet ({reason})."
+                )
+                return
+
         try:
             send_result = self._forward_cot_to_meshtastic(packet_xml)
         except Exception as exc:
@@ -9902,6 +10212,9 @@ class TAKMeshtasticGateway:
         """
         self.logger.info("Cleaning up resources...")
         self.shutdown_flag.set()
+        governor = getattr(self, "mesh_airtime", None)
+        if governor is not None:
+            governor.stop()
         
         # Close UDP socket
         try:

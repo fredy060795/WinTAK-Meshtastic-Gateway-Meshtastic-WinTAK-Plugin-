@@ -12,6 +12,7 @@ a = Analysis(
         'bleak',
         'bleak.backends.winrt',
         'tak_server_client',
+        'mesh_airtime',
         'cryptography.hazmat.primitives.serialization.pkcs12',
     ],
     hookspath=[],

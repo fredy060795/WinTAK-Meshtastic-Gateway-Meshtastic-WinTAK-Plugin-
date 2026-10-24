@@ -5,888 +5,1112 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>WinTAK Meshtastic Gateway</title>
   <link rel="icon" type="image/png" href="/browser-logo.png">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
   <style>
     :root {
-      --bg: #0d1117;
-      --panel: #161b22;
-      --panel-2: #1f2630;
-      --border: #30363d;
+      --bg: #0b0f14;
+      --panel: #121821;
+      --panel-2: #19212c;
+      --panel-3: #222c39;
+      --border: #2a3441;
       --text: #e6edf3;
-      --muted: #8b949e;
-      --accent: #2f81f7;
+      --muted: #8b98a8;
+      --accent: #3b82f6;
+      --accent-2: #60a5fa;
       --green: #3fb950;
-      --yellow: #d29922;
+      --yellow: #e3b341;
+      --orange: #f0883e;
       --red: #f85149;
-      --field: #0f141b;
+      --field: #0d131a;
+      --radius: 12px;
     }
     * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: "Segoe UI", Arial, sans-serif;
-      background: var(--bg);
-      color: var(--text);
-    }
-    a { color: #58a6ff; text-decoration: none; }
+    html, body { margin: 0; background: var(--bg); color: var(--text); }
+    body { font-family: "Segoe UI", system-ui, Arial, sans-serif; font-size: 14px; }
+    a { color: var(--accent-2); text-decoration: none; }
     a:hover { text-decoration: underline; }
-    .page { max-width: 1500px; margin: 0 auto; padding: 20px; }
-    .hero, .toolbar, .panel {
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      box-shadow: 0 10px 30px rgba(0,0,0,.18);
+    code { background: var(--panel-3); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+    .page { max-width: 1500px; margin: 0 auto; padding: 16px; }
+
+    /* Header */
+    .header {
+      display: flex; gap: 14px; align-items: center; justify-content: space-between; flex-wrap: wrap;
+      padding: 14px 18px; margin-bottom: 14px;
+      background: linear-gradient(135deg, #142033, #121821 60%);
+      border: 1px solid var(--border); border-radius: var(--radius);
     }
-    .hero {
-      padding: 18px 20px;
-      margin-bottom: 14px;
-      display: flex;
-      gap: 14px;
-      align-items: flex-start;
-      justify-content: space-between;
-      flex-wrap: wrap;
+    .brand { display: flex; gap: 12px; align-items: center; min-width: 0; }
+    .brand img { width: 40px; height: 40px; border-radius: 8px; }
+    .brand h1 { margin: 0; font-size: 20px; letter-spacing: .01em; }
+    .brand .sub { color: var(--muted); font-size: 12px; }
+    .header-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .pill {
+      display: inline-flex; align-items: center; gap: 8px; padding: 7px 12px; border-radius: 999px;
+      background: var(--panel-2); border: 1px solid var(--border); font-weight: 600; white-space: nowrap;
     }
-    .hero h1 { margin: 0 0 8px; font-size: 24px; }
-    .hero p { margin: 0; color: var(--muted); }
-    .status-pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 8px 12px;
-      border-radius: 999px;
-      background: var(--panel-2);
-      border: 1px solid var(--border);
-      font-weight: 600;
-    }
-    .status-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--yellow); }
-    .status-dot.running { background: var(--green); box-shadow: 0 0 10px rgba(63,185,80,.6); }
-    .status-dot.stopped { background: var(--red); }
-    .toolbar {
-      margin-bottom: 14px;
-      padding: 12px 16px;
-      display: flex;
-      gap: 14px;
-      align-items: center;
-      justify-content: space-between;
-      flex-wrap: wrap;
-    }
-    .toolbar-links { display: flex; gap: 14px; flex-wrap: wrap; }
-    .service-info {
-      display: grid;
-      gap: 6px;
-      justify-items: end;
-      text-align: right;
-      min-width: 0;
-    }
-    .service-links-list {
-      display: grid;
-      gap: 4px;
-      justify-items: end;
-      min-width: 0;
-    }
-    .service-link {
-      display: inline-block;
-      max-width: 100%;
-      overflow-wrap: anywhere;
-    }
-    .notice {
-      margin-bottom: 14px;
-      padding: 12px 14px;
-      border-radius: 10px;
-      border: 1px solid var(--border);
-      background: rgba(47,129,247,.12);
-      color: var(--text);
-      display: none;
-    }
-    .notice.warn { background: rgba(210,153,34,.12); border-color: rgba(210,153,34,.5); }
-    .grid {
-      display: grid;
-      grid-template-columns: minmax(420px, 1fr) minmax(420px, 1fr);
-      gap: 14px;
-    }
-    .stack { display: grid; gap: 14px; }
-    .panel { padding: 16px; }
-    .panel h2, .panel h3 { margin: 0 0 12px; font-size: 16px; }
-    .sub { color: var(--muted); font-size: 13px; margin-bottom: 10px; }
-    .form-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 12px 14px;
-    }
-    .field, .field-full { display: grid; gap: 6px; }
-    .field-full { grid-column: 1 / -1; }
-    label { font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
-    input, select, textarea, button {
-      font: inherit;
-    }
-    input[type="text"], input[type="number"], select, textarea {
-      width: 100%;
-      background: var(--field);
-      color: var(--text);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 10px 12px;
-    }
-    textarea { min-height: 120px; resize: vertical; }
-    select[multiple] { min-height: 120px; }
-    .check-grid {
-      grid-column: 1 / -1;
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 10px;
-    }
-    .check {
-      display: flex;
-      gap: 10px;
-      align-items: center;
-      padding: 10px 12px;
-      border: 1px solid var(--border);
-      background: var(--panel-2);
-      border-radius: 8px;
-      color: var(--text);
-      font-size: 14px;
-      text-transform: none;
-      letter-spacing: 0;
-      font-weight: 400;
-    }
-    .btn-row { display: flex; gap: 10px; flex-wrap: wrap; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; }
+    .dot.ok { background: var(--green); box-shadow: 0 0 10px rgba(63,185,80,.6); }
+    .dot.warn { background: var(--yellow); }
+    .dot.bad { background: var(--red); }
+    .dot.off { background: #4b5563; }
+
     button {
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 10px 14px;
-      background: var(--panel-2);
-      color: var(--text);
-      cursor: pointer;
+      font: inherit; border: 1px solid var(--border); border-radius: 8px; padding: 8px 14px;
+      background: var(--panel-2); color: var(--text); cursor: pointer; white-space: nowrap;
     }
+    button:hover:not(:disabled) { background: var(--panel-3); }
     button.primary { background: #1f6feb; border-color: #388bfd; }
-    button.danger { background: #da3633; border-color: #f85149; }
-    button:disabled { opacity: .6; cursor: not-allowed; }
-    .status-line { padding: 10px 12px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--border); }
-    .console {
-      background: #0b0f14;
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 10px;
-      min-height: 180px;
-      max-height: 320px;
-      overflow: auto;
-      font-family: Consolas, "Cascadia Code", monospace;
-      font-size: 12px;
-      line-height: 1.45;
-      white-space: pre-wrap;
-      word-break: break-word;
+    button.primary:hover:not(:disabled) { background: #2b7bf8; }
+    button.danger { background: #b62324; border-color: #da3633; }
+    button.ghost { background: transparent; }
+    button.small { padding: 5px 10px; font-size: 12px; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+
+    .notice {
+      display: none; margin-bottom: 14px; padding: 11px 14px; border-radius: 10px;
+      border: 1px solid rgba(59,130,246,.5); background: rgba(59,130,246,.12);
     }
-    .log-line { margin-bottom: 4px; }
-    .log-line.DEBUG { color: #8b949e; }
-    .log-line.INFO { color: #e6edf3; }
-    .log-line.WARNING { color: #d29922; }
-    .log-line.ERROR, .log-line.CRITICAL { color: #f85149; }
-    .log-line.CMD { color: #58a6ff; }
-    .tiny { color: var(--muted); font-size: 12px; }
+    .notice.warn { background: rgba(227,179,65,.12); border-color: rgba(227,179,65,.5); }
+
+    /* Status cards */
+    .cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
+    .card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; min-width: 0; }
+    .card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; color: var(--muted);
+      font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+    .card-value { font-size: 18px; font-weight: 650; margin-bottom: 4px; overflow-wrap: anywhere; }
+    .card-detail { color: var(--muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+    .gauge { height: 8px; background: var(--panel-3); border-radius: 99px; overflow: hidden; margin: 8px 0 6px; position: relative; }
+    .gauge-fill { height: 100%; width: 0; background: var(--green); transition: width .4s, background .4s; }
+    .gauge-mark { position: absolute; top: -2px; bottom: -2px; width: 2px; background: rgba(255,255,255,.35); }
+
+    /* Tabs */
+    .tabs { display: flex; gap: 4px; margin-bottom: 12px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+    .tab { background: transparent; border: none; border-bottom: 2px solid transparent; border-radius: 0;
+      padding: 10px 14px; color: var(--muted); font-weight: 600; }
+    .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    .grid-2 { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 14px; }
+    .grid-even { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .stack { display: grid; gap: 14px; align-content: start; }
+    .panel { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; min-width: 0; }
+    .panel h2 { margin: 0 0 4px; font-size: 16px; }
+    .panel .hint { color: var(--muted); font-size: 12px; margin-bottom: 12px; line-height: 1.5; }
+
+    .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 14px; }
+    .field, .field-full { display: grid; gap: 6px; min-width: 0; align-content: start; }
+    .field-full { grid-column: 1 / -1; }
+    label.lbl { font-size: 12px; color: var(--muted); font-weight: 600; }
+    input[type="text"], input[type="number"], input[type="password"], select, textarea {
+      width: 100%; font: inherit; background: var(--field); color: var(--text);
+      border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px;
+    }
+    input:focus, select:focus, textarea:focus { outline: 2px solid rgba(59,130,246,.5); outline-offset: 0; border-color: var(--accent); }
+    input:disabled { opacity: .55; }
+    textarea { min-height: 100px; resize: vertical; }
+    select[multiple] { min-height: 110px; }
+    input[type="file"] { color: var(--muted); max-width: 100%; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .row > input[type="text"], .row > input[type="password"], .row > input[type="number"] { flex: 1 1 160px; width: auto; }
+    .check { display: flex; gap: 10px; align-items: center; padding: 9px 11px; border: 1px solid var(--border);
+      background: var(--panel-2); border-radius: 8px; cursor: pointer; }
+    .checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    details.advanced { margin-top: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-2); }
+    details.advanced > summary { cursor: pointer; padding: 11px 14px; font-weight: 600; }
+    details.advanced > div { padding: 0 14px 14px; }
+    .save-bar { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; margin-top: 14px; }
+    .status-line { padding: 9px 12px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--border); overflow-wrap: anywhere; }
+    .tiny { color: var(--muted); font-size: 12px; line-height: 1.5; }
+
+    /* Presets */
+    .presets { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+    .preset { border: 1px solid var(--border); background: var(--panel-2); border-radius: 10px; padding: 10px; cursor: pointer; text-align: left; white-space: normal; }
+    .preset strong { display: block; margin-bottom: 3px; }
+    .preset span { color: var(--muted); font-size: 12px; }
+    .preset.active { border-color: var(--accent); background: rgba(59,130,246,.14); }
+
+    /* Map + nodes */
+    #map { height: 420px; border-radius: 10px; border: 1px solid var(--border); background: #0d131a; }
+    .map-fallback { display: none; height: 420px; align-items: center; justify-content: center; color: var(--muted); text-align: center; padding: 20px; }
+    .node-list { max-height: 260px; overflow: auto; margin-top: 10px; border: 1px solid var(--border); border-radius: 10px; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+    th { position: sticky; top: 0; background: var(--panel-2); color: var(--muted); font-weight: 600; }
+    td.name { white-space: normal; }
+
+    /* Log */
+    .log-tools { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+    .chip { padding: 5px 11px; border-radius: 99px; font-size: 12px; background: var(--panel-2); }
+    .chip.active { background: rgba(59,130,246,.18); border-color: var(--accent); color: var(--text); }
+    .log-search { flex: 1 1 140px; padding: 6px 10px !important; font-size: 12px !important; }
+    .console { background: #070a0e; border: 1px solid var(--border); border-radius: 10px; padding: 10px;
+      height: 360px; overflow: auto; font-family: Consolas, "Cascadia Code", monospace; font-size: 12px; line-height: 1.5;
+      white-space: pre-wrap; word-break: break-word; }
+    .console.short { height: 220px; }
+    .log-line { margin-bottom: 2px; }
+    .log-line .t { color: #5c6773; margin-right: 6px; }
+    .log-line .n { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 99px; background: var(--panel-3); color: var(--muted); }
+    .log-line.DEBUG { color: #7d8794; }
+    .log-line.WARNING { color: var(--yellow); }
+    .log-line.ERROR, .log-line.CRITICAL { color: var(--red); }
+    .log-line.CMD { color: var(--accent-2); }
+
+    /* Wizard */
+    .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 2000; padding: 16px; overflow: auto; }
+    .modal.open { display: flex; align-items: flex-start; justify-content: center; }
+    .modal-box { width: min(720px, 100%); margin-top: 4vh; background: var(--panel); border: 1px solid var(--border);
+      border-radius: 14px; padding: 20px; box-shadow: 0 20px 60px rgba(0,0,0,.5); }
+    .steps { display: flex; gap: 6px; margin-bottom: 16px; }
+    .step-dot { flex: 1; height: 4px; border-radius: 99px; background: var(--panel-3); }
+    .step-dot.done { background: var(--accent); }
+    .wizard-step { display: none; }
+    .wizard-step.active { display: block; }
+    .wizard-step h2 { margin: 0 0 6px; }
+    .choice-list { display: grid; gap: 8px; margin: 12px 0; max-height: 300px; overflow: auto; }
+    .choice { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--border);
+      border-radius: 10px; background: var(--panel-2); cursor: pointer; }
+    .choice input { margin-top: 3px; }
+    .choice .tiny { display: block; }
+    .wizard-nav { display: flex; justify-content: space-between; gap: 8px; margin-top: 18px; }
+
     @media (max-width: 1100px) {
-      .service-info, .service-links-list { justify-items: start; text-align: left; }
-      .grid { grid-template-columns: 1fr; }
-      .form-grid, .check-grid { grid-template-columns: 1fr; }
+      .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .grid-2, .grid-even { grid-template-columns: 1fr; }
+      .presets { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 640px) {
+      .page { padding: 10px; }
+      .cards, .form-grid, .checks { grid-template-columns: 1fr; }
+      #map, .map-fallback { height: 300px; }
     }
   </style>
 </head>
 <body>
-  <div class="page">
-    <div class="hero">
+<div class="page">
+  <header class="header">
+    <div class="brand">
+      <img src="/browser-logo.png" alt="" onerror="this.style.display='none'">
       <div>
         <h1>WinTAK Meshtastic Gateway</h1>
-        <p>Browser-Hauptoberfläche mit denselben Kernfunktionen wie die frühere Desktop-UI.</p>
-      </div>
-      <div class="status-pill">
-        <span class="status-dot stopped" id="statusDot"></span>
-        <span id="statusText">Lade Status …</span>
+        <div class="sub" id="serviceInfo">Mesh ⇄ WinTAK ⇄ TAK-Server</div>
       </div>
     </div>
-
-    <div class="toolbar">
-      <div class="toolbar-links">
-        <a href="/maker.html" target="_blank" rel="noopener">🗺️ Marker-Referenz</a>
-        <a href="/cot_monitor_ui.html" target="_blank" rel="noopener">🔍 CoT-Monitor</a>
-      </div>
-      <div class="tiny service-info" id="serviceInfo">Service wird geladen …</div>
+    <div class="header-actions">
+      <span class="pill"><span class="dot off" id="statusDot"></span><span id="statusText">Lade …</span></span>
+      <button class="primary" id="startBtn" type="button" onclick="startGateway()">▶ Starten</button>
+      <button class="danger" id="stopBtn" type="button" onclick="stopGateway()">■ Stoppen</button>
+      <button id="syncBtn" type="button" onclick="manualSync()" title="Alle bekannten Nodes jetzt an TAK senden">⟳ Sync</button>
+      <button class="ghost" type="button" onclick="openWizard()">🧭 Einrichtung</button>
     </div>
+  </header>
 
-    <div class="notice" id="notice"></div>
+  <div class="notice" id="notice"></div>
 
-    <div class="grid">
+  <section class="cards">
+    <div class="card">
+      <div class="card-head"><span class="dot off" id="radioDot"></span>Funkgerät</div>
+      <div class="card-value" id="radioValue">–</div>
+      <div class="card-detail" id="radioDetail">Gateway nicht gestartet.</div>
+    </div>
+    <div class="card">
+      <div class="card-head"><span class="dot off" id="wintakDot"></span>WinTAK</div>
+      <div class="card-value" id="wintakValue">–</div>
+      <div class="card-detail" id="wintakDetail">Gateway nicht gestartet.</div>
+    </div>
+    <div class="card">
+      <div class="card-head"><span class="dot off" id="serverDot"></span>TAK-Server</div>
+      <div class="card-value" id="serverValue">–</div>
+      <div class="card-detail" id="serverDetail">Gateway nicht gestartet.</div>
+    </div>
+    <div class="card">
+      <div class="card-head"><span class="dot off" id="airDot"></span>Kanalauslastung</div>
+      <div class="card-value" id="airValue">–</div>
+      <div class="gauge" title="Kanalauslastung des eigenen Funkgeräts">
+        <div class="gauge-fill" id="airFill"></div>
+        <div class="gauge-mark" id="airMarkPli"></div>
+        <div class="gauge-mark" id="airMarkMarkers"></div>
+      </div>
+      <div class="card-detail" id="airDetail">Gateway nicht gestartet.</div>
+    </div>
+  </section>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab active" data-tab="overview" type="button">Übersicht</button>
+    <button class="tab" data-tab="settings" type="button">Einstellungen</button>
+    <button class="tab" data-tab="server" type="button">TAK-Server</button>
+    <button class="tab" data-tab="tools" type="button">Werkzeuge</button>
+  </nav>
+
+  <!-- ======================= Übersicht ======================= -->
+  <section class="tab-panel active" id="tab-overview">
+    <div class="grid-2">
+      <div class="panel">
+        <h2>Karte</h2>
+        <div class="hint" id="mapHint">Mesh-Nodes mit Position. Grün = in den letzten 15 min gehört.</div>
+        <div id="map"></div>
+        <div class="map-fallback" id="mapFallback">Kartenkacheln konnten nicht geladen werden (keine Internetverbindung?).<br>Die Node-Liste unten funktioniert trotzdem.</div>
+        <div class="node-list">
+          <table>
+            <thead><tr><th>Node</th><th>Zuletzt</th><th>SNR</th><th>Hops</th><th>Akku</th></tr></thead>
+            <tbody id="nodeTable"><tr><td colspan="5" class="tiny">Noch keine Nodes.</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>Ereignisse</h2>
+        <div class="log-tools">
+          <button class="chip active" type="button" data-filter="all">Alle</button>
+          <button class="chip" type="button" data-filter="problems">Probleme</button>
+          <button class="chip" type="button" data-filter="mesh">Mesh</button>
+          <button class="chip" type="button" data-filter="server">Server</button>
+          <button class="chip" type="button" data-filter="wintak">WinTAK</button>
+          <input class="log-search" id="logSearch" type="text" placeholder="Suchen …">
+        </div>
+        <div class="console" id="logConsole"></div>
+        <div class="row" style="margin-top:8px; justify-content: space-between">
+          <label class="tiny"><input type="checkbox" id="logGroup" checked> Wiederholungen zusammenfassen</label>
+          <button class="small" type="button" onclick="runQuickCommand('clear')">Log leeren</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================= Einstellungen ======================= -->
+  <section class="tab-panel" id="tab-settings">
+    <div class="grid-even">
       <div class="stack">
-        <section class="panel">
-          <h2>Gateway Settings</h2>
-          <div class="sub">Alle wichtigen Felder aus der alten Oberfläche direkt im Browser.</div>
+        <div class="panel">
+          <h2>Funkgerät</h2>
+          <div class="hint"><code>AUTO</code> erkennt angeschlossene Meshtastic-Geräte selbst (★). Mehrere Einträge mit Komma trennen;
+            Bluetooth als <code>BLE:&lt;Adresse/Name&gt;</code>, WLAN-Node als <code>TCP:&lt;Host&gt;</code>.</div>
+          <div class="field-full">
+            <label class="lbl" for="meshtastic_port">Verbindung(en)</label>
+            <div class="row">
+              <input id="meshtastic_port" type="text" placeholder="AUTO, COM12, BLE:AA:BB:CC:DD:EE:FF">
+              <button type="button" onclick="setPortAuto()">Automatisch</button>
+            </div>
+          </div>
+          <div class="field-full" style="margin-top:12px">
+            <label class="lbl" for="detectedPorts">Gefundene Geräte</label>
+            <select id="detectedPorts" multiple></select>
+            <div class="row">
+              <button type="button" onclick="useSelectedPorts()">Auswahl übernehmen</button>
+              <button type="button" onclick="refreshPorts()">Aktualisieren</button>
+              <button type="button" id="scanBleButton" onclick="scanBle()">Bluetooth suchen</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>Mesh schonen</h2>
+          <div class="hint">Begrenzt, was von WinTAK/TAK-Server ins LoRa-Mesh geht. Chat hat immer Vorrang; zurückgehaltene Positionen
+            werden später automatisch mit dem neuesten Stand nachgesendet.</div>
+          <input type="hidden" id="mesh_airtime_preset">
+          <div class="presets" id="presetButtons">
+            <button class="preset" type="button" data-preset="sparsam"><strong>Sparsam</strong><span>Position max. alle 2 min, ab 20 % Auslastung bremsen</span></button>
+            <button class="preset" type="button" data-preset="normal"><strong>Normal</strong><span>Position max. jede Minute, ab 25 % bremsen</span></button>
+            <button class="preset" type="button" data-preset="schnell"><strong>Schnell</strong><span>Position alle 20 s, ab 35 % bremsen</span></button>
+            <button class="preset" type="button" data-preset="aus"><strong>Aus</strong><span>Alles sofort senden (nicht empfohlen)</span></button>
+          </div>
+          <details class="advanced" id="airtimeCustom">
+            <summary>Eigene Werte</summary>
+            <div class="form-grid">
+              <div class="field"><label class="lbl" for="mesh_pli_min_interval_seconds">Position min. Abstand (s)</label><input id="mesh_pli_min_interval_seconds" type="number" min="5" oninput="markCustomPreset()"></div>
+              <div class="field"><label class="lbl" for="mesh_pli_stationary_interval_seconds">Bei Stillstand (s)</label><input id="mesh_pli_stationary_interval_seconds" type="number" min="10" oninput="markCustomPreset()"></div>
+              <div class="field"><label class="lbl" for="mesh_pli_min_distance_m">Mindestbewegung (m)</label><input id="mesh_pli_min_distance_m" type="number" min="0" oninput="markCustomPreset()"></div>
+              <div class="field"><label class="lbl" for="mesh_marker_repeat_interval_seconds">Unveränderte Marker wiederholen (s)</label><input id="mesh_marker_repeat_interval_seconds" type="number" min="60" oninput="markCustomPreset()"></div>
+              <div class="field"><label class="lbl" for="mesh_chutil_limit_pli">Positionen anhalten ab (%)</label><input id="mesh_chutil_limit_pli" type="number" min="1" max="100" oninput="markCustomPreset()"></div>
+              <div class="field"><label class="lbl" for="mesh_chutil_limit_markers">Auch Marker anhalten ab (%)</label><input id="mesh_chutil_limit_markers" type="number" min="1" max="100" oninput="markCustomPreset()"></div>
+            </div>
+          </details>
+        </div>
+      </div>
+
+      <div class="stack">
+        <div class="panel">
+          <h2>WinTAK auf diesem PC</h2>
+          <div class="hint">In WinTAK einen Server <code>127.0.0.1</code>, Port <code>8087</code>, TCP anlegen – fertig.</div>
           <div class="form-grid">
-            <div class="field-full">
-              <label for="meshtastic_port">Meshtastic Port(s)</label>
-              <input id="meshtastic_port" type="text" placeholder="z. B. COM7, BLE:AA:BB:CC:DD:EE:FF, TCP:192.168.1.50">
-            </div>
-            <div class="field-full">
-              <label for="detectedPorts">Erkannte serielle Ports / BLE-Geräte</label>
-              <select id="detectedPorts" multiple></select>
-              <div class="btn-row">
-                <button type="button" onclick="useSelectedPorts()">Zu Mesh-Ports hinzufügen</button>
-                <button type="button" onclick="useSelectedPortsForRelayFrom()">Als Relay-Quelle</button>
-                <button type="button" onclick="useSelectedPortsForRelayTo()">Als Relay-Ziel</button>
-                <button type="button" onclick="setRelayToOtherSelectedPorts()">Relay an andere Mesh-Ports</button>
-                <button type="button" onclick="refreshPorts()">Ports aktualisieren</button>
-                <button type="button" id="scanBleButton" onclick="scanBle()">BLE scannen</button>
-              </div>
-              <div class="tiny">Mehrere Ports lassen sich per Strg/Shift auswählen oder nacheinander mit den Buttons hinzufügen.
-                Bluetooth-Geräte direkt als <code>BLE:&lt;Adresse oder Name&gt;</code>, WLAN-Nodes als <code>TCP:&lt;Host&gt;[:Port]</code> eintragen.</div>
-            </div>
-            <div class="field-full">
-              <h3 style="margin:8px 0 0">Remote TAK Server</h3>
-              <div class="status-line" id="takServerStatus">TAK-Server: Gateway nicht gestartet.</div>
-            </div>
-            <div class="field-full">
-              <label for="dataPackageFile">Datenpaket (.zip) oder Zertifikat (.p12) hochladen</label>
-              <div class="btn-row">
-                <input id="dataPackageFile" type="file" accept=".zip,.p12,.pfx" onchange="updateUploadPasswordField()">
-                <input id="certificateUploadPassword" type="password" autocomplete="off" placeholder=".p12-Passwort (leer = atakatak)" style="max-width:240px" disabled>
-                <button type="button" onclick="importTakFile()">Datei übernehmen</button>
-              </div>
-              <div class="tiny">.zip: übernimmt Server-Adresse, Port, SSL, Client-Zertifikat und Truststore inkl. Passwörter.
-                .p12: wird automatisch erkannt – ohne privaten Schlüssel als Truststore (CA), mit Schlüssel als Client-Zertifikat.</div>
-            </div>
-            <div class="field-full">
-              <label>Client-Zertifikat beim TAK-Server anfordern (Benutzername/Passwort, wie in ATAK)</label>
-              <div class="btn-row">
-                <input id="enrollUsername" type="text" autocomplete="username" placeholder="Benutzername" style="max-width:200px">
-                <input id="enrollPassword" type="password" autocomplete="current-password" placeholder="Passwort" style="max-width:200px">
-                <input id="enrollPort" type="number" placeholder="Port 8446" style="max-width:120px">
-                <button type="button" id="enrollButton" onclick="enrollCertificate()">Zertifikat anfordern</button>
-              </div>
-              <div class="tiny">Nutzt den Truststore zur Prüfung des Servers. Das Passwort wird nicht gespeichert.</div>
-            </div>
-            <div class="field">
-              <label for="tak_server_host">Remote TAK Host</label>
-              <input id="tak_server_host" type="text" placeholder="tak.example.com, 10.0.0.5 oder ssl://host:8089">
-            </div>
-            <div class="field">
-              <label for="tak_server_port">Remote Port</label>
-              <input id="tak_server_port" type="number" placeholder="leer = Standard (8087 / SSL 8089)">
-            </div>
-            <div class="field">
-              <label for="tak_server_protocol">Remote Protocol</label>
-              <select id="tak_server_protocol">
-                <option value="SSL">SSL/TLS (Zertifikat)</option>
-                <option value="TCP">TCP (Streaming)</option>
-                <option value="UDP">UDP</option>
-              </select>
-            </div>
-            <div class="field">
-              <label for="tak_server_tls_verify">Serverzertifikat prüfen</label>
-              <select id="tak_server_tls_verify">
-                <option value="auto">Auto (nur mit Truststore)</option>
-                <option value="true">Immer prüfen</option>
-                <option value="false">Nicht prüfen</option>
-              </select>
-            </div>
-            <div class="field">
-              <label for="tak_server_client_cert">Client-Zertifikat (.p12 oder .pem)</label>
-              <input id="tak_server_client_cert" type="text" placeholder="tak_certs/server/user.p12">
-            </div>
-            <div class="field">
-              <label for="tak_server_client_cert_password">Zertifikat-Passwort</label>
-              <input id="tak_server_client_cert_password" type="password" autocomplete="off" placeholder="Standard: atakatak">
-            </div>
-            <div class="field">
-              <label for="tak_server_ca_cert">Truststore / CA (.p12 oder .pem)</label>
-              <input id="tak_server_ca_cert" type="text" placeholder="tak_certs/server/truststore-root.p12">
-            </div>
-            <div class="field">
-              <label for="tak_server_ca_cert_password">Truststore-Passwort</label>
-              <input id="tak_server_ca_cert_password" type="password" autocomplete="off" placeholder="Standard: atakatak">
-            </div>
-            <div class="field">
-              <label for="tak_server_to_mesh">TAK-Server → Mesh</label>
-              <select id="tak_server_to_mesh">
-                <option value="chat_markers">Chat + Marker (empfohlen)</option>
-                <option value="chat">Nur Chat</option>
-                <option value="all">Alles inkl. Positionen (gedrosselt)</option>
-                <option value="off">Aus</option>
-              </select>
-            </div>
-            <div class="field">
-              <label>Weiterleitung</label>
-              <label class="check"><input id="local_tak_to_server" type="checkbox"> Lokales WinTAK → TAK-Server</label>
-              <label class="check"><input id="tak_server_to_local_tak" type="checkbox"> TAK-Server → lokales WinTAK</label>
-              <label class="check"><input id="tak_server_send_gateway_sa" type="checkbox"> Gateway meldet sich mit eigener SA an</label>
-            </div>
-            <div class="field">
-              <label for="log_level">Log-Level</label>
-              <select id="log_level">
-                <option>DEBUG</option>
-                <option>INFO</option>
-                <option>WARNING</option>
-                <option>ERROR</option>
-              </select>
-            </div>
-            <div class="field">
-              <label for="local_tak_ip">WinTAK UDP Target IP</label>
-              <input id="local_tak_ip" type="text">
-            </div>
-            <div class="field">
-              <label for="local_tak_port">WinTAK UDP Port</label>
-              <input id="local_tak_port" type="number">
-            </div>
-            <div class="field">
-              <label for="local_tak_tcp_listen_port">WinTAK TCP Port</label>
-              <input id="local_tak_tcp_listen_port" type="number">
-            </div>
-            <div class="field">
-              <label for="local_tak_chat_listen_port">WinTAK Chat TCP Port</label>
-              <input id="local_tak_chat_listen_port" type="number">
-            </div>
-            <div class="field">
-              <label for="sync_interval_seconds">Sync Interval (s)</label>
-              <input id="sync_interval_seconds" type="number" min="1">
-            </div>
-            <div class="field">
-              <label for="relay_text_from_ports">Relay From COM Port(s)</label>
-              <input id="relay_text_from_ports" type="text">
-            </div>
-            <div class="field">
-              <label for="relay_text_to_mode">Relay To</label>
-              <select id="relay_text_to_mode">
-                <option value="all-other-selected-ports">All other selected ports</option>
-                <option value="custom">Custom list</option>
-              </select>
-            </div>
-            <div class="field">
-              <label for="relay_text_to_ports">Relay To COM Port(s)</label>
-              <input id="relay_text_to_ports" type="text">
-            </div>
-            <div class="field">
-              <label for="park_lat">Fallback Lat</label>
-              <input id="park_lat" type="text">
-            </div>
-            <div class="field">
-              <label for="park_lon">Fallback Lon</label>
-              <input id="park_lon" type="text">
-            </div>
-            <div class="check-grid">
-              <label class="check"><input id="log_raw_meshtastic_payloads" type="checkbox"> Enable RAW Meshtastic output</label>
-              <label class="check"><input id="log_raw_meshtastic_payloads_full" type="checkbox"> Log complete RAW payload</label>
-              <label class="check"><input id="relay_text_messages" type="checkbox"> Enable relay between selected COM ports</label>
-              <label class="check"><input id="send_nodes_without_gps" type="checkbox"> Send nodes without GPS fix</label>
-              <label class="check"><input id="set_gateway_position_on_start" type="checkbox"> Set gateway position on start</label>
-            </div>
+            <div class="field"><label class="lbl" for="local_tak_ip">WinTAK-IP (UDP)</label><input id="local_tak_ip" type="text"></div>
+            <div class="field"><label class="lbl" for="local_tak_port">WinTAK UDP-Port</label><input id="local_tak_port" type="number"></div>
+            <div class="field"><label class="lbl" for="local_tak_tcp_listen_port">TCP-Listener-Port</label><input id="local_tak_tcp_listen_port" type="number"></div>
+            <div class="field"><label class="lbl" for="local_tak_chat_listen_port">Chat/CoT-Eingang (UDP)</label><input id="local_tak_chat_listen_port" type="number"></div>
           </div>
-        </section>
+        </div>
 
-        <section class="panel">
-          <h2>Event Log</h2>
-          <div class="btn-row" style="margin-bottom:10px">
-            <button type="button" onclick="runQuickCommand('clear')">Log leeren</button>
-            <button type="button" onclick="runQuickCommand('help')">Hilfe ausgeben</button>
+        <div class="panel">
+          <h2>Allgemein</h2>
+          <div class="checks">
+            <label class="check"><input id="send_nodes_without_gps" type="checkbox"> Nodes ohne GPS anzeigen</label>
+            <label class="check" id="autostartRow"><input id="autostartToggle" type="checkbox" onchange="toggleAutostart(this.checked)"> Mit Windows starten</label>
           </div>
-          <div class="console" id="logConsole"></div>
-        </section>
+          <div class="form-grid" style="margin-top:12px">
+            <div class="field"><label class="lbl" for="park_lat">Standort Breite (für Nodes ohne GPS)</label><input id="park_lat" type="text" placeholder="z. B. 48.3069"></div>
+            <div class="field"><label class="lbl" for="park_lon">Standort Länge</label><input id="park_lon" type="text" placeholder="z. B. 14.2858"></div>
+          </div>
+          <details class="advanced">
+            <summary>Erweitert</summary>
+            <div class="form-grid">
+              <div class="field"><label class="lbl" for="log_level">Log-Level</label>
+                <select id="log_level"><option>DEBUG</option><option>INFO</option><option>WARNING</option><option>ERROR</option></select></div>
+              <div class="field"><label class="lbl" for="sync_interval_seconds">Vollsync alle (s)</label><input id="sync_interval_seconds" type="number" min="1"></div>
+              <div class="field"><label class="lbl" for="relay_text_from_ports">Text-Relay von Port(s)</label><input id="relay_text_from_ports" type="text"></div>
+              <div class="field"><label class="lbl" for="relay_text_to_mode">Text-Relay an</label>
+                <select id="relay_text_to_mode"><option value="all-other-selected-ports">alle anderen Ports</option><option value="custom">eigene Liste</option></select></div>
+              <div class="field-full"><label class="lbl" for="relay_text_to_ports">Relay-Zielports</label><input id="relay_text_to_ports" type="text"></div>
+              <div class="field-full checks">
+                <label class="check"><input id="relay_text_messages" type="checkbox"> Text zwischen Funkgeräten weiterleiten</label>
+                <label class="check"><input id="set_gateway_position_on_start" type="checkbox"> Standort beim Start ins Funkgerät schreiben</label>
+                <label class="check"><input id="log_raw_meshtastic_payloads" type="checkbox"> Rohdaten loggen</label>
+                <label class="check"><input id="log_raw_meshtastic_payloads_full" type="checkbox"> Rohdaten vollständig</label>
+              </div>
+            </div>
+          </details>
+        </div>
       </div>
+    </div>
+    <div class="save-bar">
+      <button type="button" onclick="saveSettings()">Speichern</button>
+      <button class="primary" type="button" onclick="saveAndRestart()">Speichern &amp; (neu) starten</button>
+    </div>
+  </section>
 
+  <!-- ======================= TAK-Server ======================= -->
+  <section class="tab-panel" id="tab-server">
+    <div class="grid-even">
       <div class="stack">
-        <section class="panel">
-          <h2>Operations</h2>
-          <div class="btn-row">
-            <button class="primary" id="startBtn" type="button" onclick="startGateway()">Start Gateway</button>
-            <button class="danger" id="stopBtn" type="button" onclick="stopGateway()">Stop Gateway</button>
-            <button id="syncBtn" type="button" onclick="manualSync()">Manual Sync</button>
+        <div class="panel">
+          <h2>Verbindung</h2>
+          <div class="status-line" id="takServerStatus">TAK-Server: Gateway nicht gestartet.</div>
+          <div class="form-grid" style="margin-top:12px">
+            <div class="field-full"><label class="lbl" for="tak_server_host">Server</label>
+              <input id="tak_server_host" type="text" placeholder="tak.example.com oder ssl://host:8089"></div>
+            <div class="field"><label class="lbl" for="tak_server_protocol">Protokoll</label>
+              <select id="tak_server_protocol"><option value="SSL">SSL/TLS (Zertifikat)</option><option value="TCP">TCP</option><option value="UDP">UDP</option></select></div>
+            <div class="field"><label class="lbl" for="tak_server_port">Port</label>
+              <input id="tak_server_port" type="number" placeholder="leer = Standard"></div>
           </div>
-          <div class="status-line" style="margin-top:12px" id="gatewayStatus">⬛ Stopped</div>
-        </section>
-
-        <section class="panel">
-          <h3>Quick Command Console</h3>
-          <div class="btn-row">
-            <input id="quickCommand" type="text" placeholder="z. B. nodes, sync, log debug, setpos UID lat lon">
-            <button type="button" onclick="sendCommand()">Run</button>
+        </div>
+        <div class="panel">
+          <h2>Zertifikat</h2>
+          <div class="hint">Am einfachsten: das Datenpaket (.zip) des Servers oder eine .p12 hochladen – oder mit Benutzername/Passwort ein Zertifikat anfordern.</div>
+          <div class="field-full">
+            <label class="lbl" for="dataPackageFile">Datenpaket (.zip) oder Zertifikat (.p12)</label>
+            <div class="row">
+              <input id="dataPackageFile" type="file" accept=".zip,.p12,.pfx" onchange="updateUploadPasswordField()">
+              <input id="certificateUploadPassword" type="password" autocomplete="off" placeholder=".p12-Passwort (leer = atakatak)" disabled>
+              <button type="button" onclick="importTakFile()">Übernehmen</button>
+            </div>
           </div>
-        </section>
-
-        <section class="panel">
-          <h3>Direct Text → Mesh</h3>
-          <textarea id="meshMessage" placeholder="Textnachricht an das Mesh senden"></textarea>
-          <div class="btn-row" style="margin-top:10px">
-            <button type="button" onclick="sendMeshText()">Send Text</button>
+          <div class="field-full" style="margin-top:14px">
+            <label class="lbl">Zertifikat anfordern (wie in ATAK)</label>
+            <div class="row">
+              <input id="enrollUsername" type="text" autocomplete="username" placeholder="Benutzername">
+              <input id="enrollPassword" type="password" autocomplete="current-password" placeholder="Passwort">
+              <input id="enrollPort" type="number" placeholder="8446" style="max-width:110px">
+              <button type="button" id="enrollButton" onclick="enrollCertificate()">Anfordern</button>
+            </div>
+            <div class="tiny">Das Passwort wird nicht gespeichert.</div>
           </div>
-          <div class="status-line" style="margin-top:10px" id="meshStatus">Gateway not started.</div>
-        </section>
-
-        <section class="panel">
-          <h3>WinTAK CoT → Mesh</h3>
-          <textarea id="cotPayload" placeholder="Vollständiges &lt;event&gt; XML hier einfügen"></textarea>
-          <div class="btn-row" style="margin-top:10px">
-            <button type="button" onclick="sendCot()">Send CoT</button>
+          <details class="advanced">
+            <summary>Zertifikatsdateien</summary>
+            <div class="form-grid">
+              <div class="field"><label class="lbl" for="tak_server_client_cert">Client-Zertifikat</label><input id="tak_server_client_cert" type="text"></div>
+              <div class="field"><label class="lbl" for="tak_server_client_cert_password">Passwort</label><input id="tak_server_client_cert_password" type="password" autocomplete="off" placeholder="gespeichert / atakatak"></div>
+              <div class="field"><label class="lbl" for="tak_server_ca_cert">Truststore (CA)</label><input id="tak_server_ca_cert" type="text"></div>
+              <div class="field"><label class="lbl" for="tak_server_ca_cert_password">Passwort</label><input id="tak_server_ca_cert_password" type="password" autocomplete="off" placeholder="gespeichert / atakatak"></div>
+              <div class="field-full"><label class="lbl" for="tak_server_tls_verify">Serverzertifikat prüfen</label>
+                <select id="tak_server_tls_verify"><option value="auto">Auto (mit Truststore)</option><option value="true">Immer</option><option value="false">Nicht prüfen</option></select></div>
+            </div>
+          </details>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="panel">
+          <h2>Was wohin geht</h2>
+          <div class="field-full"><label class="lbl" for="tak_server_to_mesh">Vom Server ins Mesh</label>
+            <select id="tak_server_to_mesh">
+              <option value="chat_markers">Chat + Marker (empfohlen)</option>
+              <option value="chat">Nur Chat</option>
+              <option value="all">Alles inkl. Positionen (gedrosselt)</option>
+              <option value="off">Nichts</option>
+            </select></div>
+          <div class="stack" style="margin-top:12px; gap:8px">
+            <label class="check"><input id="local_tak_to_server" type="checkbox"> Daten vom lokalen WinTAK an den Server</label>
+            <label class="check"><input id="tak_server_to_local_tak" type="checkbox"> Server-Daten im lokalen WinTAK anzeigen</label>
+            <label class="check"><input id="tak_server_send_gateway_sa" type="checkbox"> Gateway meldet sich mit eigener Position an</label>
           </div>
-          <div class="status-line" style="margin-top:10px" id="cotStatus">Gateway not started.</div>
-        </section>
+          <div class="tiny" style="margin-top:10px">Mesh-Nodes und Chats aus dem Mesh gehen immer an den Server.</div>
+        </div>
+      </div>
+    </div>
+    <div class="save-bar">
+      <button type="button" onclick="saveSettings()">Speichern</button>
+      <button class="primary" type="button" onclick="saveAndRestart()">Speichern &amp; (neu) starten</button>
+    </div>
+  </section>
 
-        <section class="panel">
-          <h2>WinTAK Monitor</h2>
-          <div class="console" id="wintakConsole"></div>
-        </section>
+  <!-- ======================= Werkzeuge ======================= -->
+  <section class="tab-panel" id="tab-tools">
+    <div class="grid-even">
+      <div class="stack">
+        <div class="panel">
+          <h2>Text ins Mesh</h2>
+          <textarea id="meshMessage" placeholder="Nachricht an alle (Kanal 0)"></textarea>
+          <div class="row" style="margin-top:8px"><button type="button" onclick="sendMeshText()">Senden</button></div>
+          <div class="status-line" style="margin-top:8px" id="meshStatus">Gateway nicht gestartet.</div>
+        </div>
+        <div class="panel">
+          <h2>CoT ins Mesh</h2>
+          <textarea id="cotPayload" placeholder="Vollständiges &lt;event&gt;-XML"></textarea>
+          <div class="row" style="margin-top:8px"><button type="button" onclick="sendCot()">Senden</button></div>
+          <div class="status-line" style="margin-top:8px" id="cotStatus">Gateway nicht gestartet.</div>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="panel">
+          <h2>Befehl</h2>
+          <div class="row">
+            <input id="quickCommand" type="text" placeholder="nodes, sync, log debug, setpos UID lat lon, help">
+            <button type="button" onclick="sendCommand()">Ausführen</button>
+          </div>
+        </div>
+        <div class="panel">
+          <h2>WinTAK-Nachrichten</h2>
+          <div class="console short" id="wintakConsole"></div>
+        </div>
+        <div class="panel">
+          <h2>Links</h2>
+          <div class="row">
+            <a href="/cot_monitor_ui.html" target="_blank" rel="noopener">🔍 CoT-Monitor</a>
+            <a href="/maker.html" target="_blank" rel="noopener">🗺️ Marker-Referenz</a>
+          </div>
+          <div class="tiny" id="serviceUrls" style="margin-top:8px"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- ======================= Einrichtungsassistent ======================= -->
+<div class="modal" id="wizard" role="dialog" aria-modal="true" aria-labelledby="wizardTitle">
+  <div class="modal-box">
+    <div class="steps"><div class="step-dot"></div><div class="step-dot"></div><div class="step-dot"></div></div>
+
+    <div class="wizard-step" data-step="0">
+      <h2 id="wizardTitle">1 · Funkgerät</h2>
+      <div class="tiny">Wähle dein Meshtastic-Gerät. „Automatisch“ funktioniert auch, wenn Windows den COM-Port ändert.</div>
+      <div class="choice-list" id="wizardPorts"></div>
+      <div class="row">
+        <button type="button" onclick="refreshPorts().then(renderWizardPorts)">Aktualisieren</button>
+        <button type="button" onclick="scanBle().then(renderWizardPorts)">Bluetooth suchen</button>
+        <input id="wizardManualPort" type="text" placeholder="oder eingeben: COM12, TCP:192.168.1.50">
+      </div>
+    </div>
+
+    <div class="wizard-step" data-step="1">
+      <h2>2 · TAK-Server (optional)</h2>
+      <div class="tiny">Damit deine ATAK-Geräte die Mesh-Daten über den Server sehen. Überspringen, wenn nur das lokale WinTAK genutzt wird.</div>
+      <div class="field-full" style="margin-top:12px"><label class="lbl" for="wizardServer">Server</label>
+        <input id="wizardServer" type="text" placeholder="tak.example.com"></div>
+      <div class="field-full" style="margin-top:12px"><label class="lbl" for="wizardFile">Datenpaket (.zip) oder Zertifikat (.p12)</label>
+        <div class="row"><input id="wizardFile" type="file" accept=".zip,.p12,.pfx"><button type="button" onclick="wizardUpload()">Übernehmen</button></div></div>
+      <div class="field-full" style="margin-top:12px"><label class="lbl">oder Zertifikat mit Benutzername/Passwort anfordern</label>
+        <div class="row">
+          <input id="wizardUser" type="text" autocomplete="username" placeholder="Benutzername">
+          <input id="wizardPass" type="password" autocomplete="current-password" placeholder="Passwort">
+          <button type="button" id="wizardEnrollBtn" onclick="wizardEnroll()">Anfordern</button>
+        </div></div>
+      <div class="status-line" id="wizardServerStatus" style="margin-top:12px">Noch kein Server eingerichtet.</div>
+    </div>
+
+    <div class="wizard-step" data-step="2">
+      <h2>3 · Mesh schonen</h2>
+      <div class="tiny">Wie viel darf das Gateway ins LoRa-Mesh senden? Chat geht immer sofort.</div>
+      <div class="choice-list">
+        <label class="choice"><input type="radio" name="wizardPreset" value="sparsam"><span><strong>Sparsam</strong><span class="tiny">Für volle Kanäle und große Meshes. Positionen max. alle 2 min.</span></span></label>
+        <label class="choice"><input type="radio" name="wizardPreset" value="normal" checked><span><strong>Normal (empfohlen)</strong><span class="tiny">Positionen max. jede Minute, Bremse ab 25 % Kanalauslastung.</span></span></label>
+        <label class="choice"><input type="radio" name="wizardPreset" value="schnell"><span><strong>Schnell</strong><span class="tiny">Kleines, leeres Mesh. Positionen alle 20 s.</span></span></label>
+      </div>
+    </div>
+
+    <div class="wizard-nav">
+      <button class="ghost" type="button" onclick="closeWizard()">Später</button>
+      <div class="row">
+        <button type="button" id="wizardBack" onclick="wizardStep(-1)">Zurück</button>
+        <button class="primary" type="button" id="wizardNext" onclick="wizardStep(1)">Weiter</button>
       </div>
     </div>
   </div>
+</div>
 
-  <script>
-    let formInitialized = false;
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<script>
+  let formInitialized = false;
+  let lastState = {};
+  let dependencyNoticeShown = false;
+  let logFilter = 'all';
+  let wizardIndex = 0;
+  let wizardShownAutomatically = false;
 
-    function escapeHtml(value) {
-      return String(value ?? '')
-        .replaceAll('&', '&amp;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;');
-    }
+  // ---------- helpers ----------
+  const $ = (id) => document.getElementById(id);
+  function escapeHtml(value) {
+    return String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+  }
+  function setNotice(message, isWarn = false) {
+    const el = $('notice');
+    if (!message) { el.style.display = 'none'; el.textContent = ''; el.classList.remove('warn'); return; }
+    el.textContent = message; el.style.display = 'block'; el.classList.toggle('warn', isWarn);
+  }
+  async function api(path, body = {}) {
+    const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const payload = await response.json().catch(() => ({ ok: false, error: 'Ungültige Antwort vom Backend.' }));
+    if (!response.ok || payload.ok === false) throw new Error(payload.error || `Request failed: ${response.status}`);
+    return payload;
+  }
+  function setDot(id, state) { const el = $(id); el.className = 'dot ' + state; }
+  function ago(epochSeconds) {
+    if (!epochSeconds) return '–';
+    const s = Math.max(0, Math.round(Date.now() / 1000 - epochSeconds));
+    if (s < 60) return `${s} s`;
+    if (s < 3600) return `${Math.round(s / 60)} min`;
+    if (s < 86400) return `${Math.round(s / 3600)} h`;
+    return `${Math.round(s / 86400)} d`;
+  }
 
-    function setNotice(message, isWarn = false) {
-      const el = document.getElementById('notice');
-      if (!message) {
-        el.style.display = 'none';
-        el.textContent = '';
-        el.classList.remove('warn');
-        return;
-      }
-      el.textContent = message;
-      el.style.display = 'block';
-      el.classList.toggle('warn', isWarn);
-    }
+  // ---------- tabs ----------
+  document.querySelectorAll('.tab').forEach((tab) => tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t === tab));
+    document.querySelectorAll('.tab-panel').forEach((p) => p.classList.toggle('active', p.id === 'tab-' + tab.dataset.tab));
+    try { localStorage.setItem('gwTab', tab.dataset.tab); } catch (e) {}
+    if (tab.dataset.tab === 'overview' && map) setTimeout(() => map.invalidateSize(), 50);
+  }));
+  try {
+    const savedTab = localStorage.getItem('gwTab');
+    if (savedTab) document.querySelector(`.tab[data-tab="${savedTab}"]`)?.click();
+  } catch (e) {}
 
-    async function api(path, body = {}) {
-      const response = await fetch(path, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const payload = await response.json().catch(() => ({ ok: false, error: 'Ungültige Antwort vom Backend.' }));
-      if (!response.ok || payload.ok === false) {
-        throw new Error(payload.error || `Request failed: ${response.status}`);
-      }
-      return payload;
-    }
-
-    function collectForm() {
-      const ids = [
-        'meshtastic_port', 'tak_server_host', 'tak_server_port', 'tak_server_protocol',
-        'tak_server_tls_verify', 'tak_server_client_cert', 'tak_server_client_cert_password',
-        'tak_server_ca_cert', 'tak_server_ca_cert_password', 'tak_server_to_mesh',
-        'local_tak_ip', 'local_tak_port', 'local_tak_chat_listen_port', 'local_tak_tcp_listen_port',
-        'log_level', 'sync_interval_seconds', 'relay_text_from_ports', 'relay_text_to_mode',
-        'relay_text_to_ports', 'park_lat', 'park_lon'
-      ];
-      const payload = {};
-      ids.forEach((id) => payload[id] = document.getElementById(id).value);
-      ['log_raw_meshtastic_payloads', 'log_raw_meshtastic_payloads_full', 'relay_text_messages', 'send_nodes_without_gps', 'set_gateway_position_on_start',
-        'local_tak_to_server', 'tak_server_to_local_tak', 'tak_server_send_gateway_sa']
-        .forEach((id) => payload[id] = document.getElementById(id).checked);
-      return payload;
-    }
-
-    function splitPortsText(value) {
-      // BLE/TCP entries may contain spaces (BLE device names), so only split those on , ; and newlines.
-      return String(value || '')
-        .split(/[,;\r\n]+/)
-        .flatMap((chunk) => {
-          const text = chunk.trim();
-          if (!text) return [];
-          if (/^(ble|bt|tcp):/i.test(text)) return [text];
-          return text.split(/\s+/);
-        });
-    }
-
-    function parsePorts(value) {
-      const seen = new Set();
-      return splitPortsText(value)
-        .map((item) => item.trim())
-        .filter(Boolean)
-        .filter((item) => {
-          const upper = item.toUpperCase();
-          if (seen.has(upper)) return false;
-          seen.add(upper);
-          return true;
-        });
-    }
-
-    function getSelectedDetectedPorts() {
-      const select = document.getElementById('detectedPorts');
-      return Array.from(select.selectedOptions).map((option) => option.value).filter(Boolean);
-    }
-
-    function mergePorts(existingPorts, nextPorts) {
-      const merged = [];
-      const seen = new Set();
-      [...existingPorts, ...nextPorts].forEach((port) => {
-        const normalized = String(port || '').trim();
-        if (!normalized) return;
-        const upper = normalized.toUpperCase();
-        if (seen.has(upper)) return;
-        seen.add(upper);
-        merged.push(normalized);
-      });
-      return merged;
-    }
-
-    function setPortField(fieldId, ports, { replace = false } = {}) {
-      if (!ports.length) return;
-      const field = document.getElementById(fieldId);
-      const existing = replace ? [] : parsePorts(field.value);
-      field.value = mergePorts(existing, ports).join(', ');
-    }
-
-    function updateRelayToPortsState() {
-      const mode = document.getElementById('relay_text_to_mode').value;
-      const relayToField = document.getElementById('relay_text_to_ports');
-      const customMode = mode === 'custom';
-      relayToField.disabled = !customMode;
-      if (!customMode) {
-        relayToField.value = '';
-        relayToField.placeholder = 'Andere ausgewählte Mesh-Ports werden verwendet';
-      } else {
-        relayToField.placeholder = 'z. B. COM8';
-      }
-    }
-
-    function applyForm(config) {
-      Object.entries(config || {}).forEach(([key, value]) => {
-        const field = document.getElementById(key);
-        if (!field) return;
-        if (field.type === 'checkbox') field.checked = Boolean(value);
-        else field.value = value ?? '';
-      });
-    }
-
-    function renderDetectedPorts(ports, selectedText) {
-      const select = document.getElementById('detectedPorts');
-      const selected = new Set(splitPortsText(selectedText).filter(Boolean).map((item) => item.toUpperCase()));
-      select.innerHTML = '';
-      (ports || []).forEach((entry) => {
-        const option = document.createElement('option');
-        option.value = entry.device;
-        option.textContent = entry.label;
-        option.selected = selected.has(String(entry.device || '').toUpperCase());
-        select.appendChild(option);
-      });
-    }
-
-    function renderConsole(id, entries) {
-      const lines = (entries || []).map((entry) => (
-        `<div class="log-line ${escapeHtml(entry.level || 'INFO')}">[${escapeHtml(entry.time || '')}] ${escapeHtml(entry.message || '')}</div>`
-      ));
-      document.getElementById(id).innerHTML = lines.join('') || '<span class="tiny">Noch keine Einträge.</span>';
-    }
-
-    function extractServiceUrls(service) {
-      if (Array.isArray(service?.urls)) {
-        return service.urls.map((value) => String(value || '').trim()).filter(Boolean);
-      }
-      const raw = String(service?.url || '').trim();
-      if (!raw) return [];
-      return raw
-        .split(/[\s,;]+/)
-        .map((value) => value.trim())
-        .filter(Boolean);
-    }
-
-    function renderServiceInfo(service) {
-      const container = document.getElementById('serviceInfo');
-      const urls = extractServiceUrls(service);
-      container.replaceChildren();
-      if (!urls.length) {
-        container.textContent = 'HTML UI: /';
-        return;
-      }
-
-      const label = document.createElement('div');
-      label.textContent = urls.length > 1 ? 'HTML UI Adressen:' : 'HTML UI:';
-      container.appendChild(label);
-
-      const list = document.createElement('div');
-      list.className = 'service-links-list';
-      urls.forEach((url) => {
-        const link = document.createElement('a');
-        link.href = url;
-        link.textContent = url;
-        link.className = 'service-link';
-        list.appendChild(link);
-      });
-      container.appendChild(list);
-    }
-
-    function applyState(state) {
-      if (!formInitialized) {
-        applyForm(state.config || {});
-        formInitialized = true;
-      }
-      updateRelayToPortsState();
-      renderDetectedPorts(state.detected_ports, document.getElementById('meshtastic_port').value || (state.config || {}).meshtastic_port);
-      renderConsole('logConsole', state.logs);
-      renderConsole('wintakConsole', state.wintak_monitor);
-      document.getElementById('statusText').textContent = state.running ? 'Gateway läuft' : 'Gateway gestoppt';
-      document.getElementById('gatewayStatus').textContent = state.status_text || '⬛ Stopped';
-      document.getElementById('meshStatus').textContent = state.mesh_status || 'Gateway not started.';
-      document.getElementById('cotStatus').textContent = state.cot_status || 'Gateway not started.';
-      renderTakServerStatus(state.tak_server, state.running);
-      document.getElementById('stopBtn').disabled = !state.running;
-      document.getElementById('syncBtn').disabled = !state.running;
-      const dot = document.getElementById('statusDot');
-      dot.classList.toggle('running', Boolean(state.running));
-      dot.classList.toggle('stopped', !state.running);
-      const service = state.service || {};
-      renderServiceInfo(service);
-      if ((state.dependencies || []).length) {
-        setNotice(`Fehlende Python-Pakete: ${state.dependencies.join(', ')}. Das Gateway kann damit ggf. nicht starten.`, true);
-        dependencyNoticeShown = true;
-      } else if (dependencyNoticeShown) {
-        // Only clear our own dependency hint, not errors from user actions.
-        setNotice('');
-        dependencyNoticeShown = false;
-      }
-    }
-
-    let dependencyNoticeShown = false;
-
-    function renderTakServerStatus(status, running) {
-      const el = document.getElementById('takServerStatus');
-      if (!running || !status) {
-        el.textContent = 'TAK-Server: Gateway nicht gestartet.';
-        return;
-      }
-      if (!status.configured) {
-        el.textContent = 'TAK-Server: nicht konfiguriert.';
-        return;
-      }
-      const state = status.connected ? '🟢 verbunden' : '🔴 nicht verbunden';
-      const counters = `gesendet ${status.sent || 0} · empfangen ${status.received || 0} · Puffer ${status.queued || 0}`;
-      const error = !status.connected && status.last_error ? ` · Fehler: ${status.last_error}` : '';
-      el.textContent = `TAK-Server ${status.endpoint || ''}: ${state} · ${counters}${error}`;
-    }
-
-    function readFileAsBase64(file) {
-      return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result).split(',', 2)[1] || '');
-        reader.onerror = () => reject(new Error('Datei konnte nicht gelesen werden.'));
-        reader.readAsDataURL(file);
-      });
-    }
-
-    function isCertificateFile(file) {
-      return /\.(p12|pfx)$/i.test((file && file.name) || '');
-    }
-
-    function updateUploadPasswordField() {
-      const input = document.getElementById('dataPackageFile');
-      const file = input.files && input.files[0];
-      document.getElementById('certificateUploadPassword').disabled = !isCertificateFile(file);
-    }
-
-    async function importTakFile() {
-      const input = document.getElementById('dataPackageFile');
-      const file = input.files && input.files[0];
-      if (!file) {
-        setNotice('Bitte zuerst ein Datenpaket (.zip) oder Zertifikat (.p12) auswählen.', true);
-        return;
-      }
-      if (isCertificateFile(file)) {
-        await uploadCertificate(file);
-      } else if (/\.zip$/i.test(file.name)) {
-        await importDataPackage(file);
-      } else {
-        setNotice('Nur .zip-Datenpakete und .p12-Zertifikate werden unterstützt.', true);
-      }
-    }
-
-    async function uploadCertificate(file) {
-      try {
-        const content = await readFileAsBase64(file);
-        const result = await api('/api/browser/upload-certificate', {
-          filename: file.name,
-          content,
-          password: document.getElementById('certificateUploadPassword').value,
-          tak_server_host: document.getElementById('tak_server_host').value,
-        });
-        applyForm(result.config || {});
-        document.getElementById('certificateUploadPassword').value = '';
-        setNotice(result.message || 'Zertifikat übernommen.');
-      } catch (error) {
-        setNotice(error.message, true);
-      }
-    }
-
-    async function enrollCertificate() {
-      const button = document.getElementById('enrollButton');
-      try {
-        button.disabled = true;
-        setNotice('Zertifikat wird beim TAK-Server angefordert …');
-        const result = await api('/api/browser/enroll-certificate', {
-          username: document.getElementById('enrollUsername').value,
-          password: document.getElementById('enrollPassword').value,
-          enrollment_port: document.getElementById('enrollPort').value,
-          tak_server_host: document.getElementById('tak_server_host').value,
-          tak_server_port: document.getElementById('tak_server_port').value,
-          tak_server_protocol: document.getElementById('tak_server_protocol').value,
-        });
-        document.getElementById('enrollPassword').value = '';
-        applyForm(result.config || {});
-        setNotice(result.message || 'Zertifikat erhalten.');
-      } catch (error) {
-        setNotice(error.message, true);
-      } finally {
-        button.disabled = false;
-      }
-    }
-
-    async function importDataPackage(file) {
-      try {
-        const content = await readFileAsBase64(file);
-        const result = await api('/api/browser/import-data-package', { filename: file.name, content });
-        applyForm(result.config || {});
-        setNotice(result.message || 'Datenpaket übernommen.');
-      } catch (error) {
-        setNotice(error.message, true);
-      }
-    }
-
-    async function fetchState() {
-      const response = await fetch('/api/browser/state');
-      const state = await response.json();
-      applyState(state);
-    }
-
-    async function startGateway() {
-      try {
-        setNotice('');
-        await api('/api/browser/start', collectForm());
-        await fetchState();
-      } catch (error) {
-        setNotice(error.message, true);
-      }
-    }
-
-    async function stopGateway() {
-      try {
-        setNotice('');
-        await api('/api/browser/stop', {});
-        await fetchState();
-      } catch (error) {
-        setNotice(error.message, true);
-      }
-    }
-
-    async function manualSync() {
-      try {
-        setNotice('');
-        await api('/api/browser/manual-sync', {});
-        await fetchState();
-      } catch (error) {
-        setNotice(error.message, true);
-      }
-    }
-
-    async function sendMeshText() {
-      try {
-        setNotice('');
-        await api('/api/browser/send-text', { message: document.getElementById('meshMessage').value });
-        document.getElementById('meshMessage').value = '';
-        await fetchState();
-      } catch (error) {
-        setNotice(error.message, true);
-      }
-    }
-
-    async function sendCot() {
-      try {
-        setNotice('');
-        await api('/api/browser/send-cot', { packet_xml: document.getElementById('cotPayload').value });
-        document.getElementById('cotPayload').value = '';
-        await fetchState();
-      } catch (error) {
-        setNotice(error.message, true);
-      }
-    }
-
-    async function sendCommand() {
-      const input = document.getElementById('quickCommand');
-      const command = input.value.trim();
-      if (!command) return;
-      try {
-        setNotice('');
-        await api('/api/browser/command', { command });
-        input.value = '';
-        await fetchState();
-      } catch (error) {
-        setNotice(error.message, true);
-      }
-    }
-
-    async function runQuickCommand(command) {
-      try {
-        setNotice('');
-        await api('/api/browser/command', { command });
-        await fetchState();
-      } catch (error) {
-        setNotice(error.message, true);
-      }
-    }
-
-    async function refreshPorts() {
-      try {
-        setNotice('');
-        await api('/api/browser/refresh-ports', {});
-        await fetchState();
-      } catch (error) {
-        setNotice(error.message, true);
-      }
-    }
-
-    async function scanBle() {
-      const button = document.getElementById('scanBleButton');
-      try {
-        setNotice('BLE-Scan läuft (ca. 10 Sekunden) …');
-        button.disabled = true;
-        const result = await api('/api/browser/scan-ble', {});
-        await fetchState();
-        setNotice(`BLE-Scan abgeschlossen: ${result.ble_found || 0} Meshtastic-Gerät(e) gefunden.`);
-      } catch (error) {
-        setNotice(error.message, true);
-      } finally {
-        button.disabled = false;
-      }
-    }
-
-    function useSelectedPorts() {
-      setPortField('meshtastic_port', getSelectedDetectedPorts());
-    }
-
-    function useSelectedPortsForRelayFrom() {
-      setPortField('relay_text_from_ports', getSelectedDetectedPorts());
-    }
-
-    function useSelectedPortsForRelayTo() {
-      const selected = getSelectedDetectedPorts();
-      if (!selected.length) return;
-      document.getElementById('relay_text_to_mode').value = 'custom';
-      updateRelayToPortsState();
-      setPortField('relay_text_to_ports', selected);
-    }
-
-    function setRelayToOtherSelectedPorts() {
-      document.getElementById('relay_text_to_mode').value = 'all-other-selected-ports';
-      updateRelayToPortsState();
-    }
-
-    document.getElementById('quickCommand').addEventListener('keydown', (event) => {
-      if (event.key === 'Enter') {
-        event.preventDefault();
-        sendCommand();
-      }
+  // ---------- form ----------
+  const TEXT_FIELDS = [
+    'meshtastic_port', 'tak_server_host', 'tak_server_port', 'tak_server_protocol',
+    'tak_server_tls_verify', 'tak_server_client_cert', 'tak_server_client_cert_password',
+    'tak_server_ca_cert', 'tak_server_ca_cert_password', 'tak_server_to_mesh',
+    'local_tak_ip', 'local_tak_port', 'local_tak_chat_listen_port', 'local_tak_tcp_listen_port',
+    'log_level', 'sync_interval_seconds', 'relay_text_from_ports', 'relay_text_to_mode',
+    'relay_text_to_ports', 'park_lat', 'park_lon', 'mesh_airtime_preset',
+    'mesh_pli_min_interval_seconds', 'mesh_pli_stationary_interval_seconds', 'mesh_pli_min_distance_m',
+    'mesh_marker_repeat_interval_seconds', 'mesh_chutil_limit_pli', 'mesh_chutil_limit_markers',
+  ];
+  const CHECK_FIELDS = [
+    'log_raw_meshtastic_payloads', 'log_raw_meshtastic_payloads_full', 'relay_text_messages', 'send_nodes_without_gps',
+    'set_gateway_position_on_start', 'local_tak_to_server', 'tak_server_to_local_tak', 'tak_server_send_gateway_sa',
+  ];
+  function collectForm() {
+    const payload = {};
+    TEXT_FIELDS.forEach((id) => payload[id] = $(id).value);
+    CHECK_FIELDS.forEach((id) => payload[id] = $(id).checked);
+    return payload;
+  }
+  function applyForm(config) {
+    Object.entries(config || {}).forEach(([key, value]) => {
+      const field = $(key);
+      if (!field) return;
+      if (field.type === 'checkbox') field.checked = Boolean(value);
+      else field.value = value ?? '';
     });
-    document.getElementById('relay_text_to_mode').addEventListener('change', updateRelayToPortsState);
+    renderPresetButtons();
+    updateRelayToPortsState();
+  }
 
-    fetchState();
-    setInterval(fetchState, 2000);
-  </script>
+  // ---------- presets ----------
+  const PRESET_VALUES = {
+    sparsam: [120, 600, 50, 20, 35], normal: [60, 300, 25, 25, 40], schnell: [20, 120, 10, 35, 50],
+  };
+  const PRESET_FIELDS = ['mesh_pli_min_interval_seconds', 'mesh_pli_stationary_interval_seconds', 'mesh_pli_min_distance_m', 'mesh_chutil_limit_pli', 'mesh_chutil_limit_markers'];
+  function renderPresetButtons() {
+    const current = $('mesh_airtime_preset').value || 'normal';
+    document.querySelectorAll('.preset').forEach((b) => b.classList.toggle('active', b.dataset.preset === current));
+    $('airtimeCustom').querySelector('summary').textContent = current === 'eigene' ? 'Eigene Werte (aktiv)' : 'Eigene Werte';
+  }
+  function selectPreset(name) {
+    $('mesh_airtime_preset').value = name;
+    if (PRESET_VALUES[name]) PRESET_FIELDS.forEach((id, i) => $(id).value = PRESET_VALUES[name][i]);
+    renderPresetButtons();
+  }
+  function markCustomPreset() { $('mesh_airtime_preset').value = 'eigene'; renderPresetButtons(); }
+  document.querySelectorAll('.preset').forEach((b) => b.addEventListener('click', () => selectPreset(b.dataset.preset)));
+
+  // ---------- ports ----------
+  function splitPortsText(value) {
+    return String(value || '').split(/[,;\r\n]+/).flatMap((chunk) => {
+      const text = chunk.trim();
+      if (!text) return [];
+      if (/^(ble|bt|tcp):/i.test(text)) return [text];
+      return text.split(/\s+/);
+    });
+  }
+  function parsePorts(value) {
+    const seen = new Set();
+    return splitPortsText(value).filter((item) => {
+      const upper = item.toUpperCase();
+      if (!item || seen.has(upper)) return false;
+      seen.add(upper); return true;
+    });
+  }
+  function renderDetectedPorts(ports, selectedText) {
+    const select = $('detectedPorts');
+    const selected = new Set(parsePorts(selectedText).map((p) => p.toUpperCase()));
+    const previous = new Set(Array.from(select.selectedOptions).map((o) => o.value));
+    const sig = JSON.stringify(ports || []);
+    if (select.dataset.sig === sig) return;
+    select.dataset.sig = sig;
+    select.innerHTML = '';
+    (ports || []).forEach((entry) => {
+      const option = document.createElement('option');
+      option.value = entry.device;
+      option.textContent = entry.label;
+      option.selected = previous.has(entry.device) || selected.has(String(entry.device).toUpperCase());
+      select.appendChild(option);
+    });
+    if (!(ports || []).length) {
+      const option = document.createElement('option');
+      option.disabled = true; option.textContent = 'Keine Geräte gefunden – USB-Kabel prüfen oder Bluetooth suchen.';
+      select.appendChild(option);
+    }
+  }
+  function useSelectedPorts() {
+    const chosen = Array.from($('detectedPorts').selectedOptions).map((o) => o.value).filter(Boolean);
+    if (chosen.length) $('meshtastic_port').value = chosen.join(', ');
+  }
+  function setPortAuto() { $('meshtastic_port').value = 'AUTO'; }
+  function updateRelayToPortsState() {
+    const custom = $('relay_text_to_mode').value === 'custom';
+    $('relay_text_to_ports').disabled = !custom;
+    if (!custom) $('relay_text_to_ports').value = '';
+  }
+  $('relay_text_to_mode').addEventListener('change', updateRelayToPortsState);
+  async function refreshPorts() {
+    try { await api('/api/browser/refresh-ports', {}); await fetchState(); } catch (error) { setNotice(error.message, true); }
+  }
+  async function scanBle() {
+    const button = $('scanBleButton');
+    try {
+      setNotice('Bluetooth-Suche läuft (ca. 10 Sekunden) …');
+      button.disabled = true;
+      const result = await api('/api/browser/scan-ble', {});
+      await fetchState();
+      setNotice(`Bluetooth-Suche fertig: ${result.ble_found || 0} Meshtastic-Gerät(e) gefunden.`);
+    } catch (error) { setNotice(error.message, true); } finally { button.disabled = false; }
+  }
+
+  // ---------- status cards ----------
+  function renderCards(state) {
+    const running = Boolean(state.running);
+    const dash = state.dashboard || {};
+    const radio = dash.radio || {};
+    const wintak = dash.wintak || {};
+    const air = dash.airtime || {};
+    const server = state.tak_server || {};
+
+    if (!running) {
+      ['radioDot', 'wintakDot', 'serverDot', 'airDot'].forEach((id) => setDot(id, 'off'));
+      $('radioValue').textContent = parsePorts($('meshtastic_port').value).join(', ') || '–';
+      ['radioDetail', 'wintakDetail', 'serverDetail', 'airDetail'].forEach((id) => $(id).textContent = 'Gateway nicht gestartet.');
+      $('wintakValue').textContent = '–'; $('serverValue').textContent = state.config?.tak_server_host || '–'; $('airValue').textContent = '–';
+      $('airFill').style.width = '0';
+      return;
+    }
+    // Radio
+    const connected = radio.connected || [];
+    setDot('radioDot', connected.length ? ((radio.missing || []).length ? 'warn' : 'ok') : 'bad');
+    $('radioValue').textContent = connected.length ? connected.join(', ') : 'nicht verbunden';
+    $('radioDetail').textContent = connected.length
+      ? `${radio.node_count || 0} Nodes, ${radio.nodes_with_position || 0} mit Position` + ((radio.missing || []).length ? ` · fehlt: ${radio.missing.join(', ')}` : '')
+      : `Kein Funkgerät erreichbar (${(radio.configured || []).join(', ') || '–'}). USB-Kabel/Port prüfen.`;
+    // WinTAK
+    const wtConnections = (wintak.tcp_connections || 0);
+    setDot('wintakDot', wintak.receiver_connected || wtConnections ? 'ok' : 'warn');
+    $('wintakValue').textContent = wintak.receiver_connected || wtConnections ? 'verbunden' : 'wartet';
+    $('wintakDetail').textContent = wintak.receiver_connected || wtConnections
+      ? `${wtConnections} TCP-Verbindung(en)`
+      : 'In WinTAK Server 127.0.0.1:8087 (TCP) anlegen.';
+    // Server
+    if (!server.configured) {
+      setDot('serverDot', 'off'); $('serverValue').textContent = 'nicht eingerichtet';
+      $('serverDetail').textContent = 'Optional – Reiter „TAK-Server“.';
+    } else {
+      setDot('serverDot', server.connected ? 'ok' : 'bad');
+      $('serverValue').textContent = server.connected ? 'verbunden' : 'getrennt';
+      $('serverDetail').textContent = server.connected
+        ? `↑ ${server.sent || 0} · ↓ ${server.received || 0}` + (server.queued ? ` · Puffer ${server.queued}` : '')
+        : (server.last_error || 'Verbindungsaufbau …');
+    }
+    // Airtime
+    const util = air.channel_utilization;
+    const limits = air.limits || { pli: 25, markers: 40 };
+    $('airMarkPli').style.left = `${Math.min(100, limits.pli)}%`;
+    $('airMarkMarkers').style.left = `${Math.min(100, limits.markers)}%`;
+    if (util === null || util === undefined) {
+      setDot('airDot', 'off'); $('airValue').textContent = 'noch kein Wert'; $('airFill').style.width = '0';
+    } else {
+      const level = air.brake_level || 0;
+      setDot('airDot', level === 0 ? 'ok' : (level === 1 ? 'warn' : 'bad'));
+      $('airValue').textContent = `${util.toFixed(1)} %` + (air.air_util_tx != null ? ` · TX ${Number(air.air_util_tx).toFixed(1)} %` : '');
+      $('airFill').style.width = `${Math.min(100, util)}%`;
+      $('airFill').style.background = level === 0 ? 'var(--green)' : (level === 1 ? 'var(--orange)' : 'var(--red)');
+    }
+    const brakeText = !air.enabled ? 'Mesh-Schonung aus'
+      : ['frei', 'Positionen werden zurückgehalten', 'nur noch Chat'][air.brake_level || 0];
+    $('airDetail').textContent = `${brakeText} · gesendet ${air.sent || 0}, gespart ${(air.suppressed || 0) + (air.deferred || 0) - (air.deferred_sent || 0)}`;
+  }
+
+  function renderTakServerStatus(status, running) {
+    const el = $('takServerStatus');
+    if (!running || !status) { el.textContent = 'Gateway nicht gestartet.'; return; }
+    if (!status.configured) { el.textContent = 'Kein Server eingetragen.'; return; }
+    const st = status.connected ? '🟢 verbunden' : '🔴 nicht verbunden';
+    const error = !status.connected && status.last_error ? ` · ${status.last_error}` : '';
+    el.textContent = `${status.endpoint || ''}: ${st} · ↑ ${status.sent || 0} · ↓ ${status.received || 0} · Puffer ${status.queued || 0}${error}`;
+  }
+
+  // ---------- map ----------
+  let map = null;
+  let mapLayer = null;
+  let mapFitted = false;
+  function initMap() {
+    if (map || typeof L === 'undefined') {
+      if (typeof L === 'undefined') { $('map').style.display = 'none'; $('mapFallback').style.display = 'flex'; }
+      return;
+    }
+    map = L.map('map', { zoomControl: true }).setView([47.8, 13.0], 6);
+    const tiles = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 18, attribution: '&copy; OpenStreetMap',
+    }).addTo(map);
+    tiles.on('tileerror', () => { $('mapHint').textContent = 'Kartenkacheln nicht erreichbar – Nodes werden trotzdem angezeigt.'; });
+    mapLayer = L.layerGroup().addTo(map);
+  }
+  function renderNodes(nodes) {
+    nodes = nodes || [];
+    const rows = nodes.slice(0, 300).map((n) => {
+      const fresh = n.last_heard && (Date.now() / 1000 - n.last_heard) < 900;
+      return `<tr><td class="name">${n.local ? '📡 ' : ''}${escapeHtml(n.name)}${n.short ? ` <span class="tiny">${escapeHtml(n.short)}</span>` : ''}</td>`
+        + `<td>${fresh ? '🟢 ' : ''}${ago(n.last_heard)}</td><td>${n.snr != null ? Number(n.snr).toFixed(1) : '–'}</td>`
+        + `<td>${n.hops != null ? n.hops : '–'}</td><td>${n.battery != null ? n.battery + ' %' : '–'}</td></tr>`;
+    });
+    $('nodeTable').innerHTML = rows.join('') || '<tr><td colspan="5" class="tiny">Noch keine Nodes.</td></tr>';
+    if (!map) return;
+    mapLayer.clearLayers();
+    const points = [];
+    nodes.forEach((n) => {
+      if (n.lat == null || n.lon == null) return;
+      const fresh = n.last_heard && (Date.now() / 1000 - n.last_heard) < 900;
+      const marker = L.circleMarker([n.lat, n.lon], {
+        radius: n.local ? 8 : 6, weight: 2, color: n.local ? '#60a5fa' : (fresh ? '#3fb950' : '#8b98a8'),
+        fillColor: n.local ? '#3b82f6' : (fresh ? '#2ea043' : '#4b5563'), fillOpacity: .85,
+      });
+      marker.bindTooltip(`${escapeHtml(n.name)} · ${ago(n.last_heard)}`);
+      marker.addTo(mapLayer);
+      points.push([n.lat, n.lon]);
+    });
+    if (points.length && !mapFitted) { map.fitBounds(points, { padding: [30, 30], maxZoom: 12 }); mapFitted = true; }
+  }
+
+  // ---------- log ----------
+  const CATEGORY_PATTERNS = {
+    mesh: /Mesh|Meshtastic|Interface|COM\d|BLE|Bluetooth|Position-Update|Node|Funk|Airtime|FTN|ATAK_/i,
+    server: /TAK-Server|TLS|Zertifikat|ssl:\/\/|tcp:\/\/|Truststore/i,
+    wintak: /WinTAK|TAK-TCP|TAK-CoT|Listener|Multicast|LastHop|GeoChat/i,
+  };
+  function cleanMessage(message) {
+    // Backend lines look like "[12:00:00] INFO: text" – the time is shown separately.
+    return String(message || '').replace(/^\[\d{2}:\d{2}:\d{2}\]\s+[A-Z]+:\s*/, '');
+  }
+  function groupKey(text) {
+    if (/^LIVE: Position-Update empfangen von/.test(text)) return 'LIVE: Position-Update';
+    return text.replace(/\d+/g, '#');
+  }
+  function renderLog(entries) {
+    const search = $('logSearch').value.trim().toLowerCase();
+    const group = $('logGroup').checked;
+    const items = [];
+    (entries || []).forEach((entry) => {
+      const text = cleanMessage(entry.message);
+      const level = entry.level || 'INFO';
+      if (logFilter === 'problems' && !['WARNING', 'ERROR', 'CRITICAL'].includes(level)) return;
+      if (CATEGORY_PATTERNS[logFilter] && !CATEGORY_PATTERNS[logFilter].test(text)) return;
+      if (search && !text.toLowerCase().includes(search)) return;
+      const key = groupKey(text);
+      const last = items[items.length - 1];
+      if (group && last && last.key === key && last.level === level) {
+        last.count += 1; last.time = entry.time; last.text = text;
+        if (key === 'LIVE: Position-Update') last.names.add(text.replace('LIVE: Position-Update empfangen von ', ''));
+        return;
+      }
+      items.push({ key, level, text, time: entry.time, count: 1, names: new Set(key === 'LIVE: Position-Update' ? [text.replace('LIVE: Position-Update empfangen von ', '')] : []) });
+    });
+    const html = items.slice(-300).map((item) => {
+      let text = item.text;
+      if (item.key === 'LIVE: Position-Update' && item.count > 1) {
+        text = `Position-Updates von ${item.names.size} Nodes (zuletzt: ${text.replace('LIVE: Position-Update empfangen von ', '')})`;
+      }
+      const badge = item.count > 1 ? `<span class="n">×${item.count}</span>` : '';
+      return `<div class="log-line ${escapeHtml(item.level)}"><span class="t">${escapeHtml(item.time || '')}</span>${escapeHtml(text)}${badge}</div>`;
+    }).join('');
+    const el = $('logConsole');
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+    el.innerHTML = html || '<span class="tiny">Keine Einträge.</span>';
+    if (atBottom) el.scrollTop = el.scrollHeight;
+  }
+  document.querySelectorAll('.chip').forEach((chip) => chip.addEventListener('click', () => {
+    logFilter = chip.dataset.filter;
+    document.querySelectorAll('.chip').forEach((c) => c.classList.toggle('active', c === chip));
+    renderLog(lastState.logs);
+  }));
+  $('logSearch').addEventListener('input', () => renderLog(lastState.logs));
+  $('logGroup').addEventListener('change', () => renderLog(lastState.logs));
+  function renderWintak(entries) {
+    const lines = (entries || []).map((e) => `<div class="log-line ${escapeHtml(e.level || 'INFO')}"><span class="t">${escapeHtml(e.time || '')}</span>${escapeHtml(e.message || '')}</div>`);
+    $('wintakConsole').innerHTML = lines.join('') || '<span class="tiny">Noch keine Nachrichten.</span>';
+  }
+
+  // ---------- state ----------
+  function renderServiceInfo(service) {
+    const urls = Array.isArray(service?.urls) ? service.urls : String(service?.url || '').split(/[\s,;]+/).filter(Boolean);
+    $('serviceUrls').innerHTML = urls.length ? 'Diese Oberfläche im Netzwerk: ' + urls.map((u) => `<a href="${escapeHtml(u)}">${escapeHtml(u)}</a>`).join(', ') : '';
+  }
+  function applyState(state) {
+    lastState = state;
+    if (!formInitialized) { applyForm(state.config || {}); formInitialized = true; }
+    renderDetectedPorts(state.detected_ports, $('meshtastic_port').value);
+    renderLog(state.logs);
+    renderWintak(state.wintak_monitor);
+    renderCards(state);
+    renderTakServerStatus(state.tak_server, state.running);
+    renderNodes((state.dashboard || {}).nodes);
+    $('statusText').textContent = state.running ? 'läuft' : (String(state.status_text || '').includes('Starting') ? 'startet …' : 'gestoppt');
+    setDot('statusDot', state.running ? 'ok' : 'off');
+    $('startBtn').disabled = Boolean(state.running);
+    $('stopBtn').disabled = !state.running;
+    $('syncBtn').disabled = !state.running;
+    $('meshStatus').textContent = state.mesh_status || '';
+    $('cotStatus').textContent = state.cot_status || '';
+    $('autostartToggle').checked = Boolean(state.autostart);
+    $('autostartRow').style.display = state.autostart_supported ? '' : 'none';
+    renderServiceInfo(state.service || {});
+    if ((state.dependencies || []).length) {
+      setNotice(`Fehlende Python-Pakete: ${state.dependencies.join(', ')}. Bitte über Meshtastic_Gateway_Start.bat starten – dort werden sie installiert.`, true);
+      dependencyNoticeShown = true;
+    } else if (dependencyNoticeShown) { setNotice(''); dependencyNoticeShown = false; }
+    let dismissed = false;
+    try { dismissed = localStorage.getItem('gwWizardDismissed') === '1'; } catch (e) {}
+    if (!state.setup_completed && !state.running && !dismissed && !wizardShownAutomatically) { wizardShownAutomatically = true; openWizard(); }
+  }
+  async function fetchState() {
+    try {
+      const response = await fetch('/api/browser/state');
+      applyState(await response.json());
+    } catch (error) {
+      setDot('statusDot', 'bad'); $('statusText').textContent = 'Backend nicht erreichbar';
+    }
+  }
+
+  // ---------- actions ----------
+  async function startGateway() {
+    try { setNotice(''); await api('/api/browser/start', collectForm()); await fetchState(); }
+    catch (error) { setNotice(error.message, true); }
+  }
+  async function stopGateway() {
+    try { setNotice(''); await api('/api/browser/stop', {}); await fetchState(); }
+    catch (error) { setNotice(error.message, true); }
+  }
+  async function saveSettings(extra = {}) {
+    try {
+      const result = await api('/api/browser/save-settings', { ...collectForm(), ...extra });
+      applyForm(result.config || {});
+      setNotice('Gespeichert.' + (lastState.running ? ' Änderungen gelten nach einem Neustart des Gateways.' : ''));
+      return true;
+    } catch (error) { setNotice(error.message, true); return false; }
+  }
+  async function waitUntilStopped(timeoutMs = 15000) {
+    const end = Date.now() + timeoutMs;
+    while (Date.now() < end) {
+      const state = await (await fetch('/api/browser/state')).json();
+      if (!state.running && !String(state.status_text || '').includes('Stopping')) return true;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    return false;
+  }
+  async function saveAndRestart() {
+    if (!(await saveSettings())) return;
+    try {
+      if (lastState.running) { await api('/api/browser/stop', {}); await waitUntilStopped(); }
+      await api('/api/browser/start', collectForm());
+      setNotice('Gespeichert und gestartet.');
+      await fetchState();
+    } catch (error) { setNotice(error.message, true); }
+  }
+  async function manualSync() {
+    try { await api('/api/browser/manual-sync', {}); setNotice('Sync ausgelöst.'); await fetchState(); }
+    catch (error) { setNotice(error.message, true); }
+  }
+  async function sendMeshText() {
+    try { await api('/api/browser/send-text', { message: $('meshMessage').value }); $('meshMessage').value = ''; await fetchState(); }
+    catch (error) { setNotice(error.message, true); }
+  }
+  async function sendCot() {
+    try { await api('/api/browser/send-cot', { packet_xml: $('cotPayload').value }); $('cotPayload').value = ''; await fetchState(); }
+    catch (error) { setNotice(error.message, true); }
+  }
+  async function sendCommand() {
+    const command = $('quickCommand').value.trim();
+    if (!command) return;
+    try { await api('/api/browser/command', { command }); $('quickCommand').value = ''; await fetchState(); }
+    catch (error) { setNotice(error.message, true); }
+  }
+  async function runQuickCommand(command) {
+    try { await api('/api/browser/command', { command }); await fetchState(); } catch (error) { setNotice(error.message, true); }
+  }
+  async function toggleAutostart(enabled) {
+    try { await api('/api/browser/autostart', { enabled }); setNotice(enabled ? 'Gateway startet jetzt mit Windows.' : 'Autostart aus.'); }
+    catch (error) { setNotice(error.message, true); $('autostartToggle').checked = !enabled; }
+  }
+  $('quickCommand').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); sendCommand(); } });
+
+  // ---------- certificates ----------
+  function readFileAsBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result).split(',', 2)[1] || '');
+      reader.onerror = () => reject(new Error('Datei konnte nicht gelesen werden.'));
+      reader.readAsDataURL(file);
+    });
+  }
+  const isCertificateFile = (file) => /\.(p12|pfx)$/i.test((file && file.name) || '');
+  function updateUploadPasswordField() {
+    const file = $('dataPackageFile').files && $('dataPackageFile').files[0];
+    $('certificateUploadPassword').disabled = !isCertificateFile(file);
+  }
+  async function uploadTakFile(file, password, host) {
+    if (!file) throw new Error('Bitte zuerst ein Datenpaket (.zip) oder Zertifikat (.p12) auswählen.');
+    const content = await readFileAsBase64(file);
+    if (isCertificateFile(file)) {
+      return api('/api/browser/upload-certificate', { filename: file.name, content, password, tak_server_host: host });
+    }
+    if (/\.zip$/i.test(file.name)) return api('/api/browser/import-data-package', { filename: file.name, content });
+    throw new Error('Nur .zip-Datenpakete und .p12-Zertifikate werden unterstützt.');
+  }
+  async function importTakFile() {
+    try {
+      const result = await uploadTakFile($('dataPackageFile').files[0], $('certificateUploadPassword').value, $('tak_server_host').value);
+      applyForm(result.config || {});
+      $('certificateUploadPassword').value = '';
+      setNotice(result.message || 'Übernommen.');
+    } catch (error) { setNotice(error.message, true); }
+  }
+  async function requestCertificate(username, password, port) {
+    return api('/api/browser/enroll-certificate', {
+      username, password, enrollment_port: port,
+      tak_server_host: $('tak_server_host').value, tak_server_port: $('tak_server_port').value,
+      tak_server_protocol: $('tak_server_protocol').value,
+    });
+  }
+  async function enrollCertificate() {
+    const button = $('enrollButton');
+    try {
+      button.disabled = true; setNotice('Zertifikat wird angefordert …');
+      const result = await requestCertificate($('enrollUsername').value, $('enrollPassword').value, $('enrollPort').value);
+      $('enrollPassword').value = '';
+      applyForm(result.config || {});
+      setNotice(result.message || 'Zertifikat erhalten.');
+    } catch (error) { setNotice(error.message, true); } finally { button.disabled = false; }
+  }
+
+  // ---------- wizard ----------
+  function openWizard() {
+    wizardIndex = 0;
+    $('wizardServer').value = $('tak_server_host').value;
+    const preset = $('mesh_airtime_preset').value || 'normal';
+    document.querySelectorAll('input[name="wizardPreset"]').forEach((r) => r.checked = r.value === preset);
+    renderWizardPorts();
+    renderWizard();
+    $('wizard').classList.add('open');
+  }
+  function closeWizard(dismissed = true) {
+    $('wizard').classList.remove('open');
+    if (dismissed) { try { localStorage.setItem('gwWizardDismissed', '1'); } catch (e) {} }
+  }
+  function renderWizard() {
+    document.querySelectorAll('.wizard-step').forEach((s) => s.classList.toggle('active', Number(s.dataset.step) === wizardIndex));
+    document.querySelectorAll('.step-dot').forEach((d, i) => d.classList.toggle('done', i <= wizardIndex));
+    $('wizardBack').disabled = wizardIndex === 0;
+    $('wizardNext').textContent = wizardIndex === 2 ? 'Fertig & starten' : (wizardIndex === 1 && !$('wizardServer').value.trim() ? 'Überspringen' : 'Weiter');
+  }
+  $('wizardServer').addEventListener('input', renderWizard);
+  function renderWizardPorts() {
+    const ports = (lastState.detected_ports || []);
+    const current = parsePorts($('meshtastic_port').value);
+    const isAuto = !current.length || current[0].toUpperCase() === 'AUTO';
+    const options = [
+      `<label class="choice"><input type="radio" name="wizardPort" value="AUTO" ${isAuto ? 'checked' : ''}><span><strong>Automatisch (empfohlen)</strong><span class="tiny">Erkennt Meshtastic-Geräte am USB-Anschluss selbst.</span></span></label>`,
+      ...ports.map((p) => `<label class="choice"><input type="radio" name="wizardPort" value="${escapeHtml(p.device)}" ${!isAuto && current.includes(p.device) ? 'checked' : ''}><span><strong>${escapeHtml(p.device)}</strong><span class="tiny">${escapeHtml(p.label)}</span></span></label>`),
+    ];
+    $('wizardPorts').innerHTML = options.join('');
+  }
+  async function wizardUpload() {
+    try {
+      $('tak_server_host').value = $('wizardServer').value;
+      const result = await uploadTakFile($('wizardFile').files[0], '', $('wizardServer').value);
+      applyForm(result.config || {});
+      $('wizardServer').value = $('tak_server_host').value;
+      $('wizardServerStatus').textContent = result.message || 'Übernommen.';
+    } catch (error) { $('wizardServerStatus').textContent = '⚠ ' + error.message; }
+  }
+  async function wizardEnroll() {
+    const button = $('wizardEnrollBtn');
+    try {
+      button.disabled = true;
+      $('tak_server_host').value = $('wizardServer').value;
+      if ($('tak_server_protocol').value !== 'SSL') { $('tak_server_protocol').value = 'SSL'; $('tak_server_port').value = ''; }
+      $('wizardServerStatus').textContent = 'Zertifikat wird angefordert …';
+      const result = await requestCertificate($('wizardUser').value, $('wizardPass').value, '');
+      $('wizardPass').value = '';
+      applyForm(result.config || {});
+      $('wizardServerStatus').textContent = '✅ ' + (result.message || 'Zertifikat erhalten.');
+    } catch (error) { $('wizardServerStatus').textContent = '⚠ ' + error.message; } finally { button.disabled = false; }
+  }
+  async function wizardStep(delta) {
+    if (delta > 0 && wizardIndex === 0) {
+      const manual = $('wizardManualPort').value.trim();
+      const chosen = document.querySelector('input[name="wizardPort"]:checked');
+      $('meshtastic_port').value = manual || (chosen ? chosen.value : 'AUTO');
+    }
+    if (delta > 0 && wizardIndex === 1) {
+      const host = $('wizardServer').value.trim();
+      $('tak_server_host').value = host;
+      if (host && !/^[a-z]+:\/\//i.test(host) && !$('tak_server_client_cert').value && $('tak_server_protocol').value === 'SSL') {
+        $('wizardServerStatus').textContent = '⚠ Für SSL wird ein Zertifikat benötigt – Datei hochladen oder anfordern. (Ohne geht es mit „Weiter“ trotzdem.)';
+      }
+    }
+    if (delta > 0 && wizardIndex === 2) {
+      const preset = document.querySelector('input[name="wizardPreset"]:checked');
+      selectPreset(preset ? preset.value : 'normal');
+      if (await saveSettings({ setup_completed: true })) {
+        closeWizard(false);
+        if (!lastState.running) await startGateway();
+      }
+      return;
+    }
+    wizardIndex = Math.max(0, Math.min(2, wizardIndex + delta));
+    renderWizard();
+  }
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeWizard(); });
+
+  // ---------- go ----------
+  initMap();
+  fetchState();
+  setInterval(fetchState, 2000);
+</script>
 </body>
 </html>

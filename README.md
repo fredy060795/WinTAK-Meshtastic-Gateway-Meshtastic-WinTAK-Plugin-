@@ -17,7 +17,10 @@ The gateway reads position data and text messages from Meshtastic nodes over a s
 | **Automatic Reconnect** | Maintains the remote TAK Server connection with automatic retry on disconnect. |
 | **All-Nodes Visibility** | All nodes are forwarded to TAK by default. Nodes with valid GPS (including phone GPS shared over mesh) appear at their real position; nodes without current GPS use their last known position when available, otherwise configurable fallback coordinates. |
 | **Config-Driven** | All settings (IPs, ports, callsign, COM port) are managed in a single `config.yaml`. |
-| **Admin Startup Script** | Included `.bat` file auto-elevates to Administrator privileges on Windows. |
+| **Mesh airtime control** | Positions from WinTAK/TAK server are throttled per unit, unchanged markers are not re-sent, and traffic is held back automatically when the radio reports a busy channel. Chat always goes first. |
+| **Browser dashboard** | Status cards (radio, WinTAK, TAK server, channel utilization), node map, filterable log, setup wizard, Windows autostart. |
+| **Auto-detected radio** | `meshtastic_port: AUTO` finds Meshtastic radios by USB ID; a configured COM port that Windows renumbered is replaced by the detected radio. |
+| **Startup Script** | `Meshtastic_Gateway_Start.bat` finds the gateway, installs `requirements.txt` into its own Python environment and starts it. |
 
 ---
 
@@ -114,6 +117,30 @@ send_nodes_without_gps: true
 
 > **Tip:** If `meshtastic_port` is not set or the configured port is not found, the gateway will prompt you to choose a port interactively.
 
+### Browser dashboard
+
+The browser UI (port 5013) opens automatically:
+
+- **Status cards** for the radio (connected port, node count), WinTAK, the TAK server (sent/received/buffered, last error) and the **channel utilization** of the local radio with traffic-light colors and the two brake limits.
+- **Tabs:** *Übersicht* (node map + node list + event log), *Einstellungen*, *TAK-Server*, *Werkzeuge* (text/CoT into the mesh, command console, WinTAK messages). Rarely needed options are under *Erweitert*.
+- **Setup wizard** on first start (or via *Einrichtung*): radio → TAK server (data package, `.p12` or username/password) → mesh profile → start.
+- **Event log** with filters (problems, mesh, server, WinTAK), search, and grouping of repeated lines (e.g. "Position-Updates von 40 Nodes").
+- **Map** of mesh nodes with position (OpenStreetMap tiles; needs internet – without it the node list still works).
+- **Autostart with Windows** (checkbox under *Allgemein*; creates an entry in the user's Startup folder).
+
+### Mesh airtime control (channel utilization)
+
+LoRa channels are slow and shared. WinTAK reports its own position every few seconds and re-sends markers with new timestamps; forwarding all of that keeps the channel busy for everyone. The gateway therefore decides per event what is worth the airtime:
+
+| Traffic | Rule |
+|---|---|
+| Chat | always sent immediately |
+| Positions (PLI) | per unit at most every `mesh_pli_min_interval_seconds`; if it moved less than `mesh_pli_min_distance_m`, only every `mesh_pli_stationary_interval_seconds`. The newest held-back position is sent automatically once allowed. |
+| Markers / other CoT | only when new or changed (timestamps are ignored); unchanged markers are repeated at most every `mesh_marker_repeat_interval_seconds`; rapid edits are combined |
+| Busy channel | above `mesh_chutil_limit_pli` % channel utilization positions are held back, above `mesh_chutil_limit_markers` % markers as well |
+
+Profiles in the UI: **Sparsam**, **Normal** (default), **Schnell**, **Aus**. Markers are also sent with leaner XML (server-only elements removed, sane coordinate precision, maximum compression) – about a third fewer bytes, so fewer multi-packet transfers.
+
 ### Remote TAK Server
 
 The gateway connects to a TAK Server (official TAK Server, OpenTAKServer, FreeTAKServer, …) the same way ATAK/WinTAK do:
@@ -123,7 +150,7 @@ The gateway connects to a TAK Server (official TAK Server, OpenTAKServer, FreeTA
 - **Single `.p12` file:** select it in the same file picker as data packages (*Datenpaket (.zip) oder Zertifikat (.p12) hochladen*; Tk GUI: *Import TAK package / .p12…* or *Use .p12 certificate…*). The gateway stores a `.p12` under `tak_certs/<server>/` and detects what it is: without private key it is used as truststore (CA), with private key as client certificate.
 - **Request a client certificate (enrollment):** if you only have the truststore plus a username/password (OpenTAKServer / TAK Server certificate enrollment, like ATAK's *Enroll for client certificate*), enter them under *Client-Zertifikat beim TAK-Server anfordern* (Tk GUI: *Request certificate…*). The gateway sends a CSR to `https://<server>:8446/Marti/api/tls/signClient/v2`, verifies the server with the truststore and stores the signed certificate as `tak_certs/<server>/<username>.p12`. The password is not saved.
 - **Data package import:** in the browser UI choose *Datenpaket (.zip) oder Zertifikat (.p12) hochladen* (Tk GUI: *Import TAK package / .p12…*) and select the `.zip` you would give to ATAK/WinTAK. Host, port, SSL, certificates and passwords are taken over; the certificates are stored in `tak_certs/` next to `config.yaml`. For packages without a client certificate (enrollment packages) request the certificate with username/password as described above.
-- **Bidirectional stream:** the connection is read continuously, keepalive pings are sent and the gateway announces itself with its own SA (`gateway_callsign`, position from `park_lat`/`park_lon` or the local radio). Several servers (e.g. FreeTAKServer) only distribute data from clients that identified themselves this way.
+- **Bidirectional stream:** the connection is read continuously, keepalive pings are sent (if a server that answered pings goes silent for three ping rounds, the gateway reconnects) and the gateway announces itself with its own SA (`gateway_callsign`, position from `park_lat`/`park_lon` or the local radio). Several servers (e.g. FreeTAKServer) only distribute data from clients that identified themselves this way.
 - **Mesh → server:** all node positions, markers and chats from the mesh are streamed to the server, which distributes them to every connected client. CoT produced while the server is unreachable is buffered and sent after the automatic reconnect.
 - **Server → mesh:** `tak_server_to_mesh` controls what goes into the (slow) LoRa mesh: `chat_markers` (default), `chat`, `all` (positions throttled to one per UID every 5 minutes) or `off`.
 - **WinTAK at the gateway:** `local_tak_to_server` forwards CoT/chats from the local WinTAK to the server, `tak_server_to_local_tak` shows server traffic in the local WinTAK — the gateway then works as a TAK proxy.
@@ -263,6 +290,7 @@ If Meshtastic nodes appear in your local WinTAK but **not** on ATAK/iTAK devices
 ├── Meshtastic_Gateway_Start.bat   # Windows launcher (finds the gateway, auto-installs requirements)
 ├── requirements.txt              # Python dependencies
 ├── tak_server_client.py          # Remote TAK Server connection (TCP/SSL/UDP, certificates, enrollment)
+├── mesh_airtime.py               # Mesh airtime control (throttling, channel utilization brake, lean CoT)
 ├── tak_certs/                    # TAK certificates (client certificates are git-ignored)
 ├── Meshtastic_Gateway.spec        # PyInstaller build spec
 └── README.md
