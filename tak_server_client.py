@@ -48,6 +48,8 @@ DEFAULT_KEEPALIVE_SECONDS = 30
 DEFAULT_SA_INTERVAL_SECONDS = 60
 DEFAULT_RECONNECT_SECONDS = 10
 CONFIRM_CONNECTION_SECONDS = 5
+DEAD_CONNECTION_FACTOR = 3  # reconnect after this many keepalive periods without any server data
+_PONG_RE = re.compile(r"""\btype=["']t-x-c-t-r["']""")
 MAX_RECONNECT_SECONDS = 60
 CONNECT_TIMEOUT_SECONDS = 15
 SOCKET_IO_TIMEOUT_SECONDS = 1.0
@@ -690,6 +692,8 @@ class TAKServerClient:
         self._send_lock = threading.Lock()
         self._thread = None
         self._connected = threading.Event()
+        self._last_rx = time.monotonic()
+        self._server_answers_pings = False
         self._confirmed = False
         self._dropped = 0
         self.status = {
@@ -914,6 +918,8 @@ class TAKServerClient:
         last_write = time.monotonic()
         last_sa = time.monotonic()
         session_start = time.monotonic()
+        self._last_rx = session_start
+        self._server_answers_pings = False
         received_at_start = self.status["received"]
         buffer_text = ""
         while not self._stop.is_set():
@@ -954,6 +960,16 @@ class TAKServerClient:
             elif self.protocol != "UDP" and now - last_write >= self.keepalive_seconds:
                 self._write(sock, build_tak_ping_xml(self.uid).encode("utf-8"))
                 last_write = now
+            if (
+                self.protocol != "UDP"
+                and self._server_answers_pings
+                and now - self._last_rx > DEAD_CONNECTION_FACTOR * self.keepalive_seconds
+            ):
+                # The server answered pings before and has now been silent for several ping rounds:
+                # the TCP session is dead (NAT timeout, Wi-Fi switch) even though no error was reported.
+                raise ConnectionError(
+                    f"keine Antwort vom Server seit {now - self._last_rx:.0f} s (Pong fehlt) – Verbindung wird neu aufgebaut"
+                )
 
     def _wait_readable(self, sock, timeout):
         pending = getattr(sock, "pending", None)
@@ -979,6 +995,7 @@ class TAKServerClient:
             if not data:
                 self.logger.info(f"TAK-Server {self.endpoint} hat die Verbindung geschlossen.")
                 return None
+            self._last_rx = time.monotonic()
             if data[:1] == b"\xbf" and not buffer_text:
                 # TAK protocol (protobuf) is only used after negotiation, which we never request.
                 self.logger.debug("Unerwartetes TAK-Protobuf-Paket vom Server ignoriert.")
@@ -987,6 +1004,8 @@ class TAKServerClient:
             events, buffer_text = extract_cot_events(buffer_text)
             for event_xml in events:
                 self.status["received"] += 1
+                if _PONG_RE.search(event_xml):
+                    self._server_answers_pings = True
                 if self._on_event is None:
                     continue
                 try:

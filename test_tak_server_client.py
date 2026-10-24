@@ -352,6 +352,66 @@ class TestClientConnections(unittest.TestCase):
         self.assertEqual(len([c for c in parsed if 'uid="MESH-' in c]), 5)
         self.assertIn('uid="GW-01"', parsed[0])
 
+    def test_silent_server_after_pongs_triggers_reconnect(self):
+        """A server that answered pings and then goes silent (dead NAT session) is reconnected."""
+        listener = socket.socket()
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(5)
+        port = listener.getsockname()[1]
+        connections = []
+        stop = threading.Event()
+        pong = ('<event version="2.0" uid="srv" type="t-x-c-t-r" how="m-g" time="2026-01-01T00:00:00Z" '
+                'start="2026-01-01T00:00:00Z" stale="2026-01-01T00:00:20Z"><point lat="0" lon="0"/><detail/></event>')
+
+        def serve():
+            listener.settimeout(0.2)
+            while not stop.is_set():
+                try:
+                    conn, _ = listener.accept()
+                except (socket.timeout, OSError):
+                    continue
+                connections.append(conn)
+                if len(connections) == 1:
+                    def answer_first_ping(c=conn):
+                        c.settimeout(5)
+                        try:
+                            while b"t-x-c-t" not in c.recv(65536):
+                                pass
+                            c.sendall(pong.encode())  # one pong, then silence (connection stays open)
+                        except OSError:
+                            pass
+                    threading.Thread(target=answer_first_ping, daemon=True).start()
+
+        threading.Thread(target=serve, daemon=True).start()
+        logger = _Logger()
+        client = TAKServerClient("127.0.0.1", port, "TCP", logger=logger, reconnect_seconds=1)
+        client.keepalive_seconds = 1
+        self.clients.append(client)
+        client.start()
+        try:
+            deadline = time.time() + 15
+            while len(connections) < 2 and time.time() < deadline:
+                time.sleep(0.1)
+            self.assertGreaterEqual(len(connections), 2, "client must reconnect after the server went silent")
+            self.assertTrue(any("Pong fehlt" in line for line in logger.lines))
+        finally:
+            stop.set()
+            listener.close()
+            for conn in connections:
+                conn.close()
+
+    def test_server_without_pongs_is_not_reconnected(self):
+        server = _FakeTakServer()  # never answers pings
+        self.servers.append(server)
+        client, _ = self._client(server)
+        client.keepalive_seconds = 1
+        client.start()
+        self.assertTrue(server.connected.wait(5))
+        time.sleep(5)
+        self.assertTrue(client.connected)
+        self.assertGreater(server.received.count(b"t-x-c-t"), 2)
+
     def test_reconnects_after_server_restart_and_keeps_queue(self):
         server = _FakeTakServer()
         self.servers.append(server)
